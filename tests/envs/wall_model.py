@@ -4,8 +4,6 @@ A point moves along a line toward a goal, and a wall at an unknown position stop
 from moving past the wall. The hidden parameter is the wall's position.
 """
 
-from dataclasses import dataclass
-
 import numpy as np
 from numpy.typing import NDArray
 
@@ -15,11 +13,8 @@ from able.structs import Task
 ACTION_COST = 0.1
 
 
-@dataclass(frozen=True, eq=False)
-class WallTask(Task):
-    """Reach the goal position."""
-
-    goal: float
+# The goal is a position on the line.
+WallTask = Task[NDArray[np.float64], float]
 
 
 class WallModel(BatchRolloutModel[WallTask]):
