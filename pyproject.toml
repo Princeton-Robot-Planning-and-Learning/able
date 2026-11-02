@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "able"
 version = "0.1.0"
-description = "A basic starter for Python packages."
+description = "Anticipating belief updates."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
