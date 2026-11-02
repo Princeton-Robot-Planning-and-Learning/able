@@ -3,8 +3,8 @@
 The arm stands in for a person whose range of motion the robot is learning. An
 action is a joint displacement applied in one step, and the hidden joint limits clip
 the motion. The hidden parameters are the joint limits [lo1, hi1, lo2, hi2]. The
-robot learns about the limits by asking whether a joint can move to an angle, and the
-response is yes or no.
+robot can also ask whether a joint can move to an angle, and the response is yes or
+no.
 """
 
 from dataclasses import dataclass
@@ -219,9 +219,8 @@ def sample_goal_positions(
     Each goal is the end-effector position of a joint configuration sampled within
     the limits, and within 80% of the distance a joint can travel in one episode.
     With probability edge_probability, each joint angle is moved to one of its
-    limits. Those goals sit at the edge of the range of motion, so the best plan
-    for them depends on where the limits are. Returns an array with shape
-    (num_goals, 2).
+    limits. Those goals sit at the edge of the range of motion, and reaching for
+    them reveals the limits. Returns an array with shape (num_goals, 2).
     """
     max_travel = 0.8 * model.max_joint_displacement * model.horizon
     lows = np.maximum(true_limits[[0, 2]], -max_travel)
