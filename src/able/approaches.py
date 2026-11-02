@@ -17,6 +17,7 @@ from able.learners.base import NullLearner
 from able.learners.current_belief import CurrentBeliefLearner
 from able.learners.dreaming import DreamingLearner
 from able.learners.prior_only import PriorOnlyLearner
+from able.models.exact_match_cache import ExactMatchCache
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
 from able.recording.base import CycleRecorder
 from able.robot import Robot
@@ -26,6 +27,18 @@ ArmArray = NDArray[np.float64]
 ArmRobot = Robot[
     ArmArray, ArmArray, ArmTask, ArmArray, RandomShootingParams, JointQuery, bool
 ]
+
+
+def _make_caching_planner(
+    env_model: TwoLinkArmModel, max_warm_starts_per_key: int
+) -> RandomShootingPlanner:
+    """Random shooting with warm starts from a cache of the cheapest plans per
+    discretized (goal, belief) key."""
+    params = RandomShootingParams(
+        num_proposals=max_warm_starts_per_key,
+        model=ExactMatchCache(max_per_key=max_warm_starts_per_key),
+    )
+    return RandomShootingPlanner(env_model, params)
 
 
 def make_scratch_robot(
@@ -62,15 +75,10 @@ def make_current_belief_robot(
     task_distribution = domain.task_distribution
     assert isinstance(env_model, TwoLinkArmModel)
     assert isinstance(task_distribution, FiniteTaskDistribution)
-    planner = RandomShootingPlanner(env_model)
+    planner = _make_caching_planner(env_model, max_warm_starts_per_key)
     return Robot(
         planner=planner,
-        learner=CurrentBeliefLearner(
-            task_distribution,
-            planner,
-            planning_budget,
-            max_warm_starts_per_key=max_warm_starts_per_key,
-        ),
+        learner=CurrentBeliefLearner(task_distribution, planner, planning_budget),
         belief_updater=JointLimitBeliefUpdater(),
         info_gatherer=NullInformationGatherer(),
         initial_belief=domain.initial_belief,
@@ -92,16 +100,10 @@ def make_prior_only_robot(
     assert isinstance(env_model, TwoLinkArmModel)
     assert isinstance(task_distribution, FiniteTaskDistribution)
     assert isinstance(prior, IntervalBelief)
-    planner = RandomShootingPlanner(env_model)
+    planner = _make_caching_planner(env_model, max_warm_starts_per_key)
     return Robot(
         planner=planner,
-        learner=PriorOnlyLearner(
-            prior,
-            task_distribution,
-            planner,
-            planning_budget,
-            max_warm_starts_per_key=max_warm_starts_per_key,
-        ),
+        learner=PriorOnlyLearner(prior, task_distribution, planner, planning_budget),
         belief_updater=JointLimitBeliefUpdater(),
         info_gatherer=NullInformationGatherer(),
         initial_belief=prior,
@@ -126,7 +128,7 @@ def make_dreaming_robot(
     task_distribution = domain.task_distribution
     assert isinstance(env_model, TwoLinkArmModel)
     assert isinstance(task_distribution, FiniteTaskDistribution)
-    planner = RandomShootingPlanner(env_model)
+    planner = _make_caching_planner(env_model, max_warm_starts_per_key)
     belief_updater = JointLimitBeliefUpdater()
     info_gatherer: NullInformationGatherer = NullInformationGatherer()
     learner = DreamingLearner(
@@ -138,7 +140,6 @@ def make_dreaming_robot(
         gathering_budget=gathering_budget,
         execution_budget=execution_budget,
         planning_budget=planning_budget,
-        max_warm_starts_per_key=max_warm_starts_per_key,
         recorder=recorder,
     )
     return Robot(

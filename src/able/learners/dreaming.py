@@ -51,16 +51,13 @@ class DreamingLearner(PlanCachingLearner):
         gathering_budget: Budget,
         execution_budget: Budget,
         planning_budget: Budget,
-        max_warm_starts_per_key: int = 4,
         recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
     ) -> None:
         assert (
             execution_budget.max_iterations is not None
             or execution_budget.max_wall_time is not None
         ), "Imagined task execution needs a finite budget"
-        super().__init__(
-            task_distribution, planner, planning_budget, max_warm_starts_per_key
-        )
+        super().__init__(task_distribution, planner, planning_budget)
         self._env_model = env_model
         self._belief_updater = belief_updater
         self._info_gatherer = info_gatherer

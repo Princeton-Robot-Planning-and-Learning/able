@@ -13,7 +13,8 @@ from able.envs.two_link_arm import (
     make_domain,
 )
 from able.learners.prior_only import PriorOnlyLearner
-from able.planners.random_shooting import RandomShootingPlanner, get_warm_start_key
+from able.models.exact_match_cache import ExactMatchCache
+from able.planners.random_shooting import RandomShootingPlanner, get_plan_features
 from able.structs import Budget
 
 
@@ -32,8 +33,10 @@ def test_trains_once_under_prior():
     rng = np.random.default_rng(0)
 
     trained = learner.learn(narrower, params, Budget(max_iterations=2), rng)
-    assert set(trained.warm_starts) == {
-        get_warm_start_key(task, prior, params.key_resolution) for task in tasks
+    cache = trained.model
+    assert isinstance(cache, ExactMatchCache)
+    assert set(cache.entries) == {
+        cache.get_key(get_plan_features(task, prior)) for task in tasks
     }
     assert learner.learn(narrower, trained, Budget(max_iterations=2), rng) is trained
 
@@ -58,14 +61,15 @@ def test_cached_plans_only_help_under_the_prior():
     results = run_cycles(
         robot, domain.real_env, task_distribution, eval_tasks, 3, budgets, rng
     )
-    resolution = robot.planner_params.key_resolution
+    cache = robot.planner_params.model
+    assert isinstance(cache, ExactMatchCache)
     num_hits = 0
     for result in results:
         belief = result.belief
         assert isinstance(belief, IntervalBelief)
         for evaluation in result.evaluations:
-            key = get_warm_start_key(evaluation.task, belief, resolution)
-            prior_key = get_warm_start_key(evaluation.task, prior, resolution)
+            key = cache.get_key(get_plan_features(evaluation.task, belief))
+            prior_key = cache.get_key(get_plan_features(evaluation.task, prior))
             hit = evaluation.planning_stats["used_warm_start"] == 1.0
             assert hit == (key == prior_key)
             num_hits += hit

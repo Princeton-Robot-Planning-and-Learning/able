@@ -9,7 +9,14 @@ from able.approaches import (
     make_scratch_robot,
 )
 from able.envs.two_link_arm import make_domain
+from able.models.exact_match_cache import ExactMatchCache
+from able.planners.random_shooting import RandomShootingParams
 from able.structs import Budget
+
+
+def _has_cached_plans(params: RandomShootingParams) -> bool:
+    assert isinstance(params.model, ExactMatchCache)
+    return bool(params.model.entries)
 
 
 def test_make_scratch_robot():
@@ -32,18 +39,18 @@ def test_make_dreaming_robot():
         execution_budget=Budget(max_iterations=1),
         planning_budget=Budget(),
     )
-    assert not robot.planner_params.warm_starts
+    assert not _has_cached_plans(robot.planner_params)
     robot.sleep(Budget(max_iterations=1), np.random.default_rng(0))
-    assert robot.planner_params.warm_starts
+    assert _has_cached_plans(robot.planner_params)
 
 
 def test_make_current_belief_robot():
     """Tests that the current-belief robot caches plans while it sleeps."""
     domain = make_domain(seed=0)
     robot = make_current_belief_robot(domain, planning_budget=Budget())
-    assert not robot.planner_params.warm_starts
+    assert not _has_cached_plans(robot.planner_params)
     robot.sleep(Budget(max_iterations=1), np.random.default_rng(0))
-    assert robot.planner_params.warm_starts
+    assert _has_cached_plans(robot.planner_params)
 
 
 def test_make_prior_only_robot():
@@ -53,6 +60,6 @@ def test_make_prior_only_robot():
     rng = np.random.default_rng(0)
     robot.sleep(Budget(max_iterations=1), rng)
     params = robot.planner_params
-    assert params.warm_starts
+    assert _has_cached_plans(params)
     robot.sleep(Budget(max_iterations=1), rng)
     assert robot.planner_params is params

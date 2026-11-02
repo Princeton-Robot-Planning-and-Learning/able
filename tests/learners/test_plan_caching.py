@@ -8,10 +8,11 @@ from able.beliefs.interval import IntervalBelief
 from able.envs.base import FiniteTaskDistribution
 from able.envs.two_link_arm import JOINT_LIMIT_PRIOR, ArmTask, TwoLinkArmModel
 from able.learners.plan_caching import ArmArray, PlanCachingLearner
+from able.models.exact_match_cache import ExactMatchCache
 from able.planners.random_shooting import (
     RandomShootingParams,
     RandomShootingPlanner,
-    get_warm_start_key,
+    get_plan_features,
 )
 from able.structs import Budget
 
@@ -45,24 +46,35 @@ def test_plan_caching_learner():
         ArmTask(initial_state=np.zeros(2), goal=np.array(goal))
         for goal in [(1.0, 1.0), (0.5, 1.5), (-1.0, 1.2)]
     ]
-    planner = RandomShootingPlanner(TwoLinkArmModel())
-    learner = _FixedBeliefLearner(
-        FiniteTaskDistribution(tasks), planner, Budget(), max_warm_starts_per_key=2
+    cache = ExactMatchCache(max_per_key=2)
+    planner = RandomShootingPlanner(
+        TwoLinkArmModel(), RandomShootingParams(num_proposals=2, model=cache)
     )
+    learner = _FixedBeliefLearner(FiniteTaskDistribution(tasks), planner, Budget())
     params = planner.get_default_params()
     belief = IntervalBelief(JOINT_LIMIT_PRIOR)
     new_params = learner.learn(
         belief, params, Budget(max_iterations=3), np.random.default_rng(0)
     )
     assert learner.iterations == [1, 2, 3]
-    assert not params.warm_starts
-    assert set(new_params.warm_starts) == {
-        get_warm_start_key(task, FIXED_BELIEF, params.key_resolution) for task in tasks
+    assert params.model is cache and not cache.entries
+    trained = new_params.model
+    assert isinstance(trained, ExactMatchCache)
+    assert set(trained.entries) == {
+        cache.get_key(get_plan_features(task, FIXED_BELIEF)) for task in tasks
     }
     # Three iterations each add one plan per task, and at most two are kept.
-    assert all(len(entries) == 2 for entries in new_params.warm_starts.values())
-    for entries in new_params.warm_starts.values():
+    assert all(len(entries) == 2 for entries in trained.entries.values())
+    for entries in trained.entries.values():
         assert entries[0][0] <= entries[1][0]
+
+    # The next sleep keeps the plans from this one.
+    newer_params = learner.learn(
+        belief, new_params, Budget(max_iterations=1), np.random.default_rng(1)
+    )
+    assert learner.iterations == [1, 2, 3, 1]
+    assert isinstance(newer_params.model, ExactMatchCache)
+    assert set(newer_params.model.entries) == set(trained.entries)
 
     with pytest.raises(AssertionError):
         learner.learn(belief, params, Budget(), np.random.default_rng(0))
