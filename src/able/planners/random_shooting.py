@@ -1,5 +1,6 @@
 """Random shooting for the two-link arm, with warm starts proposed by a model."""
 
+import dataclasses
 import time
 from dataclasses import dataclass, field
 
@@ -11,8 +12,8 @@ from able.beliefs.interval import IntervalBelief
 from able.envs.two_link_arm import ArmTask, TwoLinkArmModel
 from able.models.base import ConditionalModel, Dataset
 from able.models.exact_match_cache import ExactMatchCache
-from able.planners.base import Planner
-from able.policies.base import OpenLoopPolicy
+from able.planners.base import TrainablePlanner
+from able.policies.base import OpenLoopPolicy, Policy
 from able.structs import Budget, PlanningFailure
 
 
@@ -51,7 +52,7 @@ def get_plan_features(task: ArmTask, belief: IntervalBelief) -> NDArray[np.float
 
 
 class RandomShootingPlanner(
-    Planner[
+    TrainablePlanner[
         NDArray[np.float64],
         NDArray[np.float64],
         ArmTask,
@@ -153,18 +154,27 @@ class RandomShootingPlanner(
         noise = rng.normal(0.0, params.action_noise_fraction * bound, (num, horizon, 2))
         return np.clip(base + noise, -bound, bound)
 
+    def get_model(self, params: RandomShootingParams) -> ConditionalModel:
+        return params.model
+
+    def set_model(
+        self, params: RandomShootingParams, model: ConditionalModel
+    ) -> RandomShootingParams:
+        return dataclasses.replace(params, model=model)
+
     def get_plan_examples(
         self,
         task: ArmTask,
-        belief: IntervalBelief,
-        policy: OpenLoopPolicy[NDArray[np.float64], NDArray[np.float64]],
+        belief: Belief[NDArray[np.float64]],
+        policy: Policy[NDArray[np.float64], NDArray[np.float64]],
     ) -> Dataset:
-        """One training row for a model from a plan found for the task under the
-        belief.
+        """One training row from a plan found for the task under the belief.
 
         The input is the plan features, the output is the flattened action
         sequence, and the cost is the plan's expected cost.
         """
+        assert isinstance(belief, IntervalBelief), "Plan features need IntervalBelief"
+        assert isinstance(policy, OpenLoopPolicy), "Need a plan from plan()"
         return Dataset(
             x=get_plan_features(task, belief)[None],
             y=np.array(policy.actions).reshape(1, -1),
