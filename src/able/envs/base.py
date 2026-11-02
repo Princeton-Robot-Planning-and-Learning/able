@@ -87,6 +87,12 @@ class EnvironmentModel(
         """The cost of ending an episode in the state."""
 
     @abstractmethod
+    def check_goal(
+        self, task: TaskType, state: StateType, hidden_params: HiddenParamsType
+    ) -> bool:
+        """Check whether ending an episode in the state completes the task."""
+
+    @abstractmethod
     def sample_response(
         self,
         query: QueryType,
@@ -175,6 +181,14 @@ class Environment(ABC, Generic[StateType, ActType, TaskType, QueryType, Response
     @abstractmethod
     def ask(self, query: QueryType) -> ResponseType:
         """Ask a query about the hidden parameters and return the response."""
+
+    @abstractmethod
+    def check_goal(self, task: TaskType, state: StateType) -> bool:
+        """Check whether ending an episode in the state completes the task.
+
+        Only the experiment harness calls this, to measure success. The robot
+        cannot observe success directly.
+        """
 
 
 @dataclass(frozen=True)

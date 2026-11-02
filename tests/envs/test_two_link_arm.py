@@ -82,6 +82,21 @@ def test_joint_queries():
     assert not env.ask(JointQuery(joint=1, angle=0.11))
 
 
+def test_check_goal():
+    """Tests that the goal is reached within the goal tolerance."""
+    model = TwoLinkArmModel(goal_tolerance=0.1)
+    joints = np.array([0.3, 0.4])
+    task = ArmTask(initial_state=np.zeros(2), goal=model.forward_kinematics(joints))
+    limits = JOINT_LIMIT_PRIOR.mean(axis=1)
+    assert model.check_goal(task, joints, limits)
+    # Moving the elbow by 0.05 moves the end effector by about 0.05.
+    assert model.check_goal(task, joints + np.array([0.0, 0.05]), limits)
+    assert not model.check_goal(task, joints + np.array([0.0, 0.2]), limits)
+
+    domain = make_domain(seed=0, goal_tolerance=0.2)
+    assert domain.real_env.check_goal(task, joints + np.array([0.0, 0.15]))
+
+
 def test_rollout_batch_matches_stepping():
     """Tests that batched rollouts and costs match stepping one action at a time."""
     model = TwoLinkArmModel()

@@ -30,14 +30,16 @@ from able.structs import (
 class EpisodeResult(Generic[StateType, ActType, TaskType]):
     """The outcome of planning for and executing one task.
 
-    The planning wall time covers plan() and every call to get_action(). If
-    planning fails, the trajectory is None, the total cost is infinite, and the
-    failure holds the error message.
+    Success means the environment's goal check passed on the final state. The
+    planning wall time covers plan() and every call to get_action(). If planning
+    fails, the trajectory is None, the total cost is infinite, the episode is not
+    a success, and the failure holds the error message.
     """
 
     task: TaskType
     trajectory: Trajectory[StateType, ActType] | None
     total_cost: float
+    success: bool
     planning_wall_time: float
     planning_stats: dict[str, float]
     failure: str | None = None
@@ -119,6 +121,7 @@ def _plan_and_run(
             task=task,
             trajectory=None,
             total_cost=float("inf"),
+            success=False,
             planning_wall_time=time.perf_counter() - start_time,
             planning_stats={},
             failure=str(failure),
@@ -131,6 +134,7 @@ def _plan_and_run(
             task=task,
             trajectory=None,
             total_cost=float("inf"),
+            success=False,
             planning_wall_time=plan_time + policy.total_time,
             planning_stats=policy.get_planning_stats(),
             failure=str(failure),
@@ -139,6 +143,7 @@ def _plan_and_run(
         task=task,
         trajectory=trajectory,
         total_cost=trajectory.total_cost,
+        success=env.check_goal(task, trajectory.states[-1]),
         planning_wall_time=plan_time + policy.total_time,
         planning_stats=policy.get_planning_stats(),
     )

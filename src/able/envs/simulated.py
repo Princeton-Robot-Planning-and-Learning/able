@@ -70,3 +70,6 @@ class SimulatedEnvironment(
 
     def ask(self, query: QueryType) -> ResponseType:
         return self._model.sample_response(query, self._hidden_params, self._rng)
+
+    def check_goal(self, task: TaskType, state: StateType) -> bool:
+        return self._model.check_goal(task, state, self._hidden_params)
