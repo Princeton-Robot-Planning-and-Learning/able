@@ -17,6 +17,9 @@ from able.structs import (
     HiddenParamsType,
     PlannerParamsType,
     PlanningFailure,
+    QueryResponse,
+    QueryType,
+    ResponseType,
     StateType,
     TaskType,
     Trajectory,
@@ -41,7 +44,9 @@ class EvaluationResult(Generic[StateType, ActType, TaskType]):
 
 
 @dataclass(frozen=True)
-class CycleResult(Generic[StateType, ActType, TaskType, HiddenParamsType]):
+class CycleResult(
+    Generic[StateType, ActType, TaskType, HiddenParamsType, QueryType, ResponseType]
+):
     """Everything recorded in one cycle.
 
     The belief is the one after the update, which is also the belief the robot
@@ -50,7 +55,7 @@ class CycleResult(Generic[StateType, ActType, TaskType, HiddenParamsType]):
 
     cycle: int
     sleep_wall_time: float
-    gathered_data: list[Trajectory[StateType, ActType]]
+    gathered_data: list[QueryResponse[QueryType, ResponseType]]
     belief: Belief[HiddenParamsType]
     evaluations: list[EvaluationResult[StateType, ActType, TaskType]]
 
@@ -87,9 +92,17 @@ class _TimedPolicy(Policy[StateType, ActType]):
 
 
 def evaluate(
-    robot: Robot[StateType, ActType, TaskType, HiddenParamsType, PlannerParamsType],
+    robot: Robot[
+        StateType,
+        ActType,
+        TaskType,
+        HiddenParamsType,
+        PlannerParamsType,
+        QueryType,
+        ResponseType,
+    ],
     task: TaskType,
-    env: Environment[StateType, ActType, TaskType],
+    env: Environment[StateType, ActType, TaskType, QueryType, ResponseType],
     planning_budget: Budget,
     rng: np.random.Generator,
 ) -> EvaluationResult[StateType, ActType, TaskType]:
@@ -131,13 +144,23 @@ def evaluate(
 
 
 def run_cycles(
-    robot: Robot[StateType, ActType, TaskType, HiddenParamsType, PlannerParamsType],
-    env: Environment[StateType, ActType, TaskType],
+    robot: Robot[
+        StateType,
+        ActType,
+        TaskType,
+        HiddenParamsType,
+        PlannerParamsType,
+        QueryType,
+        ResponseType,
+    ],
+    env: Environment[StateType, ActType, TaskType, QueryType, ResponseType],
     eval_tasks: Sequence[TaskType],
     num_cycles: int,
     budgets: CycleBudgets,
     rng: np.random.Generator,
-) -> list[CycleResult[StateType, ActType, TaskType, HiddenParamsType]]:
+) -> list[
+    CycleResult[StateType, ActType, TaskType, HiddenParamsType, QueryType, ResponseType]
+]:
     """Run the robot for a number of cycles.
 
     Each cycle has the robot sleep, gather information in the environment, and

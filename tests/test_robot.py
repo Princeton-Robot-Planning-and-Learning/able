@@ -7,7 +7,7 @@ import numpy as np
 from able.belief_updaters.joint_limits import JointLimitBeliefUpdater
 from able.beliefs.base import Belief
 from able.envs.two_link_arm import TwoLinkArmModel, make_domain
-from able.info_gatherers.task_execution import TaskExecutionGatherer
+from able.info_gatherers.joint_limits import WidestGapGatherer
 from able.learners.base import Learner
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
 from able.robot import Robot
@@ -36,9 +36,7 @@ def test_robot():
         planner=planner,
         learner=_BatchSizeLearner(),
         belief_updater=JointLimitBeliefUpdater(),
-        info_gatherer=TaskExecutionGatherer(
-            planner, domain.task_distribution, Budget()
-        ),
+        info_gatherer=WidestGapGatherer(),
         initial_belief=domain.initial_belief,
     )
     rng = np.random.default_rng(0)

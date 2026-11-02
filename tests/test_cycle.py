@@ -6,7 +6,7 @@ from able.belief_updaters.joint_limits import JointLimitBeliefUpdater
 from able.beliefs.interval import IntervalBelief
 from able.cycle import CycleBudgets, evaluate, run_cycles
 from able.envs.two_link_arm import JOINT_LIMIT_PRIOR, TwoLinkArmModel, make_domain
-from able.info_gatherers.task_execution import TaskExecutionGatherer
+from able.info_gatherers.joint_limits import WidestGapGatherer
 from able.learners.base import NullLearner
 from able.planners.random_shooting import RandomShootingPlanner
 from able.robot import Robot
@@ -16,14 +16,11 @@ TRUE_LIMITS = np.array([-1.2, 1.4, -2.0, 0.9])
 
 
 def _make_robot(domain):
-    planner = RandomShootingPlanner(TwoLinkArmModel())
     return Robot(
-        planner=planner,
+        planner=RandomShootingPlanner(TwoLinkArmModel()),
         learner=NullLearner(),
         belief_updater=JointLimitBeliefUpdater(),
-        info_gatherer=TaskExecutionGatherer(
-            planner, domain.task_distribution, Budget()
-        ),
+        info_gatherer=WidestGapGatherer(),
         initial_belief=domain.initial_belief,
     )
 
@@ -76,6 +73,6 @@ def test_run_cycles():
         belief = result.belief
         assert isinstance(belief, IntervalBelief)
         assert belief.contains(TRUE_LIMITS)
-        assert belief.get_total_width() <= previous_width
+        assert belief.get_total_width() < previous_width
         previous_width = belief.get_total_width()
     assert results[-1].belief is robot.belief

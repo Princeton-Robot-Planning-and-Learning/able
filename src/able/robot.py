@@ -16,13 +16,25 @@ from able.structs import (
     Budget,
     HiddenParamsType,
     PlannerParamsType,
+    QueryResponse,
+    QueryType,
+    ResponseType,
     StateType,
     TaskType,
-    Trajectory,
 )
 
 
-class Robot(Generic[StateType, ActType, TaskType, HiddenParamsType, PlannerParamsType]):
+class Robot(
+    Generic[
+        StateType,
+        ActType,
+        TaskType,
+        HiddenParamsType,
+        PlannerParamsType,
+        QueryType,
+        ResponseType,
+    ]
+):
     """Combines a planner, learner, belief updater, and information gatherer.
 
     The robot's state is its current belief and planner parameters. Only sleep()
@@ -36,10 +48,8 @@ class Robot(Generic[StateType, ActType, TaskType, HiddenParamsType, PlannerParam
             StateType, ActType, TaskType, HiddenParamsType, PlannerParamsType
         ],
         learner: Learner[HiddenParamsType, PlannerParamsType],
-        belief_updater: BeliefUpdater[StateType, ActType, HiddenParamsType],
-        info_gatherer: InformationGatherer[
-            StateType, ActType, TaskType, HiddenParamsType, PlannerParamsType
-        ],
+        belief_updater: BeliefUpdater[HiddenParamsType, QueryType, ResponseType],
+        info_gatherer: InformationGatherer[HiddenParamsType, QueryType, ResponseType],
         initial_belief: Belief[HiddenParamsType],
     ) -> None:
         self._planner = planner
@@ -73,15 +83,15 @@ class Robot(Generic[StateType, ActType, TaskType, HiddenParamsType, PlannerParam
 
     def gather_information(
         self,
-        env: Environment[StateType, ActType, TaskType],
+        env: Environment[StateType, ActType, TaskType, QueryType, ResponseType],
         budget: Budget,
         rng: np.random.Generator,
-    ) -> list[Trajectory[StateType, ActType]]:
-        """Run the information gatherer in the environment."""
-        return self._info_gatherer.gather(
-            self._belief, self._planner_params, env, budget, rng
-        )
+    ) -> list[QueryResponse[QueryType, ResponseType]]:
+        """Ask the environment queries with the information gatherer."""
+        return self._info_gatherer.gather(self._belief, env, budget, rng)
 
-    def update_belief(self, data: Sequence[Trajectory[StateType, ActType]]) -> None:
-        """Update the belief with gathered data."""
+    def update_belief(
+        self, data: Sequence[QueryResponse[QueryType, ResponseType]]
+    ) -> None:
+        """Update the belief with the responses to queries."""
         self._belief = self._belief_updater.update(self._belief, data)
