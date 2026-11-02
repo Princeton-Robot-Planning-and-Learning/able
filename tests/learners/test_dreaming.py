@@ -8,7 +8,7 @@ from able.beliefs.interval import IntervalBelief
 from able.cycle import CycleBudgets, run_cycles
 from able.envs.base import FiniteTaskDistribution
 from able.envs.two_link_arm import ArmTask, TwoLinkArmModel, make_domain
-from able.info_gatherers.joint_limits import WidestGapGatherer
+from able.info_gatherers.base import NullInformationGatherer
 from able.learners.base import Learner, NullLearner
 from able.learners.dreaming import DreamingLearner
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
@@ -24,7 +24,7 @@ def _make_robot(
     model = TwoLinkArmModel()
     planner = RandomShootingPlanner(model)
     updater = JointLimitBeliefUpdater()
-    gatherer = WidestGapGatherer()
+    gatherer: NullInformationGatherer = NullInformationGatherer()
     learner: Learner[np.ndarray, RandomShootingParams]
     if dreaming:
         learner = DreamingLearner(
@@ -33,7 +33,7 @@ def _make_robot(
             planner,
             updater,
             gatherer,
-            gathering_budget=Budget(max_iterations=1),
+            gathering_budget=Budget(max_iterations=0),
             execution_budget=Budget(max_iterations=1),
             planning_budget=Budget(),
         )
@@ -47,7 +47,7 @@ def _run(robot: Robot, domain, num_dreams: int, num_cycles: int, seed: int) -> l
     assert isinstance(domain.task_distribution, FiniteTaskDistribution)
     budgets = CycleBudgets(
         sleep=Budget(max_iterations=num_dreams),
-        information_gathering=Budget(max_iterations=1),
+        information_gathering=Budget(max_iterations=0),
         execution=Budget(max_iterations=1),
         planning=Budget(),
     )
@@ -75,8 +75,8 @@ def test_learn_adds_warm_starts():
         domain.task_distribution,
         planner,
         updater,
-        WidestGapGatherer(),
-        gathering_budget=Budget(max_iterations=1),
+        NullInformationGatherer(),
+        gathering_budget=Budget(max_iterations=0),
         execution_budget=Budget(max_iterations=1),
         planning_budget=Budget(),
         max_warm_starts_per_key=2,
