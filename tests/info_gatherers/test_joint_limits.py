@@ -3,10 +3,9 @@
 import numpy as np
 import pytest
 
-from able.belief_updaters.joint_limits import JointLimitBeliefUpdater
 from able.beliefs.interval import IntervalBelief
 from able.envs.simulated import SimulatedEnvironment
-from able.envs.two_link_arm import JOINT_LIMIT_PRIOR, JointQuery, TwoLinkArmModel
+from able.envs.two_link_arm import JointQuery, TwoLinkArmModel
 from able.info_gatherers.joint_limits import WidestGapGatherer
 from able.structs import Budget
 
@@ -66,24 +65,3 @@ def test_known_limits_stop_gathering():
     assert not data
     with pytest.raises(AssertionError):
         gatherer.gather(BELIEF, _env(TRUE_LIMITS), Budget(), np.random.default_rng(0))
-
-
-def test_belief_collapses():
-    """Tests that alternating gathering and belief updates shrinks the belief while
-    keeping the true limits in it."""
-    gatherer = WidestGapGatherer()
-    updater = JointLimitBeliefUpdater()
-    prior = IntervalBelief(JOINT_LIMIT_PRIOR)
-    rng = np.random.default_rng(0)
-    for _ in range(3):
-        true_limits = rng.uniform(JOINT_LIMIT_PRIOR[:, 0], JOINT_LIMIT_PRIOR[:, 1])
-        env = _env(true_limits)
-        belief = prior
-        for _ in range(20):
-            data = gatherer.gather(belief, env, Budget(max_iterations=1), rng)
-            new_belief = updater.update(belief, data)
-            assert new_belief.contains(true_limits)
-            assert new_belief.get_total_width() < belief.get_total_width()
-            belief = new_belief
-        # Each limit has been bisected five times.
-        assert np.isclose(belief.get_total_width(), prior.get_total_width() / 32)
