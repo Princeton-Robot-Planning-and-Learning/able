@@ -8,6 +8,8 @@ ActType = TypeVar("ActType")
 GoalType = TypeVar("GoalType")
 HiddenParamsType = TypeVar("HiddenParamsType")
 PlannerParamsType = TypeVar("PlannerParamsType")
+QueryType = TypeVar("QueryType")
+ResponseType = TypeVar("ResponseType")
 
 
 @dataclass(frozen=True, eq=False)
@@ -49,6 +51,18 @@ class Trajectory(Generic[StateType, ActType]):
 
 
 @dataclass(frozen=True)
+class QueryResponse(Generic[QueryType, ResponseType]):
+    """A query about the hidden parameters and the environment's response to it.
+
+    Each environment defines its own query and response types. Robots learn about the
+    hidden parameters only from these pairs.
+    """
+
+    query: QueryType
+    response: ResponseType
+
+
+@dataclass(frozen=True)
 class StepResult(Generic[StateType]):
     """The outcome of taking one action in an environment."""
 
@@ -61,9 +75,9 @@ class StepResult(Generic[StateType]):
 class Budget:
     """Compute limits for one call to a component.
 
-    Each component defines what counts as one iteration (for example, a batch of
-    sampled action sequences for a planner, or one imagined belief update for a
-    learner). A limit of None means unlimited.
+    Each component defines what counts as one iteration (for example, a batch of sampled
+    action sequences for a planner, or one imagined belief update for a learner). A
+    limit of None means unlimited.
     """
 
     max_wall_time: float | None = None

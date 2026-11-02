@@ -2,7 +2,7 @@
 
 import pytest
 
-from able.structs import Budget, StepResult, Task, Trajectory
+from able.structs import Budget, QueryResponse, StepResult, Task, Trajectory
 
 
 def test_task():
@@ -31,6 +31,15 @@ def test_trajectory():
         Trajectory(states=(0, 1), actions=(1, 2), costs=(0.5, 1.5))
     with pytest.raises(AssertionError):
         Trajectory(states=(0, 1, 3), actions=(1, 2), costs=(0.5,))
+
+
+def test_query_response():
+    """Tests for QueryResponse."""
+    pair = QueryResponse(query="Can you lift your arm?", response=True)
+    assert pair.query == "Can you lift your arm?"
+    assert pair.response
+    with pytest.raises(AttributeError):
+        pair.response = False  # type: ignore[misc]
 
 
 def test_step_result():
