@@ -5,8 +5,6 @@ action is a joint displacement applied in one step, and the hidden joint limits 
 the motion. The hidden parameters are the joint limits [lo1, hi1, lo2, hi2].
 """
 
-from dataclasses import dataclass
-
 import numpy as np
 from numpy.typing import NDArray
 
@@ -26,11 +24,8 @@ JOINT_LIMIT_PRIOR = np.array(
 _NUM_BOUNDARY_POINTS = 48
 
 
-@dataclass(frozen=True, eq=False)
-class ArmTask(Task):
-    """Move the end effector to the goal position."""
-
-    goal: NDArray[np.float64]
+# States are joint angles and the goal is an end-effector position.
+ArmTask = Task[NDArray[np.float64], NDArray[np.float64]]
 
 
 class TwoLinkArmModel(BatchRolloutModel[ArmTask]):
