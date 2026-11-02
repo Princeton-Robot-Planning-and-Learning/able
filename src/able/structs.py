@@ -5,18 +5,21 @@ from typing import Generic, TypeVar
 
 StateType = TypeVar("StateType")
 ActType = TypeVar("ActType")
+GoalType = TypeVar("GoalType")
 HiddenParamsType = TypeVar("HiddenParamsType")
 PlannerParamsType = TypeVar("PlannerParamsType")
 
 
-@dataclass(frozen=True)
-class Task(Generic[StateType]):
-    """A task to solve, starting from an initial state.
+@dataclass(frozen=True, eq=False)
+class Task(Generic[StateType, GoalType]):
+    """A task: reach the goal, starting from the initial state.
 
-    Each domain subclasses this to add its goal specification.
+    The environment model's costs define what reaching the goal means. Tasks
+    compare by identity, because states and goals are often arrays.
     """
 
     initial_state: StateType
+    goal: GoalType
 
 
 TaskType = TypeVar("TaskType", bound=Task)

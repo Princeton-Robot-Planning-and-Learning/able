@@ -7,10 +7,14 @@ from able.structs import Budget, StepResult, Task, Trajectory
 
 def test_task():
     """Tests for Task."""
-    task = Task(initial_state=(0, 0))
+    task = Task(initial_state=(0, 0), goal=(1, 2))
     assert task.initial_state == (0, 0)
+    assert task.goal == (1, 2)
     with pytest.raises(AttributeError):
-        task.initial_state = (1, 1)  # type: ignore[misc]
+        task.goal = (3, 4)  # type: ignore[misc]
+    same_fields = Task(initial_state=(0, 0), goal=(1, 2))
+    assert task != same_fields
+    assert len({task, same_fields}) == 2
 
 
 def test_trajectory():
