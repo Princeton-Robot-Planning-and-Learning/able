@@ -4,90 +4,89 @@ import numpy as np
 import pytest
 
 from able.belief_updaters.joint_limits import JointLimitBeliefUpdater
+from able.beliefs.base import Belief
 from able.beliefs.interval import IntervalBelief
 from able.envs.two_link_arm import JOINT_LIMIT_PRIOR, JointQuery, TwoLinkArmModel
 from able.structs import QueryResponse
 
 
-def _ask(joint: int, angle: float, response: bool) -> QueryResponse[JointQuery, bool]:
-    return QueryResponse(JointQuery(joint=joint, angle=angle), response)
-
-
-def test_yes_narrows_both_limits():
-    """Tests that a reachable angle bounds the lower limit from above and the upper
-    limit from below."""
+def _execute(
+    belief: Belief[np.ndarray], true_limits: np.ndarray, actions: np.ndarray
+) -> Belief[np.ndarray]:
+    """Execute the actions from q = 0 on an arm with the true limits, updating the
+    belief after every step."""
+    model = TwoLinkArmModel()
     updater = JointLimitBeliefUpdater()
+    rng = np.random.default_rng(0)
+    state = np.zeros(2)
+    for action in actions:
+        next_state = model.sample_next_state(state, action, true_limits, rng)
+        belief = updater.update_from_transition(belief, state, action, next_state)
+        state = next_state
+    return belief
+
+
+def test_clipped_step_pins_limit():
+    """Tests that hitting a limit makes it known exactly."""
     prior = IntervalBelief(JOINT_LIMIT_PRIOR)
-    belief = updater.update(prior, [_ask(0, 1.0, True), _ask(1, -1.0, True)])
+    true_limits = np.array([-0.7, 2.0, -1.5, 0.8])
+    # Joint 1 moves down until it hits -0.7; joint 2 moves up without hitting 0.8.
+    belief = _execute(prior, true_limits, np.array([[-0.3, 0.2]] * 3))
     assert isinstance(belief, IntervalBelief)
-    assert np.allclose(belief.intervals[0], JOINT_LIMIT_PRIOR[0])
-    assert np.allclose(belief.intervals[1], [1.0, np.pi])
-    assert np.allclose(belief.intervals[2], [-np.pi, -1.0])
-    assert np.allclose(belief.intervals[3], JOINT_LIMIT_PRIOR[3])
+    assert np.allclose(belief.intervals[0], [-0.7, -0.7])
+    assert np.allclose(belief.intervals[1], JOINT_LIMIT_PRIOR[1])
+    assert np.allclose(belief.intervals[2], JOINT_LIMIT_PRIOR[2])
+    # Joint 2 reached 0.6, so its upper limit is at least 0.6.
+    assert np.allclose(belief.intervals[3], [0.6, np.pi])
+    assert belief.contains(true_limits)
     # The prior is unchanged.
     assert prior == IntervalBelief(JOINT_LIMIT_PRIOR)
 
 
-def test_no_bounds_the_limit_on_the_side_of_the_angle():
-    """Tests that an unreachable angle bounds the limit between it and zero."""
-    updater = JointLimitBeliefUpdater()
-    prior = IntervalBelief(JOINT_LIMIT_PRIOR)
-    belief = updater.update(prior, [_ask(0, 2.0, False), _ask(1, -2.0, False)])
-    assert np.allclose(belief.intervals[0], JOINT_LIMIT_PRIOR[0])
-    assert np.allclose(belief.intervals[1], [0.5, 2.0])
-    assert np.allclose(belief.intervals[2], [-2.0, -0.5])
-    assert np.allclose(belief.intervals[3], JOINT_LIMIT_PRIOR[3])
-
-
-def test_bisection_pins_limit():
-    """Tests that repeated yes and no answers shrink an interval around the true
-    limit."""
-    updater = JointLimitBeliefUpdater()
-    belief = IntervalBelief(JOINT_LIMIT_PRIOR)
-    true_upper = 1.234
-    for _ in range(20):
-        angle = float(belief.intervals[1].mean())
-        belief = updater.update(belief, [_ask(0, angle, angle <= true_upper)])
-    low, high = belief.intervals[1]
-    assert low <= true_upper <= high
-    assert high - low < 1e-5
+def test_unclipped_steps_narrow_intervals():
+    """Tests that moving freely rules out limits the arm moved past."""
+    true_limits = np.array([-2.0, 2.0, -2.0, 2.0])
+    belief = _execute(
+        IntervalBelief(JOINT_LIMIT_PRIOR), true_limits, np.array([[0.3, -0.3]] * 3)
+    )
+    belief = _execute(belief, true_limits, np.array([[-0.25, 0.25]] * 4))
+    assert isinstance(belief, IntervalBelief)
+    assert np.allclose(belief.intervals[0], [-np.pi, -1.0])
+    assert np.allclose(belief.intervals[1], [0.9, np.pi])
+    assert np.allclose(belief.intervals[2], [-np.pi, -0.9])
+    assert np.allclose(belief.intervals[3], [1.0, np.pi])
 
 
 def test_belief_always_contains_true_limits():
-    """Tests that answers to random queries never rule out the true limits and that the
-    belief only shrinks."""
-    updater = JointLimitBeliefUpdater()
-    model = TwoLinkArmModel()
+    """Tests that random motion never rules out the true limits and that the belief only
+    shrinks."""
     rng = np.random.default_rng(0)
     for _ in range(10):
         true_limits = rng.uniform(JOINT_LIMIT_PRIOR[:, 0], JOINT_LIMIT_PRIOR[:, 1])
         belief = IntervalBelief(JOINT_LIMIT_PRIOR)
         for _ in range(5):
-            queries = [
-                JointQuery(joint=int(rng.integers(2)), angle=rng.uniform(-np.pi, np.pi))
-                for _ in range(3)
-            ]
-            data = [
-                QueryResponse(q, model.sample_response(q, true_limits, rng))
-                for q in queries
-            ]
-            new_belief = updater.update(belief, data)
+            base = rng.uniform(-0.3, 0.3, size=(1, 2))
+            actions = np.clip(base + rng.normal(0, 0.05, size=(15, 2)), -0.3, 0.3)
+            new_belief = _execute(belief, true_limits, actions)
+            assert isinstance(new_belief, IntervalBelief)
             assert new_belief.contains(true_limits)
             assert new_belief.get_total_width() <= belief.get_total_width() + 1e-12
             belief = new_belief
 
 
-def test_rejects_invalid_inputs():
-    """Tests that the updater rejects responses that contradict the belief, beliefs
-    where a no would be ambiguous, and other kinds of belief."""
-    updater = JointLimitBeliefUpdater()
+def test_queries_have_no_effect():
+    """Tests that responses to joint queries leave the belief unchanged."""
     prior = IntervalBelief(JOINT_LIMIT_PRIOR)
-    # Every joint can move to 0.
+    data = [
+        QueryResponse(JointQuery(joint=0, angle=1.0), True),
+        QueryResponse(JointQuery(joint=1, angle=-3.0), False),
+    ]
+    assert JointLimitBeliefUpdater().update_from_queries(prior, data) is prior
+
+
+def test_requires_interval_belief():
+    """Tests that the updater rejects other kinds of belief."""
     with pytest.raises(AssertionError):
-        updater.update(prior, [_ask(0, 0.0, False)])
-    # An angle of 0.5 might be below the lower limit or above the upper limit.
-    overlapping = IntervalBelief([[-1.0, 1.0], [0.0, 2.0], [-1.0, 0.0], [0.0, 1.0]])
-    with pytest.raises(AssertionError):
-        updater.update(overlapping, [_ask(0, 0.5, False)])
-    with pytest.raises(AssertionError):
-        updater.update(object(), [])  # type: ignore[arg-type]
+        JointLimitBeliefUpdater().update_from_transition(
+            object(), np.zeros(2), np.zeros(2), np.zeros(2)  # type: ignore[arg-type]
+        )
