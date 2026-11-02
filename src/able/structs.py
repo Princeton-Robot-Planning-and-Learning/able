@@ -55,7 +55,8 @@ class QueryResponse(Generic[QueryType, ResponseType]):
     """A query about the hidden parameters and the environment's response to it.
 
     Each environment defines its own query and response types. Robots learn about the
-    hidden parameters only from these pairs.
+    hidden parameters from these pairs and from the transitions they observe while
+    executing tasks.
     """
 
     query: QueryType
