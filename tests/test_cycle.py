@@ -66,6 +66,9 @@ def test_evaluate():
     assert result.trajectory is not None
     assert len(result.trajectory) == TwoLinkArmModel().horizon
     assert np.isclose(result.total_cost, result.trajectory.total_cost)
+    assert result.success == domain.real_env.check_goal(
+        task, result.trajectory.states[-1]
+    )
     assert result.planning_wall_time > 0
     assert result.planning_stats["num_samples"] > 0
     assert robot.belief is belief
@@ -73,6 +76,7 @@ def test_evaluate():
 
     result = evaluate(robot, task, domain.real_env, Budget(max_iterations=0), rng)
     assert result.failure is not None
+    assert not result.success
     assert result.trajectory is None
     assert result.total_cost == float("inf")
 

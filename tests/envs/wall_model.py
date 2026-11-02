@@ -12,6 +12,7 @@ from able.envs.base import BatchRolloutModel
 from able.structs import Task
 
 ACTION_COST = 0.1
+GOAL_TOLERANCE = 0.25
 
 
 # The goal is a position on the line.
@@ -54,6 +55,14 @@ class WallModel(BatchRolloutModel[WallTask, float, bool]):
         hidden_params: NDArray[np.float64],
     ) -> float:
         return float(np.abs(state - task.goal).sum())
+
+    def check_goal(
+        self,
+        task: WallTask,
+        state: NDArray[np.float64],
+        hidden_params: NDArray[np.float64],
+    ) -> bool:
+        return bool(np.abs(state - task.goal).sum() <= GOAL_TOLERANCE)
 
     def sample_response(
         self, query: float, hidden_params: NDArray[np.float64], rng: np.random.Generator

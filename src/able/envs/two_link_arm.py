@@ -46,8 +46,9 @@ class TwoLinkArmModel(BatchRolloutModel[ArmTask, JointQuery, bool]):
     States are joint angles with shape (2,), actions are joint displacements with
     shape (2,), and hidden parameters are joint limits with shape (4,). Each step
     costs a small penalty on the action magnitude. The terminal cost is the
-    distance from the end effector to the goal. The response to a joint query is
-    True if the angle is within that joint's limits.
+    distance from the end effector to the goal, and an episode succeeds if that
+    distance is at most goal_tolerance. The response to a joint query is True if
+    the angle is within that joint's limits.
     """
 
     def __init__(
@@ -56,8 +57,10 @@ class TwoLinkArmModel(BatchRolloutModel[ArmTask, JointQuery, bool]):
         horizon: int = 15,
         max_joint_displacement: float = 0.3,
         action_cost_weight: float = 0.001,
+        goal_tolerance: float = 0.1,
     ) -> None:
         self.link_lengths = link_lengths
+        self.goal_tolerance = goal_tolerance
         self.max_joint_displacement = max_joint_displacement
         self.action_cost_weight = action_cost_weight
         self._horizon = horizon
@@ -124,6 +127,15 @@ class TwoLinkArmModel(BatchRolloutModel[ArmTask, JointQuery, bool]):
         hidden_params: NDArray[np.float64],
     ) -> float:
         return float(np.linalg.norm(self.forward_kinematics(state) - task.goal))
+
+    def check_goal(
+        self,
+        task: ArmTask,
+        state: NDArray[np.float64],
+        hidden_params: NDArray[np.float64],
+    ) -> bool:
+        distance = np.linalg.norm(self.forward_kinematics(state) - task.goal)
+        return bool(distance <= self.goal_tolerance)
 
     def sample_response(
         self,
@@ -247,6 +259,7 @@ def make_domain(
     num_goals: int = 6,
     edge_probability: float = 0.5,
     true_limits: NDArray[np.float64] | None = None,
+    goal_tolerance: float = 0.1,
 ) -> ArmDomain:
     """Create an arm domain.
 
@@ -255,7 +268,7 @@ def make_domain(
     starts at q = 0.
     """
     rng = np.random.default_rng(seed)
-    model = TwoLinkArmModel()
+    model = TwoLinkArmModel(goal_tolerance=goal_tolerance)
     if true_limits is None:
         true_limits = rng.uniform(JOINT_LIMIT_PRIOR[:, 0], JOINT_LIMIT_PRIOR[:, 1])
     goals = sample_goal_positions(model, true_limits, num_goals, rng, edge_probability)

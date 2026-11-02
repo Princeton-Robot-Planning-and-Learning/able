@@ -42,6 +42,10 @@ def test_simulated_environment():
     with pytest.raises(AssertionError):
         env.step(np.ones(1))
 
+    # The goal check uses the wall model's tolerance of 0.25.
+    assert env.check_goal(task, np.array([1.8]))
+    assert not env.check_goal(task, np.array([1.5]))
+
     # Resetting starts a new episode.
     state = env.reset(task)
     assert np.allclose(state, [0.0])
