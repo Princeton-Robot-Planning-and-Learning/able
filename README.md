@@ -25,3 +25,17 @@ Each run writes its resolved `config.yaml`, `eval_results.csv` (one row per eval
 ```
 python experiments/analysis/plot_cycle_results.py --results_dir <directory containing the runs>
 ```
+
+### Videos
+
+Recording is off by default. To record a video of each stage of each cycle (sleep, information gathering, task execution, and evaluation) in the run directory's `videos/` folder:
+
+```
+python experiments/run_single_experiment.py approach=dreaming num_cycles=3 record_videos=true
+```
+
+Rendering happens after each stage ends, so it does not affect planning or sleep times, but it adds a few seconds per cycle. Each cycle is about 40 seconds of video at 10 frames per second. To record only some cycles, set `video_cycles`, for example `video_cycles=[0,5,10]`. To combine a run's stage videos into one video (`videos/full_pipeline.mp4`) with a title card before each stage:
+
+```
+python experiments/combine_videos.py --run_dir <run directory>
+```
