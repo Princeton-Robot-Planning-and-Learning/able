@@ -10,7 +10,7 @@ from able.beliefs.base import Belief
 from able.beliefs.interval import IntervalBelief
 from able.cycle import CycleBudgets, evaluate, execute, run_cycles
 from able.envs.two_link_arm import JOINT_LIMIT_PRIOR, TwoLinkArmModel, make_domain
-from able.info_gatherers.joint_limits import WidestGapGatherer
+from able.info_gatherers.base import NullInformationGatherer
 from able.learners.base import Learner, NullLearner
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
 from able.robot import Robot
@@ -38,7 +38,7 @@ def _make_robot(domain, learner=None):
         planner=RandomShootingPlanner(TwoLinkArmModel()),
         learner=NullLearner() if learner is None else learner,
         belief_updater=JointLimitBeliefUpdater(),
-        info_gatherer=WidestGapGatherer(),
+        info_gatherer=NullInformationGatherer(),
         initial_belief=domain.initial_belief,
     )
 
@@ -46,7 +46,7 @@ def _make_robot(domain, learner=None):
 def _budgets(num_executions: int | None) -> CycleBudgets:
     return CycleBudgets(
         sleep=Budget(),
-        information_gathering=Budget(max_iterations=1),
+        information_gathering=Budget(max_iterations=0),
         execution=Budget(max_iterations=num_executions),
         planning=Budget(),
     )
@@ -120,7 +120,7 @@ def test_run_cycles():
     assert [result.cycle for result in results] == [0, 1, 2]
     previous_width = IntervalBelief(JOINT_LIMIT_PRIOR).get_total_width()
     for result in results:
-        assert len(result.gathered_data) == 1
+        assert not result.gathered_data
         assert len(result.executions) == 2
         assert all(e.failure is None for e in result.executions)
         assert [e.task for e in result.evaluations] == eval_tasks

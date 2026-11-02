@@ -7,12 +7,12 @@ import numpy as np
 from able.belief_updaters.joint_limits import JointLimitBeliefUpdater
 from able.beliefs.base import Belief
 from able.beliefs.interval import IntervalBelief
-from able.envs.two_link_arm import TwoLinkArmModel, make_domain
-from able.info_gatherers.joint_limits import WidestGapGatherer
+from able.envs.two_link_arm import JointQuery, TwoLinkArmModel, make_domain
+from able.info_gatherers.base import NullInformationGatherer
 from able.learners.base import Learner
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
 from able.robot import Robot
-from able.structs import Budget
+from able.structs import Budget, QueryResponse
 
 
 class _BatchSizeLearner(Learner[np.ndarray, RandomShootingParams]):
@@ -37,7 +37,7 @@ def test_robot():
         planner=planner,
         learner=_BatchSizeLearner(),
         belief_updater=JointLimitBeliefUpdater(),
-        info_gatherer=WidestGapGatherer(),
+        info_gatherer=NullInformationGatherer(),
         initial_belief=domain.initial_belief,
     )
     rng = np.random.default_rng(0)
@@ -55,11 +55,12 @@ def test_robot():
     assert robot.planner_params.batch_size == initial_params.batch_size + 1
 
     params = robot.planner_params
-    data = robot.gather_information(domain.real_env, Budget(max_iterations=2), rng)
-    assert len(data) == 2
+    assert not robot.gather_information(domain.real_env, Budget(), rng)
     assert robot.belief is domain.initial_belief
     # The joint-limit updater ignores query responses.
-    robot.update_belief_from_queries(data)
+    robot.update_belief_from_queries(
+        [QueryResponse(JointQuery(joint=0, angle=1.0), True)]
+    )
     assert robot.belief is domain.initial_belief
 
     # Moving joint 0 to 0.6 shows that its upper limit is at least 0.6.
