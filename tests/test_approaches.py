@@ -2,7 +2,11 @@
 
 import numpy as np
 
-from able.approaches import make_dreaming_robot, make_scratch_robot
+from able.approaches import (
+    make_current_belief_robot,
+    make_dreaming_robot,
+    make_scratch_robot,
+)
 from able.envs.two_link_arm import make_domain
 from able.structs import Budget
 
@@ -27,6 +31,15 @@ def test_make_dreaming_robot():
         execution_budget=Budget(max_iterations=1),
         planning_budget=Budget(),
     )
+    assert not robot.planner_params.warm_starts
+    robot.sleep(Budget(max_iterations=1), np.random.default_rng(0))
+    assert robot.planner_params.warm_starts
+
+
+def test_make_current_belief_robot():
+    """Tests that the current-belief robot caches plans while it sleeps."""
+    domain = make_domain(seed=0)
+    robot = make_current_belief_robot(domain, planning_budget=Budget())
     assert not robot.planner_params.warm_starts
     robot.sleep(Budget(max_iterations=1), np.random.default_rng(0))
     assert robot.planner_params.warm_starts

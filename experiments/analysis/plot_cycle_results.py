@@ -13,6 +13,7 @@ from analysis_utils import combine_results_csvs, summarize_over_seeds
 from matplotlib import pyplot as plt
 
 APPROACH_TO_DISPLAY_NAME = {
+    "current_belief": "Current belief only",
     "dreaming": "Dreaming",
     "scratch": "Plan from scratch",
 }
@@ -22,8 +23,9 @@ APPROACH_TO_DISPLAY_NAME = {
 APPROACH_TO_COLOR = {
     "dreaming": "#2a78d6",
     "scratch": "#eb6834",
+    "current_belief": "#1baf7a",
 }
-EXTRA_COLORS = ["#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
+EXTRA_COLORS = ["#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
 
 ENV_TO_DISPLAY_NAME = {
     "two_link_arm": "Two-link arm",
