@@ -1,8 +1,6 @@
 """Learning warm starts for random shooting by imagining future beliefs."""
 
-import dataclasses
 import time
-from typing import Hashable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -15,21 +13,15 @@ from able.envs.simulated import SimulatedEnvironment
 from able.envs.two_link_arm import ArmTask, JointQuery, TwoLinkArmModel
 from able.episodes import run_episode
 from able.info_gatherers.base import InformationGatherer
-from able.learners.base import Learner
-from able.planners.random_shooting import (
-    RandomShootingParams,
-    RandomShootingPlanner,
-    WarmStart,
-    add_warm_start,
-    get_warm_start_key,
-)
+from able.learners.plan_caching import PlanCachingLearner
+from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
 from able.recording.base import CycleRecorder, NullRecorder
 from able.structs import Budget, PlanningFailure
 
 ArmArray = NDArray[np.float64]
 
 
-class DreamingLearner(Learner[ArmArray, RandomShootingParams]):
+class DreamingLearner(PlanCachingLearner):
     """Caches plans for beliefs the robot may hold when it is next evaluated.
 
     One dream has three steps:
@@ -66,49 +58,26 @@ class DreamingLearner(Learner[ArmArray, RandomShootingParams]):
             execution_budget.max_iterations is not None
             or execution_budget.max_wall_time is not None
         ), "Imagined task execution needs a finite budget"
+        super().__init__(
+            task_distribution, planner, planning_budget, max_warm_starts_per_key
+        )
         self._env_model = env_model
-        self._task_distribution = task_distribution
-        self._planner = planner
         self._belief_updater = belief_updater
         self._info_gatherer = info_gatherer
         self._gathering_budget = gathering_budget
         self._execution_budget = execution_budget
-        self._planning_budget = planning_budget
-        self._max_warm_starts_per_key = max_warm_starts_per_key
         self._recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] = (
             NullRecorder() if recorder is None else recorder
         )
 
-    def learn(
+    def _get_training_belief(
         self,
+        iteration: int,
         belief: Belief[ArmArray],
         params: RandomShootingParams,
-        budget: Budget,
         rng: np.random.Generator,
-    ) -> RandomShootingParams:
-        """Dream until the budget runs out and return parameters with the new
-        warm starts."""
-        assert (
-            budget.max_iterations is not None or budget.max_wall_time is not None
-        ), "Dreaming needs a finite budget"
-        warm_starts: dict[Hashable, tuple[WarmStart, ...]] = dict(params.warm_starts)
-        start_time = time.perf_counter()
-        num_dreams = 0
-        while not budget.is_exhausted(time.perf_counter() - start_time, num_dreams):
-            num_dreams += 1
-            dream_params = dataclasses.replace(params, warm_starts=dict(warm_starts))
-            self._dream(num_dreams, belief, dream_params, warm_starts, rng)
-        return dataclasses.replace(params, warm_starts=warm_starts)
-
-    def _dream(
-        self,
-        dream_number: int,
-        belief: Belief[ArmArray],
-        params: RandomShootingParams,
-        warm_starts: dict[Hashable, tuple[WarmStart, ...]],
-        rng: np.random.Generator,
-    ) -> None:
-        label = f"Dream {dream_number}"
+    ) -> IntervalBelief:
+        label = f"Dream {iteration}"
         hypothesis = belief.sample(rng)
         imagined_env = SimulatedEnvironment(self._env_model, hypothesis, rng)
         imagined_belief = self._imagine_until_evaluation(
@@ -118,21 +87,7 @@ class DreamingLearner(Learner[ArmArray, RandomShootingParams]):
         self._recorder.record_belief(
             f"{label} · imagined belief", imagined_belief, hypothesis
         )
-        for task in self._task_distribution.get_tasks():
-            try:
-                policy = self._planner.plan(
-                    task, imagined_belief, params, self._planning_budget, rng
-                )
-            except PlanningFailure:
-                continue
-            key = get_warm_start_key(task, imagined_belief, params.key_resolution)
-            add_warm_start(
-                warm_starts,
-                key,
-                policy.get_planning_stats()["expected_cost"],
-                np.array(policy.actions),
-                self._max_warm_starts_per_key,
-            )
+        return imagined_belief
 
     def _imagine_until_evaluation(
         self,

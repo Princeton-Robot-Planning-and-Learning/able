@@ -8,6 +8,6 @@ set -e
 cd "$(dirname "$0")/.."
 SEEDS="${SEEDS:-0,1,2,3,4}"
 SWEEP_DIR="logs/comparison/$(date +%Y-%m-%d_%H-%M-%S)"
-python experiments/run_single_experiment.py -m approach=scratch,dreaming \
+python experiments/run_single_experiment.py -m approach=scratch,current_belief,dreaming \
     seed="$SEEDS" hydra.sweep.dir="$SWEEP_DIR" "$@"
 python experiments/analysis/plot_cycle_results.py --results_dir "$SWEEP_DIR"
