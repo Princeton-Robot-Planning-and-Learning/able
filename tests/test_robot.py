@@ -12,7 +12,7 @@ from able.info_gatherers.base import NullInformationGatherer
 from able.learners.base import Learner
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
 from able.robot import Robot
-from able.structs import Budget, QueryResponse
+from able.structs import Budget, QueryResponse, Task, Trajectory
 
 
 class _BatchSizeLearner(Learner[np.ndarray, RandomShootingParams]):
@@ -27,6 +27,18 @@ class _BatchSizeLearner(Learner[np.ndarray, RandomShootingParams]):
     ) -> RandomShootingParams:
         """Return parameters with a larger batch size."""
         return dataclasses.replace(params, batch_size=params.batch_size + 1)
+
+
+class _ObservingLearner(_BatchSizeLearner):
+    """Records every execution it observes."""
+
+    def __init__(self) -> None:
+        self.observed: list[tuple[Task, Trajectory, Belief[np.ndarray]]] = []
+
+    def observe_execution(
+        self, task: Task, trajectory: Trajectory, belief: Belief[np.ndarray]
+    ) -> None:
+        self.observed.append((task, trajectory, belief))
 
 
 def test_robot():
@@ -70,4 +82,28 @@ def test_robot():
     belief = robot.belief
     assert isinstance(belief, IntervalBelief)
     assert belief.intervals[1, 0] == 0.6
+    assert robot.planner_params is params
+
+
+def test_robot_observe_execution():
+    """Tests that the robot passes executions to its learner with its current
+    belief, without changing its belief or parameters."""
+    domain = make_domain(seed=0)
+    learner = _ObservingLearner()
+    robot = Robot(
+        planner=RandomShootingPlanner(TwoLinkArmModel()),
+        learner=learner,
+        belief_updater=JointLimitBeliefUpdater(),
+        info_gatherer=NullInformationGatherer(),
+        initial_belief=domain.initial_belief,
+    )
+    params = robot.planner_params
+    task = domain.task_distribution.sample(np.random.default_rng(0))
+    trajectory = Trajectory(states=(np.zeros(2),), actions=(), costs=())
+    robot.observe_execution(task, trajectory)
+    assert len(learner.observed) == 1
+    observed_task, observed_trajectory, observed_belief = learner.observed[0]
+    assert observed_task is task
+    assert observed_trajectory is trajectory
+    assert observed_belief is robot.belief is domain.initial_belief
     assert robot.planner_params is params

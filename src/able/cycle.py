@@ -172,8 +172,8 @@ def execute(
 
     The policy was planned under the belief at the start of the episode and does
     not see the updates. If the policy fails partway, the belief keeps the updates
-    from the steps already taken. The recorder, if given, sees the episode under
-    the label.
+    from the steps already taken. After a complete episode, the robot's learner
+    observes it. The recorder, if given, sees the episode under the label.
     """
     recorder = NullRecorder() if recorder is None else recorder
     recorder.start_episode(label, task, robot.belief)
@@ -183,6 +183,8 @@ def execute(
         recorder.record_step(next_state, robot.belief)
 
     result = _plan_and_run(robot, task, env, planning_budget, rng, on_step)
+    if result.trajectory is not None:
+        robot.observe_execution(task, result.trajectory)
     recorder.end_episode(_describe_outcome(result))
     return result
 

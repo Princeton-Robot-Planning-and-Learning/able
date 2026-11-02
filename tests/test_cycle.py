@@ -15,7 +15,7 @@ from able.learners.base import Learner, NullLearner
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
 from able.recording.base import Stage
 from able.robot import Robot
-from able.structs import Budget
+from able.structs import Budget, Task, Trajectory
 from tests.recording.event_recorder import EventRecorder
 
 TRUE_LIMITS = np.array([-1.2, 1.4, -2.0, 0.9])
@@ -33,6 +33,18 @@ class _OneBatchLearner(Learner[np.ndarray, RandomShootingParams]):
     ) -> RandomShootingParams:
         """Return parameters with one batch."""
         return dataclasses.replace(params, max_batches=1)
+
+
+class _ObservingLearner(NullLearner):
+    """Records every execution it observes."""
+
+    def __init__(self) -> None:
+        self.observed: list[tuple[Task, Trajectory, Belief[np.ndarray]]] = []
+
+    def observe_execution(
+        self, task: Task, trajectory: Trajectory, belief: Belief[np.ndarray]
+    ) -> None:
+        self.observed.append((task, trajectory, belief))
 
 
 def _make_robot(domain, learner=None):
@@ -149,6 +161,42 @@ def test_run_cycles():
             budgets=_budgets(num_executions=None),
             rng=rng,
         )
+
+
+def test_learner_observes_executions():
+    """Tests that the learner observes each executed task with the belief after
+    it, and never observes evaluation tasks or planning failures."""
+    domain = make_domain(seed=0, edge_probability=1.0, true_limits=TRUE_LIMITS)
+    learner = _ObservingLearner()
+    robot = _make_robot(domain, learner)
+    rng = np.random.default_rng(0)
+    task = domain.task_distribution.sample(rng)
+
+    result = execute(robot, task, domain.real_env, Budget(), rng)
+    assert len(learner.observed) == 1
+    observed_task, trajectory, belief = learner.observed[0]
+    assert observed_task is task
+    assert trajectory is result.trajectory
+    assert belief is robot.belief
+    assert belief is not domain.initial_belief
+
+    execute(robot, task, domain.real_env, Budget(max_iterations=0), rng)
+    evaluate(robot, task, domain.real_env, Budget(), rng)
+    assert len(learner.observed) == 1
+
+    results = run_cycles(
+        robot,
+        domain.real_env,
+        domain.task_distribution,
+        [task],
+        num_cycles=2,
+        budgets=_budgets(num_executions=2),
+        rng=rng,
+    )
+    executions = [e for r in results for e in r.executions]
+    assert len(learner.observed) == 1 + len(executions) == 5
+    for (_, trajectory, _), execution in zip(learner.observed[1:], executions):
+        assert trajectory is execution.trajectory
 
 
 def test_executed_tasks_do_not_depend_on_planning():

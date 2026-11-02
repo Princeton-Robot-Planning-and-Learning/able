@@ -21,6 +21,7 @@ from able.structs import (
     ResponseType,
     StateType,
     TaskType,
+    Trajectory,
 )
 
 
@@ -82,6 +83,12 @@ class Robot(
     ) -> Policy[StateType, ActType]:
         """Plan for the task under the current belief and planner parameters."""
         return self._planner.plan(task, self._belief, self._planner_params, budget, rng)
+
+    def observe_execution(
+        self, task: TaskType, trajectory: Trajectory[StateType, ActType]
+    ) -> None:
+        """Pass an executed task to the learner, with the current belief."""
+        self._learner.observe_execution(task, trajectory, self._belief)
 
     def gather_information(
         self,
