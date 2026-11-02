@@ -23,6 +23,7 @@ from able.planners.random_shooting import (
     add_warm_start,
     get_warm_start_key,
 )
+from able.recording.base import CycleRecorder, NullRecorder
 from able.structs import Budget, PlanningFailure
 
 ArmArray = NDArray[np.float64]
@@ -59,6 +60,7 @@ class DreamingLearner(Learner[ArmArray, RandomShootingParams]):
         execution_budget: Budget,
         planning_budget: Budget,
         max_warm_starts_per_key: int = 4,
+        recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
     ) -> None:
         assert (
             execution_budget.max_iterations is not None
@@ -73,6 +75,9 @@ class DreamingLearner(Learner[ArmArray, RandomShootingParams]):
         self._execution_budget = execution_budget
         self._planning_budget = planning_budget
         self._max_warm_starts_per_key = max_warm_starts_per_key
+        self._recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] = (
+            NullRecorder() if recorder is None else recorder
+        )
 
     def learn(
         self,
@@ -92,22 +97,27 @@ class DreamingLearner(Learner[ArmArray, RandomShootingParams]):
         while not budget.is_exhausted(time.perf_counter() - start_time, num_dreams):
             num_dreams += 1
             dream_params = dataclasses.replace(params, warm_starts=dict(warm_starts))
-            self._dream(belief, dream_params, warm_starts, rng)
+            self._dream(num_dreams, belief, dream_params, warm_starts, rng)
         return dataclasses.replace(params, warm_starts=warm_starts)
 
     def _dream(
         self,
+        dream_number: int,
         belief: Belief[ArmArray],
         params: RandomShootingParams,
         warm_starts: dict[Hashable, tuple[WarmStart, ...]],
         rng: np.random.Generator,
     ) -> None:
+        label = f"Dream {dream_number}"
         hypothesis = belief.sample(rng)
         imagined_env = SimulatedEnvironment(self._env_model, hypothesis, rng)
         imagined_belief = self._imagine_until_evaluation(
-            belief, params, imagined_env, rng
+            label, belief, params, imagined_env, rng
         )
         assert isinstance(imagined_belief, IntervalBelief)
+        self._recorder.record_belief(
+            f"{label} · imagined belief", imagined_belief, hypothesis
+        )
         for task in self._task_distribution.get_tasks():
             try:
                 policy = self._planner.plan(
@@ -126,6 +136,7 @@ class DreamingLearner(Learner[ArmArray, RandomShootingParams]):
 
     def _imagine_until_evaluation(
         self,
+        label: str,
         belief: Belief[ArmArray],
         params: RandomShootingParams,
         env: SimulatedEnvironment,
@@ -133,14 +144,17 @@ class DreamingLearner(Learner[ArmArray, RandomShootingParams]):
     ) -> Belief[ArmArray]:
         """Imagine information gathering and task execution in the environment and
         return the resulting belief."""
+        hypothesis = env.hidden_params
         data = self._info_gatherer.gather(belief, env, self._gathering_budget, rng)
         belief = self._belief_updater.update_from_queries(belief, data)
+        self._recorder.record_queries(data, belief, hypothesis)
 
         def update(state: ArmArray, action: ArmArray, next_state: ArmArray) -> None:
             nonlocal belief
             belief = self._belief_updater.update_from_transition(
                 belief, state, action, next_state
             )
+            self._recorder.record_step(next_state, belief)
 
         start_time = time.perf_counter()
         num_tasks = 0
@@ -149,11 +163,19 @@ class DreamingLearner(Learner[ArmArray, RandomShootingParams]):
         ):
             num_tasks += 1
             task = self._task_distribution.sample(rng)
+            self._recorder.start_episode(
+                f"{label} · imagined task {num_tasks}", task, belief, hypothesis
+            )
             try:
                 policy = self._planner.plan(
                     task, belief, params, self._planning_budget, rng
                 )
-                run_episode(env, task, policy, on_step=update)
+                trajectory = run_episode(env, task, policy, on_step=update)
             except PlanningFailure:
+                self._recorder.end_episode("planning failed")
                 continue
+            success = env.check_goal(task, trajectory.states[-1])
+            self._recorder.end_episode(
+                "imagined success" if success else "imagined failure"
+            )
         return belief

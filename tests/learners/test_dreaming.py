@@ -14,6 +14,7 @@ from able.learners.dreaming import DreamingLearner
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
 from able.robot import Robot
 from able.structs import Budget
+from tests.recording.event_recorder import EventRecorder
 
 
 def _make_robot(
@@ -146,3 +147,41 @@ def test_dreaming_reduces_planning_effort():
                 null_samples.extend(samples)
     assert np.mean(hits) > 0.5
     assert np.mean(dream_samples) < 0.7 * np.mean(null_samples)
+
+
+def test_dreams_are_recorded():
+    """Tests that each dream reports its imagined execution and belief."""
+    domain = make_domain(seed=0)
+    assert isinstance(domain.task_distribution, FiniteTaskDistribution)
+    model = TwoLinkArmModel()
+    planner = RandomShootingPlanner(model)
+    recorder = EventRecorder()
+    learner = DreamingLearner(
+        model,
+        domain.task_distribution,
+        planner,
+        JointLimitBeliefUpdater(),
+        NullInformationGatherer(),
+        gathering_budget=Budget(max_iterations=0),
+        execution_budget=Budget(max_iterations=1),
+        planning_budget=Budget(),
+        recorder=recorder,
+    )
+    learner.learn(
+        domain.initial_belief,
+        planner.get_default_params(),
+        Budget(max_iterations=2),
+        np.random.default_rng(0),
+    )
+    episodes = [e for e in recorder.events if e[0] == "start_episode"]
+    assert episodes == [
+        ("start_episode", "Dream 1 · imagined task 1", True),
+        ("start_episode", "Dream 2 · imagined task 1", True),
+    ]
+    beliefs = [e for e in recorder.events if e[0] == "record_belief"]
+    assert beliefs == [
+        ("record_belief", "Dream 1 · imagined belief", True),
+        ("record_belief", "Dream 2 · imagined belief", True),
+    ]
+    outcomes = {e[1] for e in recorder.events if e[0] == "end_episode"}
+    assert outcomes <= {"imagined success", "imagined failure", "planning failed"}

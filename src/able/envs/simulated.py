@@ -42,6 +42,12 @@ class SimulatedEnvironment(
         self._state: StateType | None = None
         self._num_steps = 0
 
+    @property
+    def hidden_params(self) -> HiddenParamsType:
+        """The hidden parameters, for the experiment harness only (for example, to
+        draw the truth in videos)."""
+        return self._hidden_params
+
     def reset(self, task: TaskType) -> StateType:
         self._task = task
         self._state = task.initial_state

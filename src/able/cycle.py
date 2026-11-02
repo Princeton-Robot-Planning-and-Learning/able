@@ -10,6 +10,7 @@ from able.beliefs.base import Belief
 from able.envs.base import Environment, TaskDistribution
 from able.episodes import run_episode
 from able.policies.base import Policy
+from able.recording.base import CycleRecorder, NullRecorder, Stage
 from able.robot import Robot
 from able.structs import (
     ActType,
@@ -163,17 +164,27 @@ def execute(
     env: Environment[StateType, ActType, TaskType, QueryType, ResponseType],
     planning_budget: Budget,
     rng: np.random.Generator,
+    recorder: CycleRecorder[StateType, TaskType, HiddenParamsType] | None = None,
+    label: str = "Executed task",
 ) -> EpisodeResult[StateType, ActType, TaskType]:
     """Plan for the task and execute the policy, updating the robot's belief after
     every step.
 
     The policy was planned under the belief at the start of the episode and does
     not see the updates. If the policy fails partway, the belief keeps the updates
-    from the steps already taken.
+    from the steps already taken. The recorder, if given, sees the episode under
+    the label.
     """
-    return _plan_and_run(
-        robot, task, env, planning_budget, rng, robot.update_belief_from_transition
-    )
+    recorder = NullRecorder() if recorder is None else recorder
+    recorder.start_episode(label, task, robot.belief)
+
+    def on_step(state: StateType, action: ActType, next_state: StateType) -> None:
+        robot.update_belief_from_transition(state, action, next_state)
+        recorder.record_step(next_state, robot.belief)
+
+    result = _plan_and_run(robot, task, env, planning_budget, rng, on_step)
+    recorder.end_episode(_describe_outcome(result))
+    return result
 
 
 def evaluate(
@@ -190,12 +201,31 @@ def evaluate(
     env: Environment[StateType, ActType, TaskType, QueryType, ResponseType],
     planning_budget: Budget,
     rng: np.random.Generator,
+    recorder: CycleRecorder[StateType, TaskType, HiddenParamsType] | None = None,
+    label: str = "Evaluation task",
 ) -> EpisodeResult[StateType, ActType, TaskType]:
     """Plan for the task and execute the policy for one episode.
 
-    Nothing from the evaluation is passed back to the robot.
+    Nothing from the evaluation is passed back to the robot. The recorder, if
+    given, sees the episode under the label.
     """
-    return _plan_and_run(robot, task, env, planning_budget, rng, on_step=None)
+    recorder = NullRecorder() if recorder is None else recorder
+    recorder.start_episode(label, task, robot.belief)
+
+    def on_step(state: StateType, action: ActType, next_state: StateType) -> None:
+        del state, action  # unused because the belief does not change
+        recorder.record_step(next_state, robot.belief)
+
+    result = _plan_and_run(robot, task, env, planning_budget, rng, on_step)
+    recorder.end_episode(_describe_outcome(result))
+    return result
+
+
+def _describe_outcome(result: EpisodeResult) -> str:
+    if result.failure is not None:
+        return "planning failed"
+    outcome = "success" if result.success else "failure"
+    return f"{outcome}, planning time {1000 * result.planning_wall_time:.1f} ms"
 
 
 def run_cycles(
@@ -214,6 +244,7 @@ def run_cycles(
     num_cycles: int,
     budgets: CycleBudgets,
     rng: np.random.Generator,
+    recorder: CycleRecorder[StateType, TaskType, HiddenParamsType] | None = None,
 ) -> list[
     CycleResult[StateType, ActType, TaskType, HiddenParamsType, QueryType, ResponseType]
 ]:
@@ -226,33 +257,51 @@ def run_cycles(
 
     Sleep, information gathering, task sampling, execution, and evaluation each
     draw from their own random stream. Robots that plan differently therefore
-    execute the same sequence of tasks.
+    execute the same sequence of tasks. The recorder, if given, sees every stage.
     """
     assert (
         budgets.execution.max_iterations is not None
         or budgets.execution.max_wall_time is not None
     ), "Task execution needs a finite budget"
+    recorder = NullRecorder() if recorder is None else recorder
     sleep_rng, gather_rng, task_rng, execution_rng, eval_rng = rng.spawn(5)
     results = []
     for cycle in range(num_cycles):
+        recorder.start_stage(cycle, Stage.SLEEP)
         start_time = time.perf_counter()
         robot.sleep(budgets.sleep, sleep_rng)
         sleep_wall_time = time.perf_counter() - start_time
+        recorder.end_stage()
+
+        recorder.start_stage(cycle, Stage.QUERIES)
         data = robot.gather_information(env, budgets.information_gathering, gather_rng)
         robot.update_belief_from_queries(data)
+        recorder.record_queries(data, robot.belief)
+        recorder.end_stage()
+
+        recorder.start_stage(cycle, Stage.EXECUTION)
         executions: list[EpisodeResult[StateType, ActType, TaskType]] = []
         start_time = time.perf_counter()
         while not budgets.execution.is_exhausted(
             time.perf_counter() - start_time, len(executions)
         ):
             task = task_distribution.sample(task_rng)
+            label = f"Executed task {len(executions) + 1}"
             executions.append(
-                execute(robot, task, env, budgets.planning, execution_rng)
+                execute(
+                    robot, task, env, budgets.planning, execution_rng, recorder, label
+                )
             )
-        evaluations = [
-            evaluate(robot, task, env, budgets.planning, eval_rng)
-            for task in eval_tasks
-        ]
+        recorder.end_stage()
+
+        recorder.start_stage(cycle, Stage.EVALUATION)
+        evaluations = []
+        for i, task in enumerate(eval_tasks):
+            label = f"Evaluation task {i + 1} of {len(eval_tasks)}"
+            evaluations.append(
+                evaluate(robot, task, env, budgets.planning, eval_rng, recorder, label)
+            )
+        recorder.end_stage()
         results.append(
             CycleResult(
                 cycle=cycle,
