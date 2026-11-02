@@ -8,7 +8,15 @@ import numpy as np
 from numpy.typing import NDArray
 
 from able.beliefs.base import Belief
-from able.structs import ActType, HiddenParamsType, StateType, StepResult, TaskType
+from able.structs import (
+    ActType,
+    HiddenParamsType,
+    QueryType,
+    ResponseType,
+    StateType,
+    StepResult,
+    TaskType,
+)
 
 
 class TaskDistribution(ABC, Generic[TaskType]):
@@ -34,11 +42,16 @@ class FiniteTaskDistribution(TaskDistribution[TaskType]):
         return self._tasks[rng.integers(len(self._tasks))]
 
 
-class EnvironmentModel(ABC, Generic[StateType, ActType, TaskType, HiddenParamsType]):
+class EnvironmentModel(
+    ABC,
+    Generic[StateType, ActType, TaskType, HiddenParamsType, QueryType, ResponseType],
+):
     """The robot's model of the environment, known except for the hidden parameters.
 
-    Every episode lasts exactly `horizon` steps. The total cost of an episode is the
-    sum of its step costs plus the terminal cost of its final state.
+    The robot interacts with the environment in two ways. It solves tasks in
+    episodes, and it asks queries about the hidden parameters. Every episode lasts
+    exactly `horizon` steps, and the total cost of an episode is the sum of its step
+    costs plus the terminal cost of its final state.
     """
 
     @property
@@ -73,10 +86,24 @@ class EnvironmentModel(ABC, Generic[StateType, ActType, TaskType, HiddenParamsTy
     ) -> float:
         """The cost of ending an episode in the state."""
 
+    @abstractmethod
+    def sample_response(
+        self,
+        query: QueryType,
+        hidden_params: HiddenParamsType,
+        rng: np.random.Generator,
+    ) -> ResponseType:
+        """Sample the environment's response to a query."""
+
 
 class BatchRolloutModel(
     EnvironmentModel[
-        NDArray[np.float64], NDArray[np.float64], TaskType, NDArray[np.float64]
+        NDArray[np.float64],
+        NDArray[np.float64],
+        TaskType,
+        NDArray[np.float64],
+        QueryType,
+        ResponseType,
     ]
 ):
     """A model that simulates many action sequences under many hidden parameter
@@ -131,8 +158,11 @@ class BatchRolloutModel(
         return np.zeros(len(hidden_params))
 
 
-class Environment(ABC, Generic[StateType, ActType, TaskType]):
-    """An environment whose hidden parameters are fixed and not accessible."""
+class Environment(ABC, Generic[StateType, ActType, TaskType, QueryType, ResponseType]):
+    """An environment whose hidden parameters are fixed and not accessible.
+
+    Asking a query does not affect the current episode.
+    """
 
     @abstractmethod
     def reset(self, task: TaskType) -> StateType:
@@ -142,9 +172,15 @@ class Environment(ABC, Generic[StateType, ActType, TaskType]):
     def step(self, action: ActType) -> StepResult[StateType]:
         """Take one action in the current episode."""
 
+    @abstractmethod
+    def ask(self, query: QueryType) -> ResponseType:
+        """Ask a query about the hidden parameters and return the response."""
+
 
 @dataclass(frozen=True)
-class Domain(Generic[StateType, ActType, TaskType, HiddenParamsType]):
+class Domain(
+    Generic[StateType, ActType, TaskType, HiddenParamsType, QueryType, ResponseType]
+):
     """One problem instance for an experiment.
 
     The robot receives the environment model, the task distribution, and the
@@ -152,7 +188,9 @@ class Domain(Generic[StateType, ActType, TaskType, HiddenParamsType]):
     holds the true hidden parameters.
     """
 
-    env_model: EnvironmentModel[StateType, ActType, TaskType, HiddenParamsType]
+    env_model: EnvironmentModel[
+        StateType, ActType, TaskType, HiddenParamsType, QueryType, ResponseType
+    ]
     task_distribution: TaskDistribution[TaskType]
     initial_belief: Belief[HiddenParamsType]
-    real_env: Environment[StateType, ActType, TaskType]
+    real_env: Environment[StateType, ActType, TaskType, QueryType, ResponseType]

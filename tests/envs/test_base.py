@@ -66,3 +66,5 @@ def test_domain():
         real_env=SimulatedEnvironment(model, true_wall, np.random.default_rng(0)),
     )
     assert domain.real_env.reset(task) is task.initial_state
+    assert domain.real_env.ask(1.0)
+    assert not domain.real_env.ask(2.0)

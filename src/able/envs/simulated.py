@@ -5,12 +5,20 @@ from typing import Generic
 import numpy as np
 
 from able.envs.base import Environment, EnvironmentModel
-from able.structs import ActType, HiddenParamsType, StateType, StepResult, TaskType
+from able.structs import (
+    ActType,
+    HiddenParamsType,
+    QueryType,
+    ResponseType,
+    StateType,
+    StepResult,
+    TaskType,
+)
 
 
 class SimulatedEnvironment(
-    Environment[StateType, ActType, TaskType],
-    Generic[StateType, ActType, TaskType, HiddenParamsType],
+    Environment[StateType, ActType, TaskType, QueryType, ResponseType],
+    Generic[StateType, ActType, TaskType, HiddenParamsType, QueryType, ResponseType],
 ):
     """Simulates an environment model with fixed hidden parameters.
 
@@ -21,7 +29,9 @@ class SimulatedEnvironment(
 
     def __init__(
         self,
-        model: EnvironmentModel[StateType, ActType, TaskType, HiddenParamsType],
+        model: EnvironmentModel[
+            StateType, ActType, TaskType, HiddenParamsType, QueryType, ResponseType
+        ],
         hidden_params: HiddenParamsType,
         rng: np.random.Generator,
     ) -> None:
@@ -57,3 +67,6 @@ class SimulatedEnvironment(
             )
         self._state = next_state
         return StepResult(state=next_state, cost=cost, terminated=terminated)
+
+    def ask(self, query: QueryType) -> ResponseType:
+        return self._model.sample_response(query, self._hidden_params, self._rng)

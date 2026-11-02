@@ -21,6 +21,10 @@ def test_simulated_environment():
 
     result = env.step(np.ones(1))
     assert np.allclose(result.state, [1.0])
+
+    # Queries are answered with the hidden wall position and leave the episode alone.
+    assert env.ask(1.5)
+    assert not env.ask(1.6)
     assert np.isclose(result.cost, ACTION_COST)
     assert not result.terminated
 

@@ -1,7 +1,8 @@
 """A one-dimensional environment model used in tests.
 
 A point moves along a line toward a goal, and a wall at an unknown position stops it
-from moving past the wall. The hidden parameter is the wall's position.
+from moving past the wall. The hidden parameter is the wall's position. The robot can
+ask whether the point can reach a position, and the response is yes or no.
 """
 
 import numpy as np
@@ -17,7 +18,7 @@ ACTION_COST = 0.1
 WallTask = Task[NDArray[np.float64], float]
 
 
-class WallModel(BatchRolloutModel[WallTask]):
+class WallModel(BatchRolloutModel[WallTask, float, bool]):
     """States, actions, and hidden parameters all have shape (1,)."""
 
     def __init__(self, horizon: int = 3) -> None:
@@ -53,6 +54,11 @@ class WallModel(BatchRolloutModel[WallTask]):
         hidden_params: NDArray[np.float64],
     ) -> float:
         return float(np.abs(state - task.goal).sum())
+
+    def sample_response(
+        self, query: float, hidden_params: NDArray[np.float64], rng: np.random.Generator
+    ) -> bool:
+        return bool(query <= hidden_params[0])
 
     def rollout_batch(
         self,
