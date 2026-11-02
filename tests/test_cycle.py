@@ -13,8 +13,10 @@ from able.envs.two_link_arm import JOINT_LIMIT_PRIOR, TwoLinkArmModel, make_doma
 from able.info_gatherers.base import NullInformationGatherer
 from able.learners.base import Learner, NullLearner
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
+from able.recording.base import Stage
 from able.robot import Robot
 from able.structs import Budget
+from tests.recording.event_recorder import EventRecorder
 
 TRUE_LIMITS = np.array([-1.2, 1.4, -2.0, 0.9])
 
@@ -167,3 +169,45 @@ def test_executed_tasks_do_not_depend_on_planning():
         task_sequences.append([id(e.task) for r in results for e in r.executions])
     assert len(task_sequences[0]) == 6
     assert task_sequences[0] == task_sequences[1]
+
+
+def test_run_cycles_records_every_stage():
+    """Tests the events a recorder sees in one cycle."""
+    domain = make_domain(seed=0, true_limits=TRUE_LIMITS)
+    robot = _make_robot(domain)
+    eval_tasks = [domain.task_distribution.sample(np.random.default_rng(0))] * 2
+    recorder = EventRecorder()
+    results = run_cycles(
+        robot,
+        domain.real_env,
+        domain.task_distribution,
+        eval_tasks,
+        num_cycles=1,
+        budgets=_budgets(num_executions=1),
+        rng=np.random.default_rng(0),
+        recorder=recorder,
+    )
+    horizon = TwoLinkArmModel().horizon
+    episode = ["start_episode"] + ["record_step"] * horizon + ["end_episode"]
+    assert recorder.get_names() == (
+        ["start_stage", "end_stage"]
+        + ["start_stage", "record_queries", "end_stage"]
+        + ["start_stage", *episode, "end_stage"]
+        + ["start_stage", *episode, *episode, "end_stage"]
+    )
+    stages = [e[2] for e in recorder.events if e[0] == "start_stage"]
+    assert stages == list(Stage)
+    labels = [e[1] for e in recorder.events if e[0] == "start_episode"]
+    assert labels == [
+        "Executed task 1",
+        "Evaluation task 1 of 2",
+        "Evaluation task 2 of 2",
+    ]
+    outcomes = [e[1] for e in recorder.events if e[0] == "end_episode"]
+    assert all("planning time" in outcome for outcome in outcomes)
+
+    # Steps during execution see the updated belief, and the last one matches the
+    # belief the robot was evaluated under.
+    first_step = recorder.get_names().index("start_episode") + 1
+    execution_steps = recorder.events[first_step : first_step + horizon]
+    assert execution_steps[-1][1] is results[0].belief

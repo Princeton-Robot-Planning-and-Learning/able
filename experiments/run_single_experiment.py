@@ -4,6 +4,7 @@ See the README for examples.
 """
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import hydra
@@ -13,6 +14,8 @@ from omegaconf import DictConfig, OmegaConf
 
 from able.cycle import CycleBudgets, CycleResult, run_cycles
 from able.envs.base import Domain, FiniteTaskDistribution
+from able.envs.simulated import SimulatedEnvironment
+from able.recording.video import VideoRecorder
 from able.robot import Robot
 
 
@@ -25,14 +28,15 @@ def _main(cfg: DictConfig) -> None:
     logging.info(OmegaConf.to_yaml(resolved_cfg))
     OmegaConf.save(resolved_cfg, cfg.config_file)
 
-    domain = hydra.utils.instantiate(cfg.env, seed=cfg.seed)
+    domain = hydra.utils.instantiate(cfg.env.domain, seed=cfg.seed)
     assert isinstance(domain, Domain)
     task_distribution = domain.task_distribution
     assert isinstance(task_distribution, FiniteTaskDistribution)
-    # The domain is an object rather than a config, so it is passed after
-    # instantiation.
+    recorder = _make_video_recorder(cfg, domain) if cfg.record_videos else None
+    # The domain and recorder are objects rather than configs, so they are passed
+    # after instantiation.
     make_robot = hydra.utils.instantiate(cfg.approach, _partial_=True)
-    robot = make_robot(domain=domain)
+    robot = make_robot(domain=domain, recorder=recorder)
     assert isinstance(robot, Robot)
     budgets = hydra.utils.instantiate(cfg.budgets)
     assert isinstance(budgets, CycleBudgets)
@@ -46,6 +50,7 @@ def _main(cfg: DictConfig) -> None:
         cfg.num_cycles,
         budgets,
         np.random.default_rng(cfg.seed),
+        recorder,
     )
 
     eval_df = pd.DataFrame(_get_eval_rows(results))
@@ -59,6 +64,21 @@ def _main(cfg: DictConfig) -> None:
     cycle_df = pd.DataFrame(_get_cycle_rows(results))
     cycle_df.to_csv(cfg.cycle_results_file, index=False)
     logging.info(f"Wrote cycle results to {cfg.cycle_results_file}")
+
+
+def _make_video_recorder(cfg: DictConfig, domain: Domain) -> VideoRecorder:
+    real_env = domain.real_env
+    assert isinstance(real_env, SimulatedEnvironment)
+    make_renderer = hydra.utils.instantiate(cfg.env.renderer, _partial_=True)
+    cycles = None if cfg.video_cycles is None else list(cfg.video_cycles)
+    logging.info(f"Recording videos to {cfg.video_dir}")
+    return VideoRecorder(
+        make_renderer(domain.env_model),
+        real_env.hidden_params,
+        Path(cfg.video_dir),
+        fps=cfg.video_fps,
+        cycles=cycles,
+    )
 
 
 def _get_eval_rows(results: list[CycleResult]) -> list[dict[str, Any]]:

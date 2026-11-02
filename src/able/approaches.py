@@ -1,7 +1,8 @@
 """Approaches for the two-link arm.
 
 An approach is a choice of planner, learner, belief updater, and information
-gatherer. Each function here builds a robot for an arm domain.
+gatherer. Each function here builds a robot for an arm domain. The recorder, if
+given, sees what the robot imagines while it sleeps.
 """
 
 import numpy as np
@@ -14,6 +15,7 @@ from able.info_gatherers.base import NullInformationGatherer
 from able.learners.base import NullLearner
 from able.learners.dreaming import DreamingLearner
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
+from able.recording.base import CycleRecorder
 from able.robot import Robot
 from able.structs import Budget
 
@@ -23,8 +25,12 @@ ArmRobot = Robot[
 ]
 
 
-def make_scratch_robot(domain: ArmDomain) -> ArmRobot:
+def make_scratch_robot(
+    domain: ArmDomain,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+) -> ArmRobot:
     """A robot that plans from scratch with random shooting and never learns."""
+    del recorder  # unused because the robot imagines nothing while it sleeps
     env_model = domain.env_model
     assert isinstance(env_model, TwoLinkArmModel)
     return Robot(
@@ -42,6 +48,7 @@ def make_dreaming_robot(
     execution_budget: Budget,
     planning_budget: Budget,
     max_warm_starts_per_key: int = 4,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
 ) -> ArmRobot:
     """A robot that plans with random shooting and dreams while it sleeps.
 
@@ -66,6 +73,7 @@ def make_dreaming_robot(
         execution_budget=execution_budget,
         planning_budget=planning_budget,
         max_warm_starts_per_key=max_warm_starts_per_key,
+        recorder=recorder,
     )
     return Robot(
         planner=planner,

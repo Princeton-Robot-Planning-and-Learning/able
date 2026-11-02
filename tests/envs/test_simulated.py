@@ -11,6 +11,7 @@ def test_simulated_environment():
     """Tests for SimulatedEnvironment."""
     model = WallModel(horizon=3)
     env = SimulatedEnvironment(model, np.array([1.5]), np.random.default_rng(0))
+    assert np.array_equal(env.hidden_params, [1.5])
     task = WallTask(initial_state=np.zeros(1), goal=2.0)
 
     with pytest.raises(AssertionError):
