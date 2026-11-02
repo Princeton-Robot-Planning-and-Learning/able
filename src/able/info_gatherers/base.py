@@ -35,3 +35,19 @@ class InformationGatherer(ABC, Generic[HiddenParamsType, QueryType, ResponseType
         rng: np.random.Generator,
     ) -> list[QueryResponse[QueryType, ResponseType]]:
         """Ask queries within the budget and return each one with its response."""
+
+
+class NullInformationGatherer(
+    InformationGatherer[HiddenParamsType, QueryType, ResponseType]
+):
+    """Never asks a query."""
+
+    def gather(
+        self,
+        belief: Belief[HiddenParamsType],
+        env: Environment[Any, Any, Any, QueryType, ResponseType],
+        budget: Budget,
+        rng: np.random.Generator,
+    ) -> list[QueryResponse[QueryType, ResponseType]]:
+        """Return no data."""
+        return []
