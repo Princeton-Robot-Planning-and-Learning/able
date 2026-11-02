@@ -8,54 +8,44 @@ from numpy.typing import NDArray
 from able.belief_updaters.base import BeliefUpdater
 from able.beliefs.base import Belief
 from able.beliefs.interval import IntervalBelief
-from able.structs import Trajectory
+from able.envs.two_link_arm import JointQuery
+from able.structs import QueryResponse
 
 
-class JointLimitBeliefUpdater(
-    BeliefUpdater[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]
-):
+class JointLimitBeliefUpdater(BeliefUpdater[NDArray[np.float64], JointQuery, bool]):
     """Narrows the interval belief over the joint limits [lo1, hi1, lo2, hi2].
 
-    For each step and joint, the updater compares the commanded joint angle (state
-    plus action) with the observed one. Every observed angle lies within the
-    limits, so it bounds the lower limit from above and the upper limit from
-    below. If the observed angle differs from the commanded one, the motion was
-    clipped and the limit on that side equals the observed angle.
+    If a joint can move to the queried angle, its lower limit is at most the angle
+    and its upper limit is at least the angle. If it cannot, the angle is either
+    below the lower limit or above the upper limit. The belief decides which: the
+    angle is above the upper limit if it is at least the smallest possible upper
+    limit, and below the lower limit otherwise. This requires every possible lower
+    limit of a joint to be at most every possible upper limit, which holds for the
+    prior and is preserved by every update.
     """
-
-    def __init__(self, tolerance: float = 1e-6) -> None:
-        self._tolerance = tolerance
 
     def update(
         self,
         belief: Belief[NDArray[np.float64]],
-        data: Sequence[Trajectory[NDArray[np.float64], NDArray[np.float64]]],
+        data: Sequence[QueryResponse[JointQuery, bool]],
     ) -> IntervalBelief:
         assert isinstance(belief, IntervalBelief), "Need an IntervalBelief"
         intervals = belief.intervals.copy()
-        for trajectory in data:
-            for t, action in enumerate(trajectory.actions):
-                state = trajectory.states[t]
-                next_state = trajectory.states[t + 1]
-                for joint in range(2):
-                    self._update_joint(
-                        intervals,
-                        joint,
-                        commanded=state[joint] + action[joint],
-                        observed=next_state[joint],
-                    )
+        for pair in data:
+            lower = intervals[2 * pair.query.joint]
+            upper = intervals[2 * pair.query.joint + 1]
+            assert (
+                lower[1] <= upper[0]
+            ), "Every possible lower limit must be at most every possible upper limit"
+            angle = pair.query.angle
+            if pair.response:
+                lower[1] = min(lower[1], angle)
+                upper[0] = max(upper[0], angle)
+            elif angle >= upper[0]:
+                upper[1] = min(upper[1], angle)
+            else:
+                lower[0] = max(lower[0], angle)
+        assert np.all(
+            intervals[:, 0] <= intervals[:, 1]
+        ), "The responses contradict the belief"
         return IntervalBelief(intervals)
-
-    def _update_joint(
-        self,
-        intervals: NDArray[np.float64],
-        joint: int,
-        commanded: float,
-        observed: float,
-    ) -> None:
-        lo_idx, hi_idx = 2 * joint, 2 * joint + 1
-        intervals[lo_idx, 1] = min(intervals[lo_idx, 1], observed)
-        intervals[hi_idx, 0] = max(intervals[hi_idx, 0], observed)
-        if abs(observed - commanded) > self._tolerance:
-            clipped_idx = lo_idx if commanded < observed else hi_idx
-            intervals[clipped_idx] = [observed, observed]

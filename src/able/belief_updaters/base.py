@@ -4,20 +4,20 @@ from abc import ABC, abstractmethod
 from typing import Generic, Sequence
 
 from able.beliefs.base import Belief
-from able.structs import ActType, HiddenParamsType, StateType, Trajectory
+from able.structs import HiddenParamsType, QueryResponse, QueryType, ResponseType
 
 
-class BeliefUpdater(ABC, Generic[StateType, ActType, HiddenParamsType]):
-    """Computes a new belief from data gathered in an environment.
+class BeliefUpdater(ABC, Generic[HiddenParamsType, QueryType, ResponseType]):
+    """Computes a new belief from the responses to queries.
 
     Updaters do not modify their inputs or keep state, so learners can apply them
-    to imagined data without affecting the robot's actual belief.
+    to imagined responses without affecting the robot's actual belief.
     """
 
     @abstractmethod
     def update(
         self,
         belief: Belief[HiddenParamsType],
-        data: Sequence[Trajectory[StateType, ActType]],
+        data: Sequence[QueryResponse[QueryType, ResponseType]],
     ) -> Belief[HiddenParamsType]:
-        """Return the belief after observing the data."""
+        """Return the belief after observing the responses to the queries."""
