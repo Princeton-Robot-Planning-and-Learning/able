@@ -2,8 +2,12 @@
 
 The arm stands in for a person whose range of motion the robot is learning. An
 action is a joint displacement applied in one step, and the hidden joint limits clip
-the motion. The hidden parameters are the joint limits [lo1, hi1, lo2, hi2].
+the motion. The hidden parameters are the joint limits [lo1, hi1, lo2, hi2]. The
+robot learns about the limits by asking whether a joint can move to an angle, and the
+response is yes or no.
 """
+
+from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
@@ -28,13 +32,22 @@ _NUM_BOUNDARY_POINTS = 48
 ArmTask = Task[NDArray[np.float64], NDArray[np.float64]]
 
 
-class TwoLinkArmModel(BatchRolloutModel[ArmTask]):
+@dataclass(frozen=True)
+class JointQuery:
+    """Asks whether a joint (0 or 1) can move to an angle."""
+
+    joint: int
+    angle: float
+
+
+class TwoLinkArmModel(BatchRolloutModel[ArmTask, JointQuery, bool]):
     """A kinematic two-link arm whose joint motion is clipped by the joint limits.
 
     States are joint angles with shape (2,), actions are joint displacements with
     shape (2,), and hidden parameters are joint limits with shape (4,). Each step
     costs a small penalty on the action magnitude. The terminal cost is the
-    distance from the end effector to the goal.
+    distance from the end effector to the goal. The response to a joint query is
+    True if the angle is within that joint's limits.
     """
 
     def __init__(
@@ -111,6 +124,16 @@ class TwoLinkArmModel(BatchRolloutModel[ArmTask]):
         hidden_params: NDArray[np.float64],
     ) -> float:
         return float(np.linalg.norm(self.forward_kinematics(state) - task.goal))
+
+    def sample_response(
+        self,
+        query: JointQuery,
+        hidden_params: NDArray[np.float64],
+        rng: np.random.Generator,
+    ) -> bool:
+        assert query.joint in (0, 1), "The arm has joints 0 and 1"
+        low, high = hidden_params[2 * query.joint : 2 * query.joint + 2]
+        return bool(low <= query.angle <= high)
 
     def rollout_batch(
         self,
@@ -196,8 +219,9 @@ def sample_goal_positions(
     Each goal is the end-effector position of a joint configuration sampled within
     the limits, and within 80% of the distance a joint can travel in one episode.
     With probability edge_probability, each joint angle is moved to one of its
-    limits. Those goals sit at the edge of the range of motion, and reaching for
-    them reveals the limits. Returns an array with shape (num_goals, 2).
+    limits. Those goals sit at the edge of the range of motion, so the best plan
+    for them depends on where the limits are. Returns an array with shape
+    (num_goals, 2).
     """
     max_travel = 0.8 * model.max_joint_displacement * model.horizon
     lows = np.maximum(true_limits[[0, 2]], -max_travel)
@@ -210,7 +234,12 @@ def sample_goal_positions(
 
 
 ArmDomain = Domain[
-    NDArray[np.float64], NDArray[np.float64], ArmTask, NDArray[np.float64]
+    NDArray[np.float64],
+    NDArray[np.float64],
+    ArmTask,
+    NDArray[np.float64],
+    JointQuery,
+    bool,
 ]
 
 

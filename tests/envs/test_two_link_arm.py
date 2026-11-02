@@ -7,6 +7,7 @@ from able.envs.simulated import SimulatedEnvironment
 from able.envs.two_link_arm import (
     JOINT_LIMIT_PRIOR,
     ArmTask,
+    JointQuery,
     TwoLinkArmModel,
     make_domain,
     sample_goal_positions,
@@ -58,6 +59,27 @@ def test_joint_limits_clip_motion():
         np.zeros(2), np.array([0.05, 0.05]), limits, rng
     )
     assert np.allclose(next_state, [0.05, 0.05])
+
+
+def test_joint_queries():
+    """Tests that a joint query is answered yes exactly when the angle is within that
+    joint's limits."""
+    model = TwoLinkArmModel()
+    limits = np.array([-0.1, 0.2, -0.2, 0.1])
+    rng = np.random.default_rng(0)
+    expected = {
+        JointQuery(joint=0, angle=0.2): True,
+        JointQuery(joint=0, angle=0.21): False,
+        JointQuery(joint=0, angle=-0.1): True,
+        JointQuery(joint=0, angle=-0.11): False,
+        JointQuery(joint=1, angle=0.15): False,
+        JointQuery(joint=1, angle=-0.15): True,
+    }
+    for query, response in expected.items():
+        assert model.sample_response(query, limits, rng) is response
+    env = SimulatedEnvironment(model, limits, rng)
+    assert env.ask(JointQuery(joint=1, angle=0.1))
+    assert not env.ask(JointQuery(joint=1, angle=0.11))
 
 
 def test_rollout_batch_matches_stepping():
