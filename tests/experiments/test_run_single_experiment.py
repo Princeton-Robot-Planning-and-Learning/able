@@ -14,7 +14,7 @@ SCRIPT = (
 
 def test_run_single_experiment(tmp_path: Path) -> None:
     """Tests that each approach runs for two short cycles and writes its results."""
-    for approach in ("scratch", "current_belief", "dreaming"):
+    for approach in ("scratch", "prior_only", "current_belief", "dreaming"):
         run_dir = tmp_path / approach
         result = subprocess.run(
             [

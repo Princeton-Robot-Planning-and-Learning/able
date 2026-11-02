@@ -15,6 +15,7 @@ from matplotlib import pyplot as plt
 APPROACH_TO_DISPLAY_NAME = {
     "current_belief": "Current belief only",
     "dreaming": "Dreaming",
+    "prior_only": "Prior only (first sleep)",
     "scratch": "Plan from scratch",
 }
 
@@ -24,8 +25,15 @@ APPROACH_TO_COLOR = {
     "dreaming": "#2a78d6",
     "scratch": "#eb6834",
     "current_belief": "#1baf7a",
+    "prior_only": "#eda100",
 }
-EXTRA_COLORS = ["#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
+EXTRA_COLORS = ["#e87ba4", "#008300", "#6250d6", "#e34948"]
+
+# The prior-only line often overlaps the scratch line, and their colors are close,
+# so it is also dashed.
+APPROACH_TO_LINESTYLE = {
+    "prior_only": "--",
+}
 
 ENV_TO_DISPLAY_NAME = {
     "two_link_arm": "Two-link arm",
@@ -73,6 +81,7 @@ def _main(results_dir: Path, outfile: Path) -> None:
                     cycles,
                     mean,
                     color=colors[approach],
+                    linestyle=APPROACH_TO_LINESTYLE.get(approach, "-"),
                     linewidth=2,
                     solid_capstyle="round",
                     label=APPROACH_TO_DISPLAY_NAME.get(approach, approach),

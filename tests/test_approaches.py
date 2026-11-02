@@ -5,6 +5,7 @@ import numpy as np
 from able.approaches import (
     make_current_belief_robot,
     make_dreaming_robot,
+    make_prior_only_robot,
     make_scratch_robot,
 )
 from able.envs.two_link_arm import make_domain
@@ -43,3 +44,15 @@ def test_make_current_belief_robot():
     assert not robot.planner_params.warm_starts
     robot.sleep(Budget(max_iterations=1), np.random.default_rng(0))
     assert robot.planner_params.warm_starts
+
+
+def test_make_prior_only_robot():
+    """Tests that the prior-only robot caches plans in its first sleep only."""
+    domain = make_domain(seed=0)
+    robot = make_prior_only_robot(domain, planning_budget=Budget())
+    rng = np.random.default_rng(0)
+    robot.sleep(Budget(max_iterations=1), rng)
+    params = robot.planner_params
+    assert params.warm_starts
+    robot.sleep(Budget(max_iterations=1), rng)
+    assert robot.planner_params is params

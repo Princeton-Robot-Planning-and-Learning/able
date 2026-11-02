@@ -6,7 +6,7 @@ Work in progress.
 
 ## Experiments
 
-We use [hydra](https://hydra.cc/) for experiments, with configurations in [experiments/conf](experiments/conf/). To compare three approaches on the two-link arm over five seeds and plot offline evaluation per cycle:
+We use [hydra](https://hydra.cc/) for experiments, with configurations in [experiments/conf](experiments/conf/). To compare four approaches on the two-link arm over five seeds and plot offline evaluation per cycle:
 
 ```
 ./experiments/run_comparison.sh
@@ -14,6 +14,7 @@ We use [hydra](https://hydra.cc/) for experiments, with configurations in [exper
 
 The approaches all plan with random shooting and differ in what they learn while they sleep:
 - `scratch` learns nothing and plans from scratch every time.
+- `prior_only` caches plans for every task under the prior in its first sleep and never learns again.
 - `current_belief` caches plans for every task under its current belief, so it never anticipates belief updates.
 - `dreaming` imagines the belief updates it will make before it is evaluated and caches plans for the imagined beliefs.
 
