@@ -50,5 +50,10 @@ class OpenLoopPolicy(Policy[StateType, ActType]):
         self._num_steps += 1
         return action
 
+    @property
+    def actions(self) -> tuple[ActType, ...]:
+        """The full action sequence, including actions already taken."""
+        return self._actions
+
     def get_planning_stats(self) -> dict[str, float]:
         return dict(self._planning_stats)
