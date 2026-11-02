@@ -23,3 +23,16 @@ def test_run_episode():
     trajectory = run_episode(env, task, OpenLoopPolicy(actions), max_steps=2)
     assert len(trajectory) == 2
     assert np.allclose(np.array(trajectory.states).ravel(), [0.0, 1.0, 1.5])
+
+    transitions = []
+    trajectory = run_episode(
+        env,
+        task,
+        OpenLoopPolicy(actions),
+        on_step=lambda s, a, ns: transitions.append((s, a, ns)),
+    )
+    assert len(transitions) == 3
+    for t, (state, action, next_state) in enumerate(transitions):
+        assert state is trajectory.states[t]
+        assert action is trajectory.actions[t]
+        assert next_state is trajectory.states[t + 1]

@@ -38,8 +38,8 @@ class Robot(
     """Combines a planner, learner, belief updater, and information gatherer.
 
     The robot's state is its current belief and planner parameters. Only sleep()
-    changes the parameters and only update_belief() changes the belief. An
-    approach is a choice of the four components.
+    changes the parameters, and only the two update_belief methods change the
+    belief. An approach is a choice of the four components.
     """
 
     def __init__(
@@ -48,7 +48,9 @@ class Robot(
             StateType, ActType, TaskType, HiddenParamsType, PlannerParamsType
         ],
         learner: Learner[HiddenParamsType, PlannerParamsType],
-        belief_updater: BeliefUpdater[HiddenParamsType, QueryType, ResponseType],
+        belief_updater: BeliefUpdater[
+            StateType, ActType, HiddenParamsType, QueryType, ResponseType
+        ],
         info_gatherer: InformationGatherer[HiddenParamsType, QueryType, ResponseType],
         initial_belief: Belief[HiddenParamsType],
     ) -> None:
@@ -90,8 +92,16 @@ class Robot(
         """Ask the environment queries with the information gatherer."""
         return self._info_gatherer.gather(self._belief, env, budget, rng)
 
-    def update_belief(
+    def update_belief_from_queries(
         self, data: Sequence[QueryResponse[QueryType, ResponseType]]
     ) -> None:
         """Update the belief with the responses to queries."""
-        self._belief = self._belief_updater.update(self._belief, data)
+        self._belief = self._belief_updater.update_from_queries(self._belief, data)
+
+    def update_belief_from_transition(
+        self, state: StateType, action: ActType, next_state: StateType
+    ) -> None:
+        """Update the belief with one step of task execution."""
+        self._belief = self._belief_updater.update_from_transition(
+            self._belief, state, action, next_state
+        )

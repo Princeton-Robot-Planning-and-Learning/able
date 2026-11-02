@@ -6,6 +6,7 @@ import numpy as np
 
 from able.belief_updaters.joint_limits import JointLimitBeliefUpdater
 from able.beliefs.base import Belief
+from able.beliefs.interval import IntervalBelief
 from able.envs.two_link_arm import TwoLinkArmModel, make_domain
 from able.info_gatherers.joint_limits import WidestGapGatherer
 from able.learners.base import Learner
@@ -57,6 +58,15 @@ def test_robot():
     data = robot.gather_information(domain.real_env, Budget(max_iterations=2), rng)
     assert len(data) == 2
     assert robot.belief is domain.initial_belief
-    robot.update_belief(data)
-    assert robot.belief != domain.initial_belief
+    # The joint-limit updater ignores query responses.
+    robot.update_belief_from_queries(data)
+    assert robot.belief is domain.initial_belief
+
+    # Moving joint 0 to 0.6 shows that its upper limit is at least 0.6.
+    robot.update_belief_from_transition(
+        np.zeros(2), np.array([0.6, 0.0]), np.array([0.6, 0.0])
+    )
+    belief = robot.belief
+    assert isinstance(belief, IntervalBelief)
+    assert belief.intervals[1, 0] == 0.6
     assert robot.planner_params is params
