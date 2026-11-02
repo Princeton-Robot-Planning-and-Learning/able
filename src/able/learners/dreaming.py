@@ -12,7 +12,7 @@ from able.beliefs.base import Belief
 from able.beliefs.interval import IntervalBelief
 from able.envs.base import FiniteTaskDistribution
 from able.envs.simulated import SimulatedEnvironment
-from able.envs.two_link_arm import ArmTask, TwoLinkArmModel
+from able.envs.two_link_arm import ArmTask, JointQuery, TwoLinkArmModel
 from able.info_gatherers.base import InformationGatherer
 from able.learners.base import Learner
 from able.planners.random_shooting import (
@@ -33,15 +33,16 @@ class DreamingLearner(Learner[ArmArray, RandomShootingParams]):
 
     One dream has three steps:
     1. Sample joint limits from the current belief and treat them as the truth.
-    2. Run the robot's information gatherer, with the robot's current planner
-       parameters, in an environment simulated with those limits. Update the belief
-       with the imagined data. The result is a sample of the robot's next belief.
+    2. Run the robot's information gatherer in an environment simulated with those
+       limits, and update the belief with the imagined responses. The result is a
+       sample of the robot's next belief.
     3. Plan for every task under the imagined belief, and add the plans to the
        warm starts.
 
-    Step 2 uses the same gatherer the robot runs for real, so imagined next beliefs
-    are distributed like real ones. Each dream starts from the warm starts cached by
-    the previous dreams. One iteration of the budget is one dream.
+    Step 2 uses the same gatherer and belief updater the robot runs for real, so
+    imagined next beliefs are distributed like real ones. Each dream starts from
+    the warm starts cached by the previous dreams. One iteration of the budget is
+    one dream.
     """
 
     def __init__(
@@ -49,10 +50,8 @@ class DreamingLearner(Learner[ArmArray, RandomShootingParams]):
         env_model: TwoLinkArmModel,
         task_distribution: FiniteTaskDistribution[ArmTask],
         planner: RandomShootingPlanner,
-        belief_updater: BeliefUpdater[ArmArray, ArmArray, ArmArray],
-        info_gatherer: InformationGatherer[
-            ArmArray, ArmArray, ArmTask, ArmArray, RandomShootingParams
-        ],
+        belief_updater: BeliefUpdater[ArmArray, JointQuery, bool],
+        info_gatherer: InformationGatherer[ArmArray, JointQuery, bool],
         gathering_budget: Budget,
         planning_budget: Budget,
         max_warm_starts_per_key: int = 4,
@@ -97,7 +96,7 @@ class DreamingLearner(Learner[ArmArray, RandomShootingParams]):
         hypothesis = belief.sample(rng)
         imagined_env = SimulatedEnvironment(self._env_model, hypothesis, rng)
         data = self._info_gatherer.gather(
-            belief, params, imagined_env, self._gathering_budget, rng
+            belief, imagined_env, self._gathering_budget, rng
         )
         imagined_belief = self._belief_updater.update(belief, data)
         assert isinstance(imagined_belief, IntervalBelief)

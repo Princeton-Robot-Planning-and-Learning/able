@@ -8,7 +8,7 @@ from able.beliefs.interval import IntervalBelief
 from able.cycle import CycleBudgets, run_cycles
 from able.envs.base import FiniteTaskDistribution
 from able.envs.two_link_arm import ArmTask, TwoLinkArmModel, make_domain
-from able.info_gatherers.task_execution import TaskExecutionGatherer
+from able.info_gatherers.joint_limits import WidestGapGatherer
 from able.learners.base import Learner, NullLearner
 from able.learners.dreaming import DreamingLearner
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
@@ -24,7 +24,7 @@ def _make_robot(
     model = TwoLinkArmModel()
     planner = RandomShootingPlanner(model)
     updater = JointLimitBeliefUpdater()
-    gatherer = TaskExecutionGatherer(planner, task_distribution, Budget())
+    gatherer = WidestGapGatherer()
     learner: Learner[np.ndarray, RandomShootingParams]
     if dreaming:
         learner = DreamingLearner(
@@ -72,7 +72,7 @@ def test_learn_adds_warm_starts():
         domain.task_distribution,
         planner,
         updater,
-        TaskExecutionGatherer(planner, domain.task_distribution, Budget()),
+        WidestGapGatherer(),
         gathering_budget=Budget(max_iterations=1),
         planning_budget=Budget(),
         max_warm_starts_per_key=2,
@@ -124,7 +124,12 @@ def test_known_limits_always_hit():
 
 
 def test_dreaming_reduces_planning_effort():
-    """Tests that dreaming reduces evaluation planning effort under uncertainty."""
+    """Tests that dreaming reduces evaluation planning effort under uncertainty.
+
+    One query per cycle leaves two possible next beliefs, and the gatherer asks the same
+    query in dreams as for real, so eight dreams almost always cover the real next
+    belief.
+    """
     dream_samples, null_samples, hits = [], [], []
     for seed in range(3):
         domain = make_domain(seed)
@@ -140,5 +145,5 @@ def test_dreaming_reduces_planning_effort():
                 hits.extend(s["used_warm_start"] for s in stats)
             else:
                 null_samples.extend(samples)
-    assert np.mean(hits) > 0.3
-    assert np.mean(dream_samples) < 0.8 * np.mean(null_samples)
+    assert np.mean(hits) > 0.9
+    assert np.mean(dream_samples) < 0.7 * np.mean(null_samples)
