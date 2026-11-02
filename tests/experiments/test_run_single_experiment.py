@@ -1,15 +1,63 @@
 """Tests for experiments/run_single_experiment.py."""
 
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 
+import numpy as np
 import pandas as pd
 from omegaconf import OmegaConf
+
+from able.envs.base import FiniteTaskDistribution, TaskDistribution
+from able.structs import Task
 
 SCRIPT = (
     Path(__file__).resolve().parents[2] / "experiments" / "run_single_experiment.py"
 )
+
+
+class _UniformGoalDistribution(TaskDistribution[Task[float, float]]):
+    """An infinite distribution over goals in [0, 1]."""
+
+    def sample(self, rng: np.random.Generator) -> Task[float, float]:
+        return Task(initial_state=0.0, goal=float(rng.uniform()))
+
+
+def _load_script() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("run_single_experiment", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_get_eval_tasks_finite() -> None:
+    """Tests that a finite distribution evaluates every task, in order."""
+    tasks = [Task(initial_state=0.0, goal=float(goal)) for goal in range(3)]
+    eval_tasks = _load_script().get_eval_tasks(
+        FiniteTaskDistribution(tasks), num_eval_tasks=6, seed=0
+    )
+    assert eval_tasks == tasks
+
+
+def test_get_eval_tasks_infinite() -> None:
+    """Tests that an infinite distribution gets a fixed sample of tasks per seed,
+    drawn from its own random stream."""
+    get_eval_tasks = _load_script().get_eval_tasks
+    distribution = _UniformGoalDistribution()
+    goals = [t.goal for t in get_eval_tasks(distribution, num_eval_tasks=6, seed=0)]
+    assert len(goals) == 6
+    assert len(set(goals)) == 6
+    assert goals == [
+        t.goal for t in get_eval_tasks(distribution, num_eval_tasks=6, seed=0)
+    ]
+    assert goals != [
+        t.goal for t in get_eval_tasks(distribution, num_eval_tasks=6, seed=1)
+    ]
+    # The cycles draw from np.random.default_rng(seed), which is a different stream.
+    assert goals != list(np.random.default_rng(0).uniform(size=6))
 
 
 def test_run_single_experiment(tmp_path: Path) -> None:

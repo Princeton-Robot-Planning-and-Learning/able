@@ -13,10 +13,13 @@ import pandas as pd
 from omegaconf import DictConfig, OmegaConf
 
 from able.cycle import CycleBudgets, CycleResult, run_cycles
-from able.envs.base import Domain, FiniteTaskDistribution
+from able.envs.base import Domain, FiniteTaskDistribution, TaskDistribution
 from able.envs.simulated import SimulatedEnvironment
 from able.recording.video import VideoRecorder
 from able.robot import Robot
+
+# Separates the random stream for sampling evaluation tasks from the cycles' stream.
+_EVAL_TASK_STREAM = 1
 
 
 @hydra.main(version_base=None, config_name="config", config_path="conf/")
@@ -31,7 +34,7 @@ def _main(cfg: DictConfig) -> None:
     domain = hydra.utils.instantiate(cfg.env.domain, seed=cfg.seed)
     assert isinstance(domain, Domain)
     task_distribution = domain.task_distribution
-    assert isinstance(task_distribution, FiniteTaskDistribution)
+    eval_tasks = get_eval_tasks(task_distribution, cfg.num_eval_tasks, cfg.seed)
     recorder = _make_video_recorder(cfg, domain) if cfg.record_videos else None
     # The domain and recorder are objects rather than configs, so they are passed
     # after instantiation.
@@ -41,12 +44,12 @@ def _main(cfg: DictConfig) -> None:
     budgets = hydra.utils.instantiate(cfg.budgets)
     assert isinstance(budgets, CycleBudgets)
 
-    # Every task in the distribution is evaluated in every cycle.
+    # The same evaluation tasks are used in every cycle.
     results = run_cycles(
         robot,
         domain.real_env,
         task_distribution,
-        list(task_distribution.get_tasks()),
+        eval_tasks,
         cfg.num_cycles,
         budgets,
         np.random.default_rng(cfg.seed),
@@ -64,6 +67,21 @@ def _main(cfg: DictConfig) -> None:
     cycle_df = pd.DataFrame(_get_cycle_rows(results))
     cycle_df.to_csv(cfg.cycle_results_file, index=False)
     logging.info(f"Wrote cycle results to {cfg.cycle_results_file}")
+
+
+def get_eval_tasks(
+    task_distribution: TaskDistribution, num_eval_tasks: int, seed: int
+) -> list[Any]:
+    """Every task of a finite distribution, or num_eval_tasks tasks sampled once
+    for the seed.
+
+    The tasks are sampled from their own random stream, so sampling them does not
+    change the random streams of the cycles.
+    """
+    if isinstance(task_distribution, FiniteTaskDistribution):
+        return list(task_distribution.get_tasks())
+    rng = np.random.default_rng([seed, _EVAL_TASK_STREAM])
+    return [task_distribution.sample(rng) for _ in range(num_eval_tasks)]
 
 
 def _make_video_recorder(cfg: DictConfig, domain: Domain) -> VideoRecorder:

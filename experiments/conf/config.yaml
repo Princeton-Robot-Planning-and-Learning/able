@@ -7,6 +7,9 @@ hydra:
 
 seed: 0
 num_cycles: 20
+# Evaluation tasks sampled once per seed and used in every cycle. Finite task
+# distributions ignore this and evaluate every task.
+num_eval_tasks: 6
 budgets:
   _target_: able.cycle.CycleBudgets
   # One iteration is one dream for the dreaming learner.
