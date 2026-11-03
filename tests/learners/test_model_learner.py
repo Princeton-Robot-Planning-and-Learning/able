@@ -5,27 +5,15 @@ import dataclasses
 import numpy as np
 import pytest
 
-from able.belief_updaters.joint_limits import JointLimitBeliefUpdater
 from able.beliefs.interval import IntervalBelief
 from able.envs.base import FiniteTaskDistribution
 from able.envs.two_link_arm import (
     JOINT_LIMIT_PRIOR,
     ArmTask,
     TwoLinkArmModel,
-    make_domain,
 )
-from able.info_gatherers.base import NullInformationGatherer
-from able.learners.base import Learner
-from able.learners.belief_sources import (
-    BeliefSource,
-    CurrentBeliefSource,
-    ImaginedNextBeliefSource,
-    PriorSource,
-)
-from able.learners.current_belief import CurrentBeliefLearner
-from able.learners.dreaming import DreamingLearner
+from able.learners.belief_sources import CurrentBeliefSource, PriorSource
 from able.learners.model_learner import ModelLearner
-from able.learners.prior_only import PriorOnlyLearner
 from able.models.base import Dataset
 from able.models.exact_match_cache import ExactMatchCache
 from able.planners.random_shooting import (
@@ -154,72 +142,3 @@ def test_max_sleeps():
     )
     assert _cache_entries(trained)
     assert learner.learn(prior, trained, Budget(max_iterations=1), rng) is trained
-
-
-def _train_twice(learner: Learner, planner: RandomShootingPlanner, domain) -> dict:
-    """Two sleeps of three iterations each, from the domain's initial belief."""
-    rng = np.random.default_rng(0)
-    params = planner.get_default_params()
-    for _ in range(2):
-        params = learner.learn(
-            domain.initial_belief, params, Budget(max_iterations=3), rng
-        )
-    return _cache_entries(params)
-
-
-def test_matches_the_caching_learners():
-    """Tests that each belief source reproduces the learner it generalizes."""
-    domain = make_domain(seed=0)
-    task_distribution = domain.task_distribution
-    assert isinstance(task_distribution, FiniteTaskDistribution)
-    model = TwoLinkArmModel()
-
-    def imagined_next(planner: RandomShootingPlanner) -> ImaginedNextBeliefSource:
-        return ImaginedNextBeliefSource(
-            model,
-            task_distribution,
-            planner,
-            JointLimitBeliefUpdater(),
-            NullInformationGatherer(),
-            gathering_budget=Budget(max_iterations=0),
-            execution_budget=Budget(max_iterations=1),
-            planning_budget=Budget(),
-        )
-
-    prior = domain.initial_belief
-    assert isinstance(prior, IntervalBelief)
-    old_planner, new_planner = _make_planner(), _make_planner()
-    pairs: list[tuple[Learner, BeliefSource, int | None]] = [
-        (
-            CurrentBeliefLearner(task_distribution, old_planner, Budget()),
-            CurrentBeliefSource(),
-            None,
-        ),
-        (
-            PriorOnlyLearner(prior, task_distribution, old_planner, Budget()),
-            PriorSource(prior),
-            1,
-        ),
-        (
-            DreamingLearner(
-                model,
-                task_distribution,
-                old_planner,
-                JointLimitBeliefUpdater(),
-                NullInformationGatherer(),
-                gathering_budget=Budget(max_iterations=0),
-                execution_budget=Budget(max_iterations=1),
-                planning_budget=Budget(),
-            ),
-            imagined_next(new_planner),
-            None,
-        ),
-    ]
-    for old_learner, source, max_sleeps in pairs:
-        new_learner: ModelLearner = ModelLearner(
-            new_planner, task_distribution, source, Budget(), max_sleeps=max_sleeps
-        )
-        _assert_same_entries(
-            _train_twice(old_learner, old_planner, domain),
-            _train_twice(new_learner, new_planner, domain),
-        )

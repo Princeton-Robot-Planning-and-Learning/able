@@ -14,9 +14,12 @@ from able.envs.base import FiniteTaskDistribution
 from able.envs.two_link_arm import ArmDomain, ArmTask, JointQuery, TwoLinkArmModel
 from able.info_gatherers.base import NullInformationGatherer
 from able.learners.base import NullLearner
-from able.learners.current_belief import CurrentBeliefLearner
-from able.learners.dreaming import DreamingLearner
-from able.learners.prior_only import PriorOnlyLearner
+from able.learners.belief_sources import (
+    CurrentBeliefSource,
+    ImaginedNextBeliefSource,
+    PriorSource,
+)
+from able.learners.model_learner import ModelLearner
 from able.models.exact_match_cache import ExactMatchCache
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
 from able.recording.base import CycleRecorder
@@ -78,7 +81,9 @@ def make_current_belief_robot(
     planner = _make_caching_planner(env_model, max_warm_starts_per_key)
     return Robot(
         planner=planner,
-        learner=CurrentBeliefLearner(task_distribution, planner, planning_budget),
+        learner=ModelLearner(
+            planner, task_distribution, CurrentBeliefSource(), planning_budget
+        ),
         belief_updater=JointLimitBeliefUpdater(),
         info_gatherer=NullInformationGatherer(),
         initial_belief=domain.initial_belief,
@@ -103,7 +108,13 @@ def make_prior_only_robot(
     planner = _make_caching_planner(env_model, max_warm_starts_per_key)
     return Robot(
         planner=planner,
-        learner=PriorOnlyLearner(prior, task_distribution, planner, planning_budget),
+        learner=ModelLearner(
+            planner,
+            task_distribution,
+            PriorSource(prior),
+            planning_budget,
+            max_sleeps=1,
+        ),
         belief_updater=JointLimitBeliefUpdater(),
         info_gatherer=NullInformationGatherer(),
         initial_belief=prior,
@@ -131,7 +142,7 @@ def make_dreaming_robot(
     planner = _make_caching_planner(env_model, max_warm_starts_per_key)
     belief_updater = JointLimitBeliefUpdater()
     info_gatherer: NullInformationGatherer = NullInformationGatherer()
-    learner = DreamingLearner(
+    belief_source: ImaginedNextBeliefSource = ImaginedNextBeliefSource(
         env_model,
         task_distribution,
         planner,
@@ -142,6 +153,7 @@ def make_dreaming_robot(
         planning_budget=planning_budget,
         recorder=recorder,
     )
+    learner = ModelLearner(planner, task_distribution, belief_source, planning_budget)
     return Robot(
         planner=planner,
         learner=learner,
