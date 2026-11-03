@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 
 from able.envs.human_reach.model import ReachModel, ReachTask
-from able.envs.human_reach.problem import plan_bedside
 from able.envs.human_reach.query import ReachQuery, bedside_directions
 from able.envs.human_reach.scene import ObjectCentricBedsideStocking3DEnv
+from able.planners.pddlstream import plan_bedside
 
 THETA = np.array([0.7, 0.6, 0.65])
 
