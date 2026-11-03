@@ -33,6 +33,7 @@ from able.learners.belief_sources import (
     PriorSource,
 )
 from able.learners.model_learner import ModelLearner
+from able.learners.rollout_model_learner import RolloutModelLearner
 from able.models.base import ConditionalModel
 from able.models.exact_match_cache import ExactMatchCache
 from able.planners.mpc import LimbMPCPlanner, MPCParams
@@ -355,15 +356,22 @@ def make_limb_dreaming_robot(
 
 
 def _make_friction_parts(
-    domain: FrictionDomain, num_sims: int, max_depth: int
+    domain: FrictionDomain,
+    num_sims: int,
+    max_depth: int,
+    model: ConditionalModel | None = None,
 ) -> tuple[
     FrictionModel, FrictionPOMCPOWPlanner, FrictionBeliefUpdater, ProbeFloorGatherer
 ]:
     """The friction robot's model of the environment, planner, belief updater, and
-    gatherer. POMCPOW runs num_sims simulations per push, max_depth pushes deep."""
+    gatherer. POMCPOW runs num_sims simulations per push, max_depth pushes deep,
+    and the model, if given, proposes pushes."""
     env_model = domain.env_model
     assert isinstance(env_model, FrictionModel)
-    params = POMCPOWParams(POMCPOWConfig(num_sims=num_sims, max_depth=max_depth))
+    config = POMCPOWConfig(num_sims=num_sims, max_depth=max_depth)
+    params = POMCPOWParams(config)
+    if model is not None:
+        params = dataclasses.replace(params, model=model)
     belief_updater = FrictionBeliefUpdater(env_model.world)
     return (
         env_model,
@@ -388,6 +396,119 @@ def make_friction_scratch_robot(
     return Robot(
         planner=planner,
         learner=NullLearner(),
+        belief_updater=belief_updater,
+        info_gatherer=gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
+def make_friction_current_belief_robot(
+    domain: FrictionDomain,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_training_tasks: int = 1,
+    num_sims: int = 1000,
+    max_depth: int = 8,
+    recorder: CycleRecorder[FrictionState, FrictionTask, ArmArray] | None = None,
+) -> FrictionRobot:
+    """A friction robot whose model, while it sleeps, learns the pushes of solved
+    rollouts under its current belief. It never anticipates belief updates."""
+    del recorder  # unused because the robot imagines nothing while it sleeps
+    env_model, planner, belief_updater, gatherer = _make_friction_parts(
+        domain, num_sims, max_depth, model
+    )
+    return Robot(
+        planner=planner,
+        learner=RolloutModelLearner(
+            planner,
+            domain.task_distribution,
+            CurrentBeliefSource(),
+            planning_budget,
+            env_model,
+            refit="per_sleep",
+            num_training_tasks=num_training_tasks,
+        ),
+        belief_updater=belief_updater,
+        info_gatherer=gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
+def make_friction_prior_only_robot(
+    domain: FrictionDomain,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_training_tasks: int = 1,
+    num_sims: int = 1000,
+    max_depth: int = 8,
+    recorder: CycleRecorder[FrictionState, FrictionTask, ArmArray] | None = None,
+) -> FrictionRobot:
+    """A friction robot whose model learns the pushes of solved rollouts under the
+    prior in its first sleep, and never learns again."""
+    del recorder  # unused because the robot imagines nothing while it sleeps
+    env_model, planner, belief_updater, gatherer = _make_friction_parts(
+        domain, num_sims, max_depth, model
+    )
+    return Robot(
+        planner=planner,
+        learner=RolloutModelLearner(
+            planner,
+            domain.task_distribution,
+            PriorSource(domain.initial_belief),
+            planning_budget,
+            env_model,
+            refit="per_sleep",
+            max_sleeps=1,
+            num_training_tasks=num_training_tasks,
+        ),
+        belief_updater=belief_updater,
+        info_gatherer=gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
+def make_friction_dreaming_robot(
+    domain: FrictionDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_training_tasks: int = 1,
+    num_sims: int = 1000,
+    max_depth: int = 8,
+    recorder: CycleRecorder[FrictionState, FrictionTask, ArmArray] | None = None,
+) -> FrictionRobot:
+    """A friction robot that dreams while it sleeps: its model learns the pushes of
+    solved rollouts under the beliefs it imagines holding at evaluation.
+
+    The budgets should match the cycle budgets for information gathering, task
+    execution, and planning.
+    """
+    env_model, planner, belief_updater, gatherer = _make_friction_parts(
+        domain, num_sims, max_depth, model
+    )
+    belief_source: ImaginedNextBeliefSource = ImaginedNextBeliefSource(
+        env_model,
+        domain.task_distribution,
+        planner,
+        belief_updater,
+        gatherer,
+        gathering_budget=gathering_budget,
+        execution_budget=execution_budget,
+        planning_budget=planning_budget,
+        recorder=recorder,
+    )
+    return Robot(
+        planner=planner,
+        learner=RolloutModelLearner(
+            planner,
+            domain.task_distribution,
+            belief_source,
+            planning_budget,
+            env_model,
+            refit="per_sleep",
+            num_training_tasks=num_training_tasks,
+        ),
         belief_updater=belief_updater,
         info_gatherer=gatherer,
         initial_belief=domain.initial_belief,

@@ -1,0 +1,17 @@
+_target_: able.approaches.make_friction_dreaming_robot
+# Dreams imagine the same information gathering, task execution, and planning
+# that the robot does between sleeping and evaluation.
+gathering_budget: ${budgets.information_gathering}
+execution_budget: ${budgets.execution}
+planning_budget: ${budgets.planning}
+# Training tasks rolled out under each training belief.
+num_training_tasks: 1
+# POMCPOW simulations per push, and the search depth in pushes.
+num_sims: 1000
+max_depth: 8
+# The model that proposes pushes, refit once per sleep.
+model:
+  _target_: able.models.flow_matching.FlowMatchingModel
+  width: 128
+  depth: 3
+  num_steps: 2000
