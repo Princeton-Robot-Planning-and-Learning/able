@@ -12,7 +12,7 @@ from able.rendering.friction import FrictionRenderer
 def test_friction_renderer():
     """Tests frames outside an episode, after a push, and in dreams."""
     model = FrictionModel(level="L2")
-    renderer = FrictionRenderer(model.world, width=640, height=288)
+    renderer = FrictionRenderer(model, width=640, height=288)
     rng = np.random.default_rng(0)
     belief = make_prior_belief(DEFAULT_FRICTION_PRIOR, 50, rng)
     frictions = np.array([0.03, 0.08, 0.15])

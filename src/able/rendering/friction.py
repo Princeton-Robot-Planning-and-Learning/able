@@ -7,7 +7,7 @@ from matplotlib.patches import Circle, Rectangle
 from numpy.typing import NDArray
 
 from able.beliefs.particles import ParticleBelief
-from able.envs.friction.model import FrictionState, FrictionTask
+from able.envs.friction.model import FrictionModel, FrictionState, FrictionTask
 from able.envs.friction.world import (
     GOAL_RGB,
     HOLE_RGB,
@@ -15,7 +15,6 @@ from able.envs.friction.world import (
     SURFACE_NAMES,
     SURFACE_RGB,
     WALL_RGB,
-    PuckWorld,
 )
 from able.rendering.base import Renderer, Snapshot
 
@@ -38,9 +37,9 @@ class FrictionRenderer(Renderer[FrictionState, FrictionTask, NDArray[np.float64]
     """
 
     def __init__(
-        self, world: PuckWorld, width: int = 1280, height: int = 560, dpi: int = 100
+        self, model: FrictionModel, width: int = 1280, height: int = 560, dpi: int = 100
     ) -> None:
-        self._world = world
+        self._world = model.world
         self._shape = (height, width, 3)
         self._fig = Figure(figsize=(width / dpi, height / dpi), dpi=dpi)
         self._fig.set_facecolor(_SURFACE)
