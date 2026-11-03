@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from able.envs.limb.human import get_variant
-from able.envs.limb.model import LimbModel, LimbTask
+from able.envs.limb.model import STOP, LimbModel, LimbTask
 from able.envs.limb.query import LimbQuery, QueryOutcome
 
 THETA = np.array([1.0, 1.0, 1.0])
@@ -99,6 +99,22 @@ def test_broken_constraints_freeze_the_state(model, start):
     assert failed.failure == "robot torque limits" and not failed.reached
     assert model.sample_next_state(failed, np.zeros(7), THETA, rng) is failed
     assert not model.check_goal(task, failed, THETA)
+
+
+def test_stopping_before_the_goal(model, start):
+    """Tests that stopping fails the task and freezes the state without new
+    evidence."""
+    rng = np.random.default_rng(0)
+    task = _make_task(model, start, 0.5)
+    moved = model.sample_next_state(task.initial_state, np.full(7, 0.2), THETA, rng)
+    assert not moved.failure and not moved.reached
+    stopped = model.sample_next_state(moved, STOP, THETA, rng)
+    assert stopped.failure == "stopped before the goal"
+    assert stopped.coupled is moved.coupled
+    assert stopped.max_reach == moved.max_reach
+    assert stopped.signalled == moved.signalled
+    assert model.sample_next_state(stopped, np.full(7, 1.0), THETA, rng) is stopped
+    assert not model.check_goal(task, stopped, THETA)
 
 
 def test_sample_response(model):

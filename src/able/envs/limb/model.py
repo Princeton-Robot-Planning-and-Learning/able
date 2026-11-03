@@ -5,8 +5,9 @@ is a robot torque correction (on top of the torque that holds the system still),
 applied for action_repeat simulator steps. The hidden parameters theta scale the
 person's range of motion. They do not change the physics: moving the limb past the
 person's limit fails the task, and the person signals where it happened. As in
-kinder's environment, the task ends when the limb reaches the goal, and a broken
-safety constraint ends the motion; either way the state stays fixed afterwards.
+kinder's environment, the task ends when the limb reaches the goal. A broken
+safety constraint, or the robot stopping (the STOP action) before the goal, fails
+the task. Either way the state stays fixed afterwards.
 """
 
 import dataclasses
@@ -29,6 +30,11 @@ from able.envs.limb.human import LimbVariant
 from able.envs.limb.query import LimbQuery, QueryModel, QueryOutcome, QuerySimulator
 from able.envs.limb.sim import CoupledState, LimbSim, LimbSimSettings
 from able.structs import Task
+
+# The action that ends the robot's motion, for example after a plan that stops short
+# of the goal.
+STOP = np.full(7, np.nan)
+STOP.setflags(write=False)
 
 
 @dataclass(frozen=True, eq=False)
@@ -161,6 +167,8 @@ class LimbModel(
     ) -> LimbState:
         if state.failure or state.reached:
             return state
+        if np.isnan(action).all():
+            return dataclasses.replace(state, failure="stopped before the goal")
         sim = self.sim
         if state is not self._sim_state:
             sim.restore(state.coupled)
