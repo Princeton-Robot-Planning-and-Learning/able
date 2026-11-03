@@ -130,15 +130,19 @@ def _setup():
     assert isinstance(model, LimbModel)
     distribution = domain.task_distribution
     assert isinstance(distribution, LimbTaskDistribution)
-    sampled = distribution.sample(np.random.default_rng(0))
-    # A nearby goal: bend the elbow a little more.
-    goal = sampled.initial_state.limb_positions.copy()
-    goal[VARIANT.active_joints[2]] += 0.15 * VARIANT.active_signs[2]
-    task = LimbTask(initial_state=sampled.initial_state, goal=goal)
+    task = _make_nearby_task(model, distribution)
     planner = LimbMPCPlanner(model)
     yield domain, task, planner
     planner.close()
     _close(distribution, model)
+
+
+def _make_nearby_task(model: LimbModel, distribution: LimbTaskDistribution) -> LimbTask:
+    """A sampled task's start, with a goal that bends the elbow a little more."""
+    start = distribution.sample(np.random.default_rng(0)).initial_state.coupled
+    goal = np.array(start.limb_positions)
+    goal[VARIANT.active_joints[2]] += 0.15 * VARIANT.active_signs[2]
+    return LimbTask(initial_state=model.get_initial_state(start, goal), goal=goal)
 
 
 def _close(distribution: LimbTaskDistribution, model: LimbModel) -> None:
@@ -179,8 +183,8 @@ def test_retarget():
 
 
 def test_plan_reaches_the_goal(setup):
-    """Tests that the plan reaches the goal in the real environment and holds it
-    there to the end of the horizon."""
+    """Tests that the plan reaches the goal in the real environment, which ends the
+    task."""
     domain, task, planner = setup
     policy = planner.plan(task, _prior(), FAST, Budget(), np.random.default_rng(0))
     stats = policy.get_planning_stats()
@@ -191,6 +195,7 @@ def test_plan_reaches_the_goal(setup):
     real_env = domain.real_env
     assert isinstance(real_env, SimulatedEnvironment)
     trajectory = run_episode(real_env, task, policy)
+    assert trajectory.states[-1].reached
     assert real_env.check_goal(task, trajectory.states[-1])
 
 

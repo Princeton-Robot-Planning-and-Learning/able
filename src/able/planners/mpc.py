@@ -200,8 +200,6 @@ class LimbMPCConfig:
     collision_cost: float = 1e4
     # MPC stops this far inside the goal tolerance, so the replay can drift.
     replay_slack: float = 0.05
-    # The gain of the goal-directed torque that holds the limb after MPC stops.
-    hold_gain: float = 2.0
     divergence_patience: int = 200
     divergence_tolerance: float = 1e-5
 
@@ -397,10 +395,9 @@ class LimbMPCPlanner(
     """Plans torque corrections for a limb task with predictive-sampling MPC.
 
     One iteration of the budget is one MPC step. The policy is the committed
-    controls, then goal-directed torques that hold the limb at the goal to the end
-    of the horizon (holding with no correction lets the limb sag). The planner
-    computes the holding torques while it replays the plan. Its planning statistics
-    are the number of rollouts, the number of MPC steps, whether the goal was
+    controls up to the step where the replay reaches the task's goal, which ends the
+    task, padded with zero corrections to the horizon. Its planning statistics are
+    the number of rollouts, the number of MPC steps, whether the goal was
     retargeted, and the replayed distance to the goal.
     """
 
@@ -491,7 +488,7 @@ class LimbMPCPlanner(
                 num_stale += 1
             best_error = min(best_error, error)
 
-        actions = self._replay(world, start, controls, goal, config.hold_gain, checker)
+        actions = self._replay(world, start, controls, task.goal, checker)
         replay_error = world.get_limb_error(world.env.limb.get_joint_positions(), goal)
         if replay_error >= world.goal_tolerance:
             raise PlanningFailure(f"The replay ended {replay_error:.3f} from the goal")
@@ -501,32 +498,29 @@ class LimbMPCPlanner(
             "retargeted": float(retargeted),
             "replay_error": replay_error,
         }
-        return OpenLoopPolicy(actions, stats)
+        padding = [np.zeros(NUM_ROBOT_JOINTS)] * (model.horizon - len(actions))
+        return OpenLoopPolicy(actions + padding, stats)
 
     def _replay(
         self,
         world: LimbSim,
         start: LimbState,
         controls: list[NDArray[np.float64]],
-        goal: NDArray[np.float64],
-        hold_gain: float,
+        task_goal: NDArray[np.float64],
         checker: _Checker,
     ) -> list[NDArray[np.float64]]:
-        """Replay the controls from the start, then hold the limb at the goal to the
-        end of the horizon, and return all of the actions.
+        """Replay the controls from the start until the limb reaches the task's
+        goal, which ends the task, and return the controls replayed.
 
         Raises PlanningFailure if the replay breaks a constraint.
         """
         world.restore(start.coupled)
-        actions = []
-        for step in range(self._model.horizon):
-            if step < len(controls):
-                action = controls[step]
-            else:
-                action = world.get_limb_directed_torque(goal, hold_gain)
+        for step, control in enumerate(controls):
             for _ in range(self._model.action_repeat):
-                broken = checker.step(world, action)
+                broken = checker.step(world, control)
                 if broken:
                     raise PlanningFailure(f"The replay broke a constraint: {broken}")
-            actions.append(action)
-        return actions
+            positions = world.env.limb.get_joint_positions()
+            if world.get_limb_error(positions, task_goal) < world.goal_tolerance:
+                return controls[: step + 1]
+        return controls
