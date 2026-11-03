@@ -22,6 +22,8 @@ from able.beliefs.interval import IntervalBelief
 from able.cycle import CycleBudgets, run_cycles
 from able.envs.base import FiniteTaskDistribution
 from able.envs.friction.tasks import make_domain as make_friction_domain
+from able.envs.limb.model import LimbTask
+from able.envs.limb.tasks import LimbTaskDistribution
 from able.envs.limb.tasks import make_domain as make_limb_domain
 from able.envs.two_link_arm import make_domain
 from able.models.exact_match_cache import ExactMatchCache
@@ -204,22 +206,36 @@ def test_make_limb_scratch_robot():
     assert robot.planner_params is params
 
 
+def _draw_once(distribution: LimbTaskDistribution) -> LimbTask:
+    """Draw one task, then disconnect the distribution's simulator."""
+    task = distribution.sample(np.random.default_rng(0))
+    distribution.close()
+    return task
+
+
 def test_make_limb_learning_robots():
     """Tests that the limb robots that learn seed MPC with the given model, sleep,
     and that prior-only learns in its first sleep only."""
-    # A short horizon makes every plan fail fast.
-    domain = make_limb_domain(seed=0, horizon=5)
+    # Drawing limb tasks is slow, so the robots train on one task drawn once, and a
+    # planning budget of no MPC steps makes every plan fail at once.
+    domain = make_limb_domain(seed=0)
+    distribution = domain.task_distribution
+    assert isinstance(distribution, LimbTaskDistribution)
+    domain = dataclasses.replace(
+        domain, task_distribution=FiniteTaskDistribution([_draw_once(distribution)])
+    )
     model = MLPRegressor(num_steps=5)
     options = {"model": model, "num_rollouts": 4, "num_particles": 4}
     budgets = _budgets(num_dreams=0)
+    no_steps = Budget(max_iterations=0)
     robots = [
-        make_limb_current_belief_robot(domain, Budget(), **options),
-        make_limb_prior_only_robot(domain, Budget(), **options),
+        make_limb_current_belief_robot(domain, no_steps, **options),
+        make_limb_prior_only_robot(domain, no_steps, **options),
         make_limb_dreaming_robot(
             domain,
             budgets.information_gathering,
             budgets.execution,
-            Budget(),
+            no_steps,
             **options,
         ),
     ]

@@ -8,7 +8,7 @@ from pybullet_helpers.geometry import SE2Pose
 
 from able.beliefs.range_of_motion import RangeOfMotionBelief
 from able.envs.limb.human import RangeOfMotionPrior, get_variant
-from able.envs.limb.model import LimbModel
+from able.envs.limb.model import LimbModel, LimbTask
 from able.envs.limb.sim import CoupledState
 from able.envs.limb.tasks import LimbTaskDistribution, make_domain
 from able.envs.simulated import SimulatedEnvironment
@@ -32,6 +32,9 @@ from able.planners.mpc import (
     retarget,
 )
 from able.structs import Budget, PlanningFailure
+
+# The limb tests share a planned task, so they run on one pytest-xdist worker.
+pytestmark = pytest.mark.xdist_group("limb_mpc")
 
 GOAL = np.array([1.0, -0.5])
 DT = 0.1
@@ -183,9 +186,12 @@ def test_seeding():
 
 
 VARIANT = get_variant("human-left-arm")
-# Few rollouts, for speed.
+# Few, short rollouts, for speed.
 FAST = MPCParams(
-    config=LimbMPCConfig(sampling=PredictiveSamplingConfig(num_rollouts=8)),
+    config=LimbMPCConfig(
+        sampling=PredictiveSamplingConfig(num_rollouts=4, horizon=4),
+        directed_gains=(1.0, 4.0),
+    ),
     num_particles=8,
 )
 
@@ -197,6 +203,14 @@ def _prior() -> RangeOfMotionBelief:
     )
 
 
+def _with_goal(model: LimbModel, task: LimbTask, fraction: float) -> LimbTask:
+    """The task with its goal moved the fraction of the way from the start."""
+    start = task.initial_state.limb_positions
+    goal = start + fraction * (np.asarray(task.goal) - start)
+    initial_state = model.get_initial_state(task.initial_state.coupled, goal)
+    return LimbTask(initial_state=initial_state, goal=goal)
+
+
 @pytest.fixture(name="setup", scope="module")
 def _setup():
     domain = make_domain(seed=0, horizon=60)
@@ -204,8 +218,9 @@ def _setup():
     assert isinstance(model, LimbModel)
     distribution = domain.task_distribution
     assert isinstance(distribution, LimbTaskDistribution)
-    # A sampled task that the fast configuration solves in about 45 MPC steps.
-    task = distribution.sample(np.random.default_rng(3))
+    # Sampled tasks hold the grasp along the line to the goal, so a goal 30% of
+    # the way is reachable, and fast MPC solves it in about 11 steps.
+    task = _with_goal(model, distribution.sample(np.random.default_rng(3)), 0.3)
     planner = LimbMPCPlanner(model)
     yield domain, task, planner
     planner.close()
@@ -383,7 +398,11 @@ def test_fallback_without_the_model(setup):
     """Tests that a failed plan with the model is replanned without it, unless the
     model proposed nothing."""
     domain, task, _ = setup
-    planner = _FailingWithModel(domain.env_model)
+    model = domain.env_model
+    assert isinstance(model, LimbModel)
+    # Without the model, a goal at the start is planned without any MPC steps.
+    task = _with_goal(model, task, 0.0)
+    planner = _FailingWithModel(model)
     try:
         policy = planner.plan(task, _prior(), FAST, Budget(), np.random.default_rng(0))
         assert policy.get_planning_stats()["fell_back"] == 1
