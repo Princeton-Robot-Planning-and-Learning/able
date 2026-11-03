@@ -65,12 +65,14 @@ def test_make_domain(domain):
 
 
 def test_sampled_tasks(domain):
-    """Tests that tasks start grasped, inside the box, and far enough from the goal,
-    and that the robot holds the limb still from the start."""
+    """Tests that tasks start grasped, within the person's range, and far enough
+    from the goal, and that the robot holds the limb still from the start."""
     model = domain.env_model
     assert isinstance(model, LimbModel)
     box = TaskBox()
-    lower, upper = model.variant.get_joint_limits(np.full(3, box.scale))
+    theta = _get_true_theta(domain)
+    lower, upper = model.variant.get_joint_limits(theta)
+    active = list(model.variant.active_joints)
     rng = np.random.default_rng(0)
     tasks = [domain.task_distribution.sample(rng) for _ in range(2)]
     assert not np.allclose(tasks[0].goal, tasks[1].goal)
@@ -78,9 +80,8 @@ def test_sampled_tasks(domain):
         start = task.initial_state
         assert start.coupled.grasp_frame is not None
         for positions in (start.limb_positions, task.goal):
-            active = list(model.variant.active_joints)
-            assert np.all(lower[active] <= positions[active])
-            assert np.all(positions[active] <= upper[active])
+            assert np.all(lower[active] <= positions[active] + 1e-9)
+            assert np.all(positions[active] <= upper[active] + 1e-9)
         separation = model.get_goal_error(task, start)
         assert box.min_separation <= separation <= box.max_separation
 
@@ -88,8 +89,27 @@ def test_sampled_tasks(domain):
         assert state is start
         for _ in range(10):
             state = domain.real_env.step(np.zeros(7)).state
-        assert not state.failure
+        assert not state.failure and not state.violated
         assert (
             model.sim.get_limb_error(state.limb_positions, start.limb_positions) < 0.01
         )
         assert model.get_goal_error(task, state) == pytest.approx(separation, abs=0.01)
+
+
+def test_goals_at_the_edge(domain):
+    """Tests that drawn configurations lie within the person's range, or at the
+    limits their motions set."""
+    model = domain.env_model
+    distribution = domain.task_distribution
+    assert isinstance(model, LimbModel)
+    assert isinstance(distribution, LimbTaskDistribution)
+    theta = _get_true_theta(domain)
+    lower, upper = model.variant.get_joint_limits(theta)
+    active = list(model.variant.active_joints)
+    rng = np.random.default_rng(0)
+    for _ in range(20):
+        inside = distribution.draw_limb_configuration(rng)[active]
+        assert np.all(lower[active] <= inside) and np.all(inside <= upper[active])
+        assert not np.any(np.isclose(inside, model.variant.get_bounds(theta)))
+    edge = distribution.draw_limb_configuration(rng, edge_probability=1.0)[active]
+    assert np.allclose(edge, model.variant.get_bounds(theta))

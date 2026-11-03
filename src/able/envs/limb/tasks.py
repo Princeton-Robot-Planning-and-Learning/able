@@ -152,11 +152,13 @@ def solve_grasp_ik(
 
 @dataclass(frozen=True)
 class TaskBox:
-    """How tasks are drawn: start and goal configurations of the active joints,
-    uniform within the limits of a person with the given scale, and far enough
-    apart. Beyond max_separation, MPC does not converge."""
+    """How tasks are drawn, as on the two-link arm: start and goal configurations of
+    the active joints are uniform within the person's true range, and far enough
+    apart. With probability edge_probability, each active joint of the goal is at
+    the limit its motion sets, where reaching reveals the limit. Beyond
+    max_separation, MPC does not converge."""
 
-    scale: float = 0.9
+    edge_probability: float = 0.5
     min_separation: float = 0.5
     max_separation: float = 1.5
     robot_jitter: float = 0.2
@@ -166,7 +168,7 @@ class TaskBox:
 
 
 class LimbTaskDistribution(TaskDistribution[LimbTask]):
-    """Tasks that the fixed grasp and base can carry out.
+    """Tasks for a person that the fixed grasp and base can carry out.
 
     A draw picks a start configuration where the robot can grasp the limb, and
     approach the grasp from a jittered arm configuration without collisions. It
@@ -179,6 +181,7 @@ class LimbTaskDistribution(TaskDistribution[LimbTask]):
         self,
         model: LimbModel,
         setup: FixedSetup,
+        true_theta: NDArray[np.float64],
         box: TaskBox = TaskBox(),
     ) -> None:
         self._model = model
@@ -188,10 +191,8 @@ class LimbTaskDistribution(TaskDistribution[LimbTask]):
         config = create_variant_config(model.variant.name)
         self._nominal_limb = np.array(config.scene.limb_init_joint_positions)
         self._nominal_robot = np.array(config.robot_initial_joints)
-        lower, upper = model.variant.get_joint_limits(
-            np.full(len(model.variant.active_motions), box.scale)
-        )
-        self._low, self._high = lower, upper
+        self._low, self._high = model.variant.get_joint_limits(true_theta)
+        self._edges = model.variant.get_bounds(true_theta)
         self._grasp: Pose | None = None
         self._resting: dict[int, float] = {}
 
@@ -219,13 +220,13 @@ class LimbTaskDistribution(TaskDistribution[LimbTask]):
         sim, box = self.sim, self._box
         assert self._grasp is not None
         for _ in range(box.max_start_draws):
-            limb_init = self._draw_limb_configuration(rng)
+            limb_init = self.draw_limb_configuration(rng)
             robot_init = self._draw_robot_configuration(rng)
             start = self._approach(limb_init, robot_init, rng)
             if start is None:
                 continue
             for _ in range(box.max_goal_draws):
-                limb_goal = self._draw_limb_configuration(rng)
+                limb_goal = self.draw_limb_configuration(rng, box.edge_probability)
                 separation = sim.get_limb_error(limb_init, limb_goal)
                 if not box.min_separation <= separation <= box.max_separation:
                     continue
@@ -244,13 +245,19 @@ class LimbTaskDistribution(TaskDistribution[LimbTask]):
                 for body in get_scene_collision_ids(sim)
             )
 
-    def _draw_limb_configuration(self, rng: np.random.Generator) -> NDArray[np.float64]:
-        """Active joints uniform within the box, clear of the furniture; the other
-        joints keep the variant's values."""
+    def draw_limb_configuration(
+        self, rng: np.random.Generator, edge_probability: float = 0.0
+    ) -> NDArray[np.float64]:
+        """Active joints uniform within the person's range, or at the limit of their
+        motion with edge_probability, clear of the furniture. The other joints keep
+        the variant's values."""
+        variant = self._model.variant
         for _ in range(self._box.max_configuration_draws):
             positions = self._nominal_limb.copy()
-            for joint in self._model.variant.active_joints:
+            for motion, joint in enumerate(variant.active_joints):
                 positions[joint] = rng.uniform(self._low[joint], self._high[joint])
+                if rng.random() < edge_probability:
+                    positions[joint] = self._edges[motion]
             if not self._in_furniture(positions):
                 return positions
         raise RuntimeError("No limb configuration clear of the furniture")
@@ -355,7 +362,8 @@ def make_domain(
     settings: LimbSimSettings = LimbSimSettings(),
 ) -> LimbDomain:
     """A limb domain for the variant, with a person drawn from the prior unless
-    true_theta is given. The robot's initial belief is the prior."""
+    true_theta is given. Tasks lie within the person's range, and the robot's
+    initial belief is the prior."""
     limb_variant: LimbVariant = get_variant(variant)
     num_motions = len(limb_variant.active_motions)
     rng = np.random.default_rng(seed)
@@ -364,7 +372,9 @@ def make_domain(
     model = LimbModel(limb_variant, settings, horizon=horizon)
     return Domain(
         env_model=model,
-        task_distribution=LimbTaskDistribution(model, load_fixed_setup(variant)),
+        task_distribution=LimbTaskDistribution(
+            model, load_fixed_setup(variant), np.asarray(true_theta)
+        ),
         initial_belief=RangeOfMotionBelief.from_prior(
             prior.mean, prior.stddev, prior.low, prior.high, num_motions
         ),
