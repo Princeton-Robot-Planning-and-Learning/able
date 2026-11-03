@@ -26,6 +26,10 @@ limb = [
     "pybullet_helpers>=0.1.0",
     "scipy",
 ]
+# The friction environment.
+friction = [
+    "scipy",
+]
 develop = [
     "black",
     "docformatter",
