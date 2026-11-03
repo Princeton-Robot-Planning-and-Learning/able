@@ -127,18 +127,22 @@ def test_known_limits_always_hit():
 
 def test_dreaming_beats_current_belief():
     """Tests that dreaming hits the cache more often than training on the current
-    belief, and that both plan with fewer samples than planning from scratch."""
+    belief, and that both plan with fewer samples than planning from scratch.
+
+    Three goals keep the test fast, and 16 dreams cover most of the beliefs the
+    robot can reach after executing one of them.
+    """
     hits: dict[str, list[float]] = {"current_belief": [], "dreaming": []}
     samples: dict[str, list[float]] = {"scratch": [], **{k: [] for k in hits}}
     for seed in range(3):
-        domain = make_domain(seed)
+        domain = make_domain(seed, num_goals=3)
         robots = {
             "scratch": make_scratch_robot(domain),
             "current_belief": make_current_belief_robot(domain, Budget()),
             "dreaming": _make_dreaming_robot(domain),
         }
         for name, robot in robots.items():
-            stats = _get_stats(robot, domain, num_dreams=8, num_cycles=4, seed=seed)
+            stats = _get_stats(robot, domain, num_dreams=16, num_cycles=4, seed=seed)
             if name in hits:
                 hits[name].extend(s["used_warm_start"] for s in stats)
             samples[name].extend(s["num_samples"] for s in stats)
@@ -151,7 +155,7 @@ def test_dreaming_beats_current_belief():
 def test_prior_only_plans_help_only_under_the_prior():
     """Tests that an evaluation uses a cached plan exactly when the belief still has
     the prior's key."""
-    domain = make_domain(seed=0, edge_probability=1.0)
+    domain = make_domain(seed=0)
     prior = domain.initial_belief
     assert isinstance(prior, IntervalBelief)
     task_distribution = domain.task_distribution

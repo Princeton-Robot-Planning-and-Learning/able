@@ -31,7 +31,7 @@ class _BatchSizeLearner(Learner[np.ndarray, RandomShootingParams]):
 
 def test_robot():
     """Tests that each robot method changes only what it should."""
-    domain = make_domain(seed=0, edge_probability=1.0)
+    domain = make_domain(seed=0)
     planner = RandomShootingPlanner(TwoLinkArmModel())
     robot = Robot(
         planner=planner,
