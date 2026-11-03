@@ -99,7 +99,7 @@ class FrictionModel(
         PushRecord,
     ]
 ):
-    """A simulator model of pushing the puck, in 2D (PyMunk).
+    """A simulator model of pushing the puck, in 2D (PyMunk) or 3D (PyBullet).
 
     Each step resets the simulator to the state's true poses with the hidden
     frictions, seeded from the given random stream, and runs the push. The step
