@@ -9,13 +9,21 @@ import pytest
 from able.belief_updaters.friction import FrictionBeliefUpdater
 from able.envs.friction.model import NO_PUSH, FrictionModel
 from able.envs.friction.tasks import make_domain
+from able.envs.friction.world import Push
 from able.episodes import run_episode
+from able.models.base import ConditionalModel, Dataset
 from able.planners.pomcpow import (
     POMCPOW,
+    X_DIM,
+    Y_DIM,
     FrictionPOMCPOWPlanner,
     FrictionPOMCPOWPolicy,
     POMCPOWConfig,
     POMCPOWParams,
+    ProposalConfig,
+    SearchStats,
+    encode_push,
+    get_push_features,
 )
 from able.structs import Budget, PlanningFailure, Task
 
@@ -144,7 +152,10 @@ def test_replans_each_push_under_the_updated_belief(setup):
     assert world.push_feasible(task.initial_state.puck_array, first.angle, first.stance)
     trajectory = run_episode(domain.real_env, task, policy, max_steps=2)
     assert trajectory.actions[0] == first and len(policy.searches) == 2
-    assert policy.get_planning_stats() == {"num_sims": 80, "num_searches": 2}
+    stats = policy.get_planning_stats()
+    assert stats["num_sims"] == 80 and stats["num_searches"] == 2
+    # An untrained model proposes nothing, so the search is plain POMCPOW.
+    assert stats["num_seeded_searches"] == 0
     states = trajectory.states
     expected = planner.belief_updater.update_from_transition(
         belief, states[0], first, states[1]
@@ -175,3 +186,68 @@ def test_budget_and_dead_ends(setup):
     slot = replace(task.initial_state, puck=(2.6, 2.2), true_puck=(2.6, 2.2))
     with pytest.raises(PlanningFailure, match="No feasible push"):
         _plan(planner, Task(slot, task.goal), domain.initial_belief)
+
+
+class _FixedModel(ConditionalModel):
+    """Always proposes the same push."""
+
+    def __init__(self, push: Push) -> None:
+        self.push = push
+
+    def fit(self, dataset: Dataset) -> ConditionalModel:
+        return self
+
+    def sample(self, x, num_samples, rng):
+        return np.array([encode_push(self.push)] * num_samples)
+
+
+class _FailingWithModel(FrictionPOMCPOWPlanner):
+    """Finds no push whenever the model guides the search."""
+
+    def search(self, state, belief, config, rng, proposer=None):
+        if proposer is not None:
+            return None, SearchStats()
+        return super().search(state, belief, config, rng, proposer)
+
+
+def _make_failing(model: FrictionModel) -> FrictionPOMCPOWPlanner:
+    return _FailingWithModel(model, FrictionBeliefUpdater(model.world))
+
+
+def test_plan_examples(setup):
+    """Each search gives rows of its features and well-visited root pushes, with
+    the chosen push among them, costed by the negative of their values."""
+    domain, planner, task = setup
+    belief = domain.initial_belief
+    policy = _plan(planner, task, belief)
+    run_episode(domain.real_env, task, policy, max_steps=2)
+    rows = planner.get_plan_examples(task, belief, policy)
+    assert rows.x.shape[1] == X_DIM and rows.y.shape[1] == Y_DIM
+    assert sorted(set(rows.groups)) == [0, 1]
+    for group, search in enumerate(policy.searches):
+        features = get_push_features(
+            search.state.puck_array, task.goal, planner.pomdp.world, belief
+        )
+        mine = rows.groups == group
+        assert np.allclose(rows.x[mine], features)
+        assert any(np.allclose(y, encode_push(search.push)) for y in rows.y[mine])
+        values = [value for _, _, value in search.root_values]
+        assert all(np.isclose(values, -cost).any() for cost in rows.costs[mine])
+
+
+def test_a_trained_model_guides_the_search(setup):
+    """The model's push is tried at the root, and a search that fails with the
+    model is repeated without it."""
+    domain, planner, task = setup
+    push = Push(1.5708, 0.6, 0.0)
+    model = _FixedModel(push)
+    params = planner.set_model(replace(PARAMS, proposal=ProposalConfig(mix=1.0)), model)
+    assert planner.get_model(params) is model
+    rng = np.random.default_rng(0)
+    policy = planner.plan(task, domain.initial_belief, params, Budget(), rng)
+    assert push in [p for p, _, _ in policy.searches[0].root_values]
+    assert policy.get_planning_stats()["num_seeded_searches"] == 1
+    failing = _make_failing(domain.env_model)
+    policy = failing.plan(task, domain.initial_belief, params, Budget(), rng)
+    stats = policy.get_planning_stats()
+    assert stats["num_fallbacks"] == 1 and stats["num_sims"] == 40
