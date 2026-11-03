@@ -57,3 +57,11 @@ python experiments/run_single_experiment.py env=limb approach=limb_scratch budge
 ```
 
 `env.domain.variant` chooses the scene and limb, for example `env.domain.variant=bed-right-leg`. Planning a task takes a few minutes with the default 32 MPC rollouts per step.
+
+The robots that learn seed MPC with a flow-matching model of the next controls, trained while they sleep on plans for sampled tasks. As on the arm, they differ only in the beliefs they train under: `limb_current_belief`, `limb_prior_only`, and `limb_dreaming`. To compare them with `limb_scratch` over five seeds:
+
+```
+./experiments/run_limb_comparison.sh
+```
+
+The limb environment evaluates 2 tasks per cycle and dreams 4 times per sleep, planning 1 training task per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.

@@ -27,6 +27,7 @@ from able.learners.belief_sources import (
     PriorSource,
 )
 from able.learners.model_learner import ModelLearner
+from able.models.base import ConditionalModel
 from able.models.exact_match_cache import ExactMatchCache
 from able.planners.mpc import LimbMPCPlanner, MPCParams
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
@@ -174,19 +175,16 @@ def make_dreaming_robot(
     )
 
 
-def make_limb_scratch_robot(
+def _make_limb_parts(
     domain: LimbDomain,
-    num_rollouts: int = 32,
-    num_particles: int = 32,
-    recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
-) -> LimbRobot:
-    """A robot that plans with MPC, asks the person to push to their limit, and
-    never learns.
-
-    MPC scores num_rollouts candidates per step and constrains the limb to the
-    range that half of num_particles belief samples allow.
-    """
-    del recorder  # unused because the robot imagines nothing while it sleeps
+    num_rollouts: int,
+    num_particles: int,
+    model: ConditionalModel | None = None,
+) -> tuple[LimbModel, LimbMPCPlanner, RangeOfMotionBeliefUpdater, PushToLimitGatherer]:
+    """The limb robot's model of the environment, planner, belief updater, and
+    gatherer. MPC scores num_rollouts candidates per step, constrains the limb to
+    the range that half of num_particles belief samples allow, and is seeded by the
+    model, if given."""
     env_model = domain.env_model
     assert isinstance(env_model, LimbModel)
     default = MPCParams()
@@ -194,12 +192,143 @@ def make_limb_scratch_robot(
     params = MPCParams(
         config=dataclasses.replace(default.config, sampling=sampling),
         num_particles=num_particles,
+        model=default.model if model is None else model,
     )
     belief_updater = RangeOfMotionBeliefUpdater(env_model.variant)
+    return (
+        env_model,
+        LimbMPCPlanner(env_model, params),
+        belief_updater,
+        PushToLimitGatherer(env_model.variant, belief_updater),
+    )
+
+
+def make_limb_scratch_robot(
+    domain: LimbDomain,
+    num_rollouts: int = 32,
+    num_particles: int = 32,
+    recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
+) -> LimbRobot:
+    """A robot that plans with MPC, asks the person to push to their limit, and
+    never learns."""
+    del recorder  # unused because the robot imagines nothing while it sleeps
+    _, planner, belief_updater, gatherer = _make_limb_parts(
+        domain, num_rollouts, num_particles
+    )
     return Robot(
-        planner=LimbMPCPlanner(env_model, params),
+        planner=planner,
         learner=NullLearner(),
         belief_updater=belief_updater,
-        info_gatherer=PushToLimitGatherer(env_model.variant, belief_updater),
+        info_gatherer=gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
+def make_limb_current_belief_robot(
+    domain: LimbDomain,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_training_tasks: int = 1,
+    num_rollouts: int = 32,
+    num_particles: int = 32,
+    recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
+) -> LimbRobot:
+    """A limb robot whose model, while it sleeps, learns plans for sampled tasks
+    under its current belief. It never anticipates belief updates."""
+    del recorder  # unused because the robot imagines nothing while it sleeps
+    _, planner, belief_updater, gatherer = _make_limb_parts(
+        domain, num_rollouts, num_particles, model
+    )
+    return Robot(
+        planner=planner,
+        learner=ModelLearner(
+            planner,
+            domain.task_distribution,
+            CurrentBeliefSource(),
+            planning_budget,
+            refit="per_sleep",
+            num_training_tasks=num_training_tasks,
+        ),
+        belief_updater=belief_updater,
+        info_gatherer=gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
+def make_limb_prior_only_robot(
+    domain: LimbDomain,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_training_tasks: int = 1,
+    num_rollouts: int = 32,
+    num_particles: int = 32,
+    recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
+) -> LimbRobot:
+    """A limb robot whose model learns plans for sampled tasks under the prior in
+    its first sleep, and never learns again."""
+    del recorder  # unused because the robot imagines nothing while it sleeps
+    _, planner, belief_updater, gatherer = _make_limb_parts(
+        domain, num_rollouts, num_particles, model
+    )
+    return Robot(
+        planner=planner,
+        learner=ModelLearner(
+            planner,
+            domain.task_distribution,
+            PriorSource(domain.initial_belief),
+            planning_budget,
+            refit="per_sleep",
+            max_sleeps=1,
+            num_training_tasks=num_training_tasks,
+        ),
+        belief_updater=belief_updater,
+        info_gatherer=gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
+def make_limb_dreaming_robot(
+    domain: LimbDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_training_tasks: int = 1,
+    num_rollouts: int = 32,
+    num_particles: int = 32,
+    recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
+) -> LimbRobot:
+    """A limb robot that dreams while it sleeps: its model learns plans for sampled
+    tasks under the beliefs it imagines holding at evaluation.
+
+    The budgets should match the cycle budgets for information gathering, task
+    execution, and planning.
+    """
+    env_model, planner, belief_updater, gatherer = _make_limb_parts(
+        domain, num_rollouts, num_particles, model
+    )
+    belief_source: ImaginedNextBeliefSource = ImaginedNextBeliefSource(
+        env_model,
+        domain.task_distribution,
+        planner,
+        belief_updater,
+        gatherer,
+        gathering_budget=gathering_budget,
+        execution_budget=execution_budget,
+        planning_budget=planning_budget,
+        recorder=recorder,
+    )
+    return Robot(
+        planner=planner,
+        learner=ModelLearner(
+            planner,
+            domain.task_distribution,
+            belief_source,
+            planning_budget,
+            refit="per_sleep",
+            num_training_tasks=num_training_tasks,
+        ),
+        belief_updater=belief_updater,
+        info_gatherer=gatherer,
         initial_belief=domain.initial_belief,
     )
