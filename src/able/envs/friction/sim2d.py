@@ -190,6 +190,16 @@ class ObjectCentricDynPuckPushing2DEnv(
         """True (hidden) friction per surface; for evaluation only, not planners."""
         return self._frictions
 
+    @property
+    def puck_position(self) -> NDArray[np.float64]:
+        """The puck's true position."""
+        return self._puck_position()
+
+    @property
+    def robot_pose(self) -> NDArray[np.float64]:
+        """The base's true (x, y, heading)."""
+        return self._robot_pose.copy()
+
     # ------------------------------------------------------------------ state
 
     def _create_constant_initial_state_dict(self) -> dict[Object, dict[str, float]]:
