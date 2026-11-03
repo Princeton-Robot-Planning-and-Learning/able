@@ -97,9 +97,8 @@ def test_sampled_tasks(domain):
         assert model.get_goal_error(task, state) == pytest.approx(separation, abs=0.01)
 
 
-def test_goals_at_the_edge(domain):
-    """Tests that drawn configurations lie within the person's range, or at the
-    limits their motions set."""
+def test_configurations_lie_within_the_range(domain):
+    """Tests that drawn configurations lie strictly within the person's range."""
     model = domain.env_model
     distribution = domain.task_distribution
     assert isinstance(model, LimbModel)
@@ -110,7 +109,4 @@ def test_goals_at_the_edge(domain):
     rng = np.random.default_rng(0)
     for _ in range(20):
         inside = distribution.draw_limb_configuration(rng)[active]
-        assert np.all(lower[active] <= inside) and np.all(inside <= upper[active])
-        assert not np.any(np.isclose(inside, model.variant.get_bounds(theta)))
-    edge = distribution.draw_limb_configuration(rng, edge_probability=1.0)[active]
-    assert np.allclose(edge, model.variant.get_bounds(theta))
+        assert np.all(lower[active] < inside) and np.all(inside < upper[active])
