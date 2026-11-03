@@ -120,3 +120,37 @@ def test_record_videos(tmp_path: Path) -> None:
         "cycle_000_3_execution.mp4",
         "cycle_000_4_evaluation.mp4",
     ]
+
+
+def test_limb(tmp_path: Path) -> None:
+    """Tests one short cycle in the limb environment, with videos."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "env=limb",
+            "approach=limb_scratch",
+            "num_cycles=1",
+            "num_eval_tasks=1",
+            "env.domain.horizon=10",
+            "approach.num_rollouts=4",
+            "approach.num_particles=4",
+            "budgets.information_gathering.max_iterations=1",
+            "record_videos=true",
+            f"hydra.run.dir={tmp_path}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    eval_df = pd.read_csv(tmp_path / "eval_results.csv")
+    assert list(eval_df.task_id) == [0]
+    cycle_df = pd.read_csv(tmp_path / "cycle_results.csv")
+    assert list(cycle_df.num_queries) == [1]
+    assert list(cycle_df.num_executed_tasks) == [1]
+    assert sorted(p.name for p in (tmp_path / "videos").iterdir()) == [
+        "cycle_000_2_queries.mp4",
+        "cycle_000_3_execution.mp4",
+        "cycle_000_4_evaluation.mp4",
+    ]

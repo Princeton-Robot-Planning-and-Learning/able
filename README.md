@@ -45,3 +45,15 @@ Rendering happens after each stage ends, so it does not affect planning or sleep
 ```
 python experiments/combine_videos.py --run_dir <run directory>
 ```
+
+## Limb repositioning
+
+The limb environment needs the `limb` extra (`pip install -e ".[limb]"`). IKFast compiles on first use and needs LAPACK and BLAS (on Ubuntu, `apt install liblapack-dev libblas-dev`).
+
+The robot holds a person's limb and moves it to a goal configuration with MPC, without passing the person's unknown range of motion. To run the robot that plans from scratch, asking one query per cycle:
+
+```
+python experiments/run_single_experiment.py env=limb approach=limb_scratch budgets.information_gathering.max_iterations=1
+```
+
+`env.domain.variant` chooses the scene and limb, for example `env.domain.variant=bed-right-leg`. Planning a task takes a few minutes with the default 32 MPC rollouts per step.

@@ -1,0 +1,4 @@
+_target_: able.approaches.make_limb_scratch_robot
+# MPC candidates per step, and belief samples for the believed range of motion.
+num_rollouts: 32
+num_particles: 32

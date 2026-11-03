@@ -399,16 +399,20 @@ class LimbMPCPlanner(
     task, then STOP to the horizon, so nothing moves after a plan that stops short
     of the goal (for example, at a retargeted goal). Its planning statistics are
     the number of rollouts, the number of MPC steps, whether the goal was
-    retargeted, and the replayed distance to the goal.
+    retargeted, and the replayed distance to the goal. The default parameters, if
+    given, replace MPCParams().
     """
 
-    def __init__(self, model: LimbModel) -> None:
+    def __init__(
+        self, model: LimbModel, default_params: MPCParams | None = None
+    ) -> None:
         self._model = model
+        self._default_params = MPCParams() if default_params is None else default_params
         self._world: LimbSim | None = None
         self._rollout_world: LimbSim | None = None
 
     def get_default_params(self) -> MPCParams:
-        return MPCParams()
+        return self._default_params
 
     def close(self) -> None:
         """Disconnect the planner's simulators."""

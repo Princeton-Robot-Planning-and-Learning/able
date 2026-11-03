@@ -7,12 +7,14 @@ import numpy as np
 from able.approaches import (
     make_current_belief_robot,
     make_dreaming_robot,
+    make_limb_scratch_robot,
     make_prior_only_robot,
     make_scratch_robot,
 )
 from able.beliefs.interval import IntervalBelief
 from able.cycle import CycleBudgets, run_cycles
 from able.envs.base import FiniteTaskDistribution
+from able.envs.limb.tasks import make_domain as make_limb_domain
 from able.envs.two_link_arm import make_domain
 from able.models.exact_match_cache import ExactMatchCache
 from able.planners.random_shooting import RandomShootingParams, get_plan_features
@@ -174,3 +176,16 @@ def test_prior_only_plans_help_only_under_the_prior():
             num_hits += hit
     # With every goal at a limit, the first execution changes the belief.
     assert num_hits == 0
+
+
+def test_make_limb_scratch_robot():
+    """Tests that the limb scratch robot uses the requested MPC settings and never
+    changes its parameters."""
+    domain = make_limb_domain(seed=0)
+    robot = make_limb_scratch_robot(domain, num_rollouts=8, num_particles=4)
+    params = robot.planner_params
+    assert params.config.sampling.num_rollouts == 8
+    assert params.num_particles == 4
+    assert robot.belief is domain.initial_belief
+    robot.sleep(Budget(max_iterations=1), np.random.default_rng(0))
+    assert robot.planner_params is params
