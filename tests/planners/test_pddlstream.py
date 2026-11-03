@@ -5,16 +5,26 @@ from collections import Counter
 
 import numpy as np
 import pytest
+from pybullet_helpers.geometry import Pose
 
 from able.beliefs.particles import ParticleBelief
 from able.envs.human_reach.model import NO_ACTION, ReachModel
+from able.envs.human_reach.scene import BedsideStocking3DEnvConfig
+from able.envs.human_reach.streams import Placement
 from able.envs.human_reach.tasks import make_domain
+from able.models.base import ConditionalModel, Dataset
 from able.planners.pddlstream import (
+    MAX_REQUESTED,
     PDDLStreamParams,
+    PlaceProposal,
     ReachPDDLStreamPlanner,
+    build_stream_context,
     counted,
+    get_bedside_slots,
+    get_place_features,
     private_cwd,
 )
+from able.policies.base import OpenLoopPolicy
 from able.structs import Budget, PlanningFailure
 
 THETA = np.array([0.7, 0.6, 0.65])
@@ -88,4 +98,115 @@ def test_reach_planner(tmp_path, monkeypatch):
             rng,
         )
     assert not list(tmp_path.iterdir())
+    _close(model, planner)
+
+
+class _FixedModel(ConditionalModel):
+    """Always proposes the same placement."""
+
+    def __init__(self, point) -> None:
+        self.point = np.asarray(point, dtype=float)
+
+    def fit(self, dataset: Dataset) -> ConditionalModel:
+        return self
+
+    def sample(self, x, num_samples, rng):
+        return np.tile(self.point, (num_samples, 1))
+
+
+class _FailingWithModel(ReachPDDLStreamPlanner):
+    """Finds no plan whenever the model guides it."""
+
+    def _solve(self, task, particles, params, budget, rng, proposal, stats, start_time):
+        if proposal is not None:
+            return None
+        return super()._solve(
+            task, particles, params, budget, rng, proposal, stats, start
+        )
+
+
+def _make_failing(model: ReachModel) -> ReachPDDLStreamPlanner:
+    return _FailingWithModel(model, PDDLStreamParams(max_time=60))
+
+
+def _placement(item: str, xyz) -> Placement:
+    return Placement(item, Pose(tuple(xyz)), "nightstand")
+
+
+def test_features_and_labels():
+    """A row per requested item the plan places: its one-hot, the clutter's slots
+    and the belief, labeled with its final placement."""
+    domain = make_domain(seed=0, num_requested=2, num_clutter=2)
+    model = domain.env_model
+    assert isinstance(model, ReachModel)
+    task = domain.task_distribution.sample(np.random.default_rng(0))
+    belief = domain.initial_belief
+    assert isinstance(belief, ParticleBelief)
+    # make_domain's default scene config.
+    scene, config = task.initial_state.scene, BedsideStocking3DEnvConfig()
+    num_slots = len(get_bedside_slots(config))
+    x = get_place_features(scene, config, belief, "req1")
+    assert x.shape == (MAX_REQUESTED + num_slots + 6,)
+    assert x[1] == 1 and x[:MAX_REQUESTED].sum() == 1
+    assert x[MAX_REQUESTED : MAX_REQUESTED + num_slots].sum() == 2
+    plan = (
+        ("place", ("req0", _placement("req0", (0.7, 0.3, 0.6)))),
+        ("place", ("clutter0", _placement("clutter0", (2.2, 0.0, 0.6)))),
+        ("place", ("req1", _placement("req1", (0.7, 0.0, 0.7)))),
+        ("place", ("req0", _placement("req0", (0.8, 0.3, 0.6)))),
+    )
+    planner = ReachPDDLStreamPlanner(model)
+    rows = planner.get_plan_examples(task, belief, OpenLoopPolicy(list(plan)))
+    assert rows.x.shape == (2, len(x)) and rows.y.shape == (2, 3)
+    assert np.allclose(rows.y[0], (0.8, 0.3, 0.6))  # the final placement
+    _close(model, planner)
+
+
+def test_place_proposal_ranks_the_nearest_slot_first():
+    """The slot nearest most draws comes first; items without draws are random."""
+    domain = make_domain(seed=0, num_requested=2, num_clutter=0)
+    model = domain.env_model
+    assert isinstance(model, ReachModel)
+    planner = ReachPDDLStreamPlanner(model)
+    scene = domain.task_distribution.sample(
+        np.random.default_rng(0)
+    ).initial_state.scene
+    rng = np.random.default_rng(0)
+    points = build_stream_context(planner.sim, scene).slot_points("req0")
+    j = len(points) // 2
+    samples = points[j] + rng.normal(0, 0.005, (16, 3))
+    ctx = build_stream_context(
+        planner.sim, scene, proposal=PlaceProposal({"req0": samples})
+    )
+    order = ctx.place_order("req0")
+    assert order[0] == j and sorted(order) == list(range(len(points)))
+    assert sorted(ctx.place_order("req1")) == list(range(len(points)))
+    _close(model, planner)
+
+
+def test_a_trained_model_guides_planning(tmp_path, monkeypatch):
+    """A model's placements guide the plan, and planning that fails with the model
+    is repeated without it."""
+    monkeypatch.chdir(tmp_path)
+    domain = make_domain(seed=0, num_requested=2, num_clutter=0, true_theta=THETA)
+    model = domain.env_model
+    assert isinstance(model, ReachModel)
+    planner = _make_planner(model)
+    task = domain.task_distribution.sample(np.random.default_rng(0))
+    slot = build_stream_context(planner.sim, task.initial_state.scene).slot_points(
+        "req0"
+    )[0]
+    params = planner.set_model(planner.get_default_params(), _FixedModel(slot))
+    rng = np.random.default_rng(0)
+    policy = planner.plan(task, _point_belief(THETA), params, Budget(), rng)
+    stats = policy.get_planning_stats()
+    assert stats["seeded"] == 1.0 and stats["fell_back"] == 0.0
+    plain = planner.plan(
+        task, _point_belief(THETA), planner.get_default_params(), Budget(), rng
+    )
+    assert plain.get_planning_stats()["seeded"] == 0.0
+    failing = _make_failing(model)
+    policy = failing.plan(task, _point_belief(THETA), params, Budget(), rng)
+    assert policy.get_planning_stats()["fell_back"] == 1.0
+    failing.close()
     _close(model, planner)

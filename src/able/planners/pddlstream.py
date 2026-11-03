@@ -2,17 +2,19 @@
 PDDLStream problem and planner for the human reach environment."""
 
 import contextlib
+import dataclasses
 import io
 import os
 import shutil
 import sys
 import tempfile
+import time
 from collections import Counter
 from contextlib import contextmanager, redirect_stdout
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
@@ -32,6 +34,7 @@ from able.envs.human_reach.model import (
     ReachTask,
 )
 from able.envs.human_reach.scene import (
+    BedsideStocking3DEnvConfig,
     BedsideStocking3DObjectCentricState,
     ObjectCentricBedsideStocking3DEnv,
 )
@@ -48,8 +51,10 @@ from able.envs.human_reach.streams import (
     test_clear,
     test_usable,
 )
-from able.planners.base import Planner
-from able.policies.base import OpenLoopPolicy
+from able.models.base import ConditionalModel, Dataset
+from able.models.flow_matching import FlowMatchingModel
+from able.planners.base import TrainablePlanner
+from able.policies.base import OpenLoopPolicy, Policy
 from able.structs import Budget, PlanningFailure
 
 
@@ -223,29 +228,100 @@ def plan_bedside(
     )
 
 
-@dataclass(frozen=True)
+# The largest number of requested items, which sets the item one-hot's size.
+MAX_REQUESTED = 8
+
+
+@dataclass(frozen=True, eq=False)
 class PDDLStreamParams:
     """Parameters of the human reach PDDLStream planner.
 
     A requested item's pose is usable if at least 1 - delta of num_particles belief
-    particles reach it. Planning stops after max_time seconds.
+    particles reach it. Planning stops after max_time seconds. The model proposes
+    num_draws placements per requested item from get_place_features(), which rank
+    the candidate slots; an untrained model proposes nothing.
     """
 
     max_time: float = 300.0
     num_particles: int = 256
     delta: float = 0.1
     algorithm: str = "adaptive"
+    model: ConditionalModel = field(default_factory=FlowMatchingModel)
+    num_draws: int = 16
+
+
+def get_bedside_slots(config: BedsideStocking3DEnvConfig) -> NDArray[np.float64]:
+    """Every bedside slot's (x, y, top z)."""
+    return np.concatenate([config.region_slots(r) for r in config.bedside_regions])
+
+
+def get_place_features(
+    scene: BedsideStocking3DObjectCentricState,
+    config: BedsideStocking3DEnvConfig,
+    belief: ParticleBelief,
+    item: str,
+) -> NDArray[np.float64]:
+    """The model's input for a requested item: the item (one-hot), which bedside
+    slots the clutter occupies, and the belief's mean and standard deviation."""
+    onehot = np.zeros(MAX_REQUESTED)
+    onehot[int(item.removeprefix("req"))] = 1.0
+    slots = get_bedside_slots(config)
+    occupied = np.zeros(len(slots))
+    clutter = [scene.get_object_pose(c).position[:2] for c in scene.clutter_objects]
+    if clutter:
+        gap = np.abs(slots[:, None, :2] - np.array(clutter)[None]).max(-1)
+        occupied = (gap < config.slot_spacing / 2).any(1).astype(float)
+    return np.concatenate([onehot, occupied, belief.mean, belief.std])
+
+
+def get_final_placements(
+    plan: Sequence[ReachAction],
+) -> dict[str, tuple[float, float, float]]:
+    """Where the plan places each item last."""
+    final = {}
+    for name, args in plan:
+        if name == "place":
+            x, y, z = args[1].pose.position
+            final[args[0]] = (float(x), float(y), float(z))
+    return final
+
+
+@dataclass(frozen=True)
+class PlaceProposal:
+    """Model draws of each requested item's placement, which rank the candidate
+    slots."""
+
+    samples: dict[str, NDArray[np.float64]]  # item -> (k, 3)
+
+    def order(
+        self, o: str, points: NDArray[np.float64], rng: np.random.Generator
+    ) -> NDArray[np.int64]:
+        """Slots nearest a draw, most drawn first, then the rest at random."""
+        if o not in self.samples:
+            return rng.permutation(len(points))
+        near = np.linalg.norm(self.samples[o][:, None] - points[None], axis=-1).argmin(
+            1
+        )
+        ids, first, counts = np.unique(near, return_index=True, return_counts=True)
+        ranked = ids[np.lexsort((first, -counts))]
+        rest = rng.permutation(np.setdiff1d(np.arange(len(points)), ranked))
+        return np.concatenate([ranked, rest]).astype(np.int64)
 
 
 class ReachPDDLStreamPlanner(
-    Planner[ReachState, ReachAction, ReachTask, NDArray[np.float64], PDDLStreamParams]
+    TrainablePlanner[
+        ReachState, ReachAction, ReachTask, NDArray[np.float64], PDDLStreamParams
+    ]
 ):
     """Plans the whole human reach task with PDDLStream, in a simulator of its own.
 
     The policy executes the plan's actions, then NO_ACTION until the horizon; a
-    plan longer than the horizon fails. The planning budget's wall time, if set,
-    caps max_time. The statistics are the number of stream evaluations and the
-    plan's length. The default parameters, if given, replace PDDLStreamParams().
+    plan longer than the horizon fails. The model in the parameters ranks where
+    each requested item is placed first; if planning with it fails, the planner
+    plans again without it. The planning budget's wall time, if set, caps all
+    planning. The statistics are the number of stream evaluations, the plan's
+    length, whether the model guided the plan, and whether it fell back. The
+    default parameters, if given, replace PDDLStreamParams().
     """
 
     def __init__(
@@ -279,6 +355,37 @@ class ReachPDDLStreamPlanner(
     def get_default_params(self) -> PDDLStreamParams:
         return self._default_params
 
+    def get_model(self, params: PDDLStreamParams) -> ConditionalModel:
+        return params.model
+
+    def set_model(
+        self, params: PDDLStreamParams, model: ConditionalModel
+    ) -> PDDLStreamParams:
+        return dataclasses.replace(params, model=model)
+
+    def get_plan_examples(
+        self,
+        task: ReachTask,
+        belief: Belief[NDArray[np.float64]],
+        policy: Policy[ReachState, ReachAction],
+    ) -> Dataset:
+        """One row per requested item the plan places: its features under the
+        belief, and where the plan places it last."""
+        assert isinstance(belief, ParticleBelief), "Need a ParticleBelief"
+        assert isinstance(policy, OpenLoopPolicy), "Need a plan from plan()"
+        final = get_final_placements(policy.actions)
+        scene, config = task.initial_state.scene, self._model.config
+        items = [o for o in scene.requested_objects if o in final]
+        if not items:
+            x_dim = MAX_REQUESTED + len(get_bedside_slots(config)) + 6
+            return Dataset.empty(x_dim, 3)
+        return Dataset(
+            x=np.array([get_place_features(scene, config, belief, o) for o in items]),
+            y=np.array([final[o] for o in items]),
+            costs=np.zeros(len(items)),
+            groups=np.zeros(len(items), dtype=np.int64),
+        )
+
     def plan(
         self,
         task: ReachTask,
@@ -289,16 +396,70 @@ class ReachPDDLStreamPlanner(
     ) -> OpenLoopPolicy[ReachState, ReachAction]:
         """Plan under num_particles of the belief's particles.
 
-        Raises PlanningFailure if PDDLStream finds no plan in time.
+        Raises PlanningFailure if PDDLStream finds no plan in time, with and
+        without the model.
         """
         assert isinstance(belief, ParticleBelief), "Need a ParticleBelief"
+        start_time = time.perf_counter()
         particles = belief.particles
         if len(particles) > params.num_particles:
             keep = rng.choice(len(particles), params.num_particles, replace=False)
             particles = particles[keep]
+        proposal = self._propose(task, belief, params, rng)
+        stats = {"stream_calls": 0.0, "seeded": float(proposal is not None)}
+        stats["fell_back"] = 0.0
+        plan = self._solve(
+            task, particles, params, budget, rng, proposal, stats, start_time
+        )
+        if plan is None and proposal is not None:
+            stats["fell_back"] = 1.0
+            plan = self._solve(
+                task, particles, params, budget, rng, None, stats, start_time
+            )
+        if plan is None:
+            raise PlanningFailure("PDDLStream found no plan")
+        horizon = self._model.horizon
+        if len(plan) > horizon:
+            raise PlanningFailure("The plan is longer than the horizon")
+        stats["plan_length"] = len(plan)
+        actions = [tuple(action) for action in plan]
+        return OpenLoopPolicy(actions + [NO_ACTION] * (horizon - len(plan)), stats)
+
+    def _propose(
+        self,
+        task: ReachTask,
+        belief: ParticleBelief,
+        params: PDDLStreamParams,
+        rng: np.random.Generator,
+    ) -> PlaceProposal | None:
+        """The model's placements for each requested item, or None if it proposes
+        nothing."""
+        scene, config = task.initial_state.scene, self._model.config
+        samples = {}
+        for item in scene.requested_objects:
+            x = get_place_features(scene, config, belief, item)
+            draws = params.model.sample(x, params.num_draws, rng)
+            if len(draws):
+                samples[item] = draws
+        return PlaceProposal(samples) if samples else None
+
+    def _solve(
+        self,
+        task: ReachTask,
+        particles: NDArray[np.float64],
+        params: PDDLStreamParams,
+        budget: Budget,
+        rng: np.random.Generator,
+        proposal: PlaceProposal | None,
+        stats: dict[str, float],
+        start_time: float,
+    ) -> list | None:
         max_time = params.max_time
         if budget.max_wall_time is not None:
-            max_time = min(max_time, budget.max_wall_time)
+            left = budget.max_wall_time - (time.perf_counter() - start_time)
+            if left <= 0:
+                return None
+            max_time = min(max_time, left)
         sim, scene = self.sim, task.initial_state.scene
         sim.reset(options={"init_state": scene})
         ctx = build_stream_context(
@@ -307,18 +468,10 @@ class ReachPDDLStreamPlanner(
             theta_particles=particles,
             delta=params.delta,
             seed=int(rng.integers(2**31 - 1)),
+            proposal=proposal,
         )
         plan = solve_problem(
             create_problem(sim, scene, ctx=ctx), max_time, params.algorithm
         )
-        if plan is None:
-            raise PlanningFailure("PDDLStream found no plan")
-        horizon = self._model.horizon
-        if len(plan) > horizon:
-            raise PlanningFailure("The plan is longer than the horizon")
-        stats = {
-            "stream_calls": float(sum(ctx.calls.values())),
-            "plan_length": len(plan),
-        }
-        actions = [tuple(action) for action in plan]
-        return OpenLoopPolicy(actions + [NO_ACTION] * (horizon - len(plan)), stats)
+        stats["stream_calls"] += float(sum(ctx.calls.values()))
+        return plan
