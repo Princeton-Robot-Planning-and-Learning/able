@@ -2,7 +2,7 @@
 env:
   domain:
     _target_: able.envs.friction.tasks.make_domain
-    # The simulator: 2d (PyMunk).
+    # The simulator: 2d (PyMunk) or 3d (PyBullet, TidyBot).
     sim: 2d
     # One of L1-L4, which set the holes and the goal radius.
     level: L2

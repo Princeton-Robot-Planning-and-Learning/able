@@ -39,7 +39,7 @@ def register_level(level: str) -> tuple[str, PuckPhysics]:
 
 
 def make_level_env(sim: str, level: str) -> Any:
-    """The level's simulator: "2d" (PyMunk)."""
+    """The level's simulator: "2d" (PyMunk) or "3d" (PyBullet)."""
     map_name, physics = register_level(level)
     if sim == "2d":
         # pylint: disable-next=import-outside-toplevel
@@ -51,4 +51,14 @@ def make_level_env(sim: str, level: str) -> Any:
         return ObjectCentricDynPuckPushing2DEnv(
             DynPuckPushing2DEnvConfig(map_name=map_name, physics=physics)
         )
-    raise ValueError(f"Unknown simulator {sim!r}; expected '2d'")
+    if sim == "3d":
+        # pylint: disable-next=import-outside-toplevel
+        from able.envs.friction.sim3d import (
+            ObjectCentricPuckPushing3DEnv,
+            PuckPushing3DEnvConfig,
+        )
+
+        return ObjectCentricPuckPushing3DEnv(
+            PuckPushing3DEnvConfig(map_name=map_name, physics=physics)
+        )
+    raise ValueError(f"Unknown simulator {sim!r}; expected '2d' or '3d'")
