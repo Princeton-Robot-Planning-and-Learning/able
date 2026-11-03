@@ -7,6 +7,9 @@ import numpy as np
 from able.approaches import (
     make_current_belief_robot,
     make_dreaming_robot,
+    make_limb_current_belief_robot,
+    make_limb_dreaming_robot,
+    make_limb_prior_only_robot,
     make_limb_scratch_robot,
     make_prior_only_robot,
     make_scratch_robot,
@@ -17,6 +20,7 @@ from able.envs.base import FiniteTaskDistribution
 from able.envs.limb.tasks import make_domain as make_limb_domain
 from able.envs.two_link_arm import make_domain
 from able.models.exact_match_cache import ExactMatchCache
+from able.models.neural import MLPRegressor
 from able.planners.random_shooting import RandomShootingParams, get_plan_features
 from able.robot import Robot
 from able.structs import Budget
@@ -193,3 +197,33 @@ def test_make_limb_scratch_robot():
     assert robot.belief is domain.initial_belief
     robot.sleep(Budget(max_iterations=1), np.random.default_rng(0))
     assert robot.planner_params is params
+
+
+def test_make_limb_learning_robots():
+    """Tests that the limb robots that learn seed MPC with the given model, sleep,
+    and that prior-only learns in its first sleep only."""
+    # A short horizon makes every plan fail fast.
+    domain = make_limb_domain(seed=0, horizon=5)
+    model = MLPRegressor(num_steps=5)
+    options = {"model": model, "num_rollouts": 4, "num_particles": 4}
+    budgets = _budgets(num_dreams=0)
+    robots = [
+        make_limb_current_belief_robot(domain, Budget(), **options),
+        make_limb_prior_only_robot(domain, Budget(), **options),
+        make_limb_dreaming_robot(
+            domain,
+            budgets.information_gathering,
+            budgets.execution,
+            Budget(),
+            **options,
+        ),
+    ]
+    rng = np.random.default_rng(0)
+    for robot in robots:
+        assert robot.planner_params.model is model
+        assert robot.planner_params.config.sampling.num_rollouts == 4
+        robot.sleep(Budget(max_iterations=1), rng)
+    prior_only = robots[1]
+    params = prior_only.planner_params
+    prior_only.sleep(Budget(max_iterations=1), rng)
+    assert prior_only.planner_params is params
