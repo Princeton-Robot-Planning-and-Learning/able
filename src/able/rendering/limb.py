@@ -23,7 +23,8 @@ class LimbRenderer(Renderer[LimbState, LimbTask, NDArray[np.float64]]):
     """Draws the robot and the person next to the belief over their range.
 
     The left panel is the simulator's camera view of the current state, with the
-    task's goal configuration as a translucent green limb. The right
+    task's goal configuration as a translucent green limb, and says whether the
+    task has ended. The right
     panel shows, for each motion, the belief's mean plus or minus one standard
     deviation within the prior's range, its floor, and ticks at the true scale
     (and the sampled scale in dreams). The renderer restores the state in a
@@ -89,6 +90,8 @@ class LimbRenderer(Renderer[LimbState, LimbTask, NDArray[np.float64]]):
         if snapshot.task is not None:
             error = sim.get_limb_error(state.limb_positions, snapshot.task.goal)
             lines.append(f"distance to goal {error:.2f}")
+        if state.reached:
+            lines.append("reached the goal")
         if state.violated:
             lines.append("passed the person's limit")
         if state.failure:

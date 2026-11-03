@@ -21,8 +21,10 @@ def test_limb_renderer():
         empty = renderer.render(Snapshot("Sleep", belief, theta))
         assert empty.shape == (288, 640, 3) and empty.dtype == np.uint8
 
-        state = model.get_initial_state(model.sim.capture())
-        task = LimbTask(initial_state=state, goal=state.limb_positions + 0.1)
+        start = model.sim.capture()
+        goal = np.array(start.limb_positions) + 0.1
+        state = model.get_initial_state(start, goal)
+        task = LimbTask(initial_state=state, goal=goal)
         frame = renderer.render(
             Snapshot("Task", belief, theta, task, (state,), hypothesis=theta - 0.1)
         )
