@@ -9,6 +9,7 @@ person, so the controls MPC commits are replayed open loop. The planner replays 
 first to check that the plan reaches the goal and breaks no constraint.
 """
 
+import dataclasses
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -19,6 +20,7 @@ from kinder.envs.dynamic3d.limb_utils import NUM_ROBOT_JOINTS
 from numpy.typing import NDArray
 
 from able.beliefs.base import Belief
+from able.beliefs.range_of_motion import RangeOfMotionBelief
 from able.envs.limb.constraints import (
     arm_in_collision,
     exceeds_robot_torque_limits,
@@ -28,8 +30,10 @@ from able.envs.limb.constraints import (
 from able.envs.limb.human import LimbVariant
 from able.envs.limb.model import STOP, LimbModel, LimbState, LimbTask
 from able.envs.limb.sim import CoupledState, LimbSim
-from able.planners.base import Planner
-from able.policies.base import OpenLoopPolicy
+from able.models.base import ConditionalModel, Dataset
+from able.models.flow_matching import FlowMatchingModel
+from able.planners.base import TrainablePlanner
+from able.policies.base import OpenLoopPolicy, Policy
 from able.structs import Budget, PlanningFailure, StateType
 
 # How far inside the believed limits a retargeted goal goes (rad), per attempt.
@@ -291,12 +295,69 @@ class MPCParams:
     """Parameters of the limb MPC planner.
 
     Planning treats a configuration as inside the person's range if at least
-    `confidence` of `num_particles` samples from the belief allow it.
+    `confidence` of `num_particles` samples from the belief allow it. The model
+    proposes the next horizon of controls from get_mpc_features() and seeds MPC; an
+    untrained model proposes nothing.
     """
 
     config: LimbMPCConfig = field(default_factory=LimbMPCConfig)
     num_particles: int = 32
     confidence: float = 0.5
+    model: ConditionalModel = field(default_factory=FlowMatchingModel)
+    seed: SeedConfig = SeedConfig()
+
+
+def get_mpc_features(
+    state: CoupledState,
+    goal: NDArray[np.float64],
+    belief: RangeOfMotionBelief,
+    step: int,
+    previous_control: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    """The model's input at an MPC step: limb and robot positions, goal, belief
+    mean and standard deviation, step, limb and robot velocities, last control."""
+    return np.concatenate(
+        [
+            state.limb_positions,
+            state.robot_positions[:NUM_ROBOT_JOINTS],
+            goal,
+            belief.mean,
+            belief.stddev,
+            [float(step)],
+            state.limb_velocities,
+            state.robot_velocities[:NUM_ROBOT_JOINTS],
+            previous_control,
+        ]
+    )
+
+
+def get_control_window(
+    controls: list[NDArray[np.float64]], step: int, horizon: int
+) -> NDArray[np.float64]:
+    """The model's label at an MPC step: the next horizon of controls, padded with
+    the last one."""
+    window = controls[step : step + horizon]
+    return np.array(window + [controls[-1]] * (horizon - len(window)))
+
+
+class LimbMPCPolicy(OpenLoopPolicy[LimbState, NDArray[np.float64]]):
+    """An open-loop plan that remembers how MPC made it: the target goal, the MPC
+    horizon, and the state before and control of each MPC step."""
+
+    def __init__(
+        self,
+        actions: list[NDArray[np.float64]],
+        stats: dict[str, float],
+        target: NDArray[np.float64],
+        horizon: int,
+        states: list[CoupledState],
+        controls: list[NDArray[np.float64]],
+    ) -> None:
+        super().__init__(actions, stats)
+        self.target = target
+        self.horizon = horizon
+        self.states = tuple(states)
+        self.controls = tuple(controls)
 
 
 @dataclass(frozen=True, eq=False)
@@ -395,6 +456,7 @@ class _LimbRolloutProblem(RolloutProblem[CoupledState]):
         config: LimbMPCConfig,
         action_repeat: int,
         checker: _Checker,
+        reach: float,
     ) -> None:
         self._world = world
         self._rollout_world = rollout_world
@@ -402,6 +464,8 @@ class _LimbRolloutProblem(RolloutProblem[CoupledState]):
         self._config = config
         self._action_repeat = action_repeat
         self._checker = checker
+        self._reach = reach
+        self._last_error = np.inf
 
     def get_state(self) -> CoupledState:
         return self._world.capture()
@@ -415,6 +479,7 @@ class _LimbRolloutProblem(RolloutProblem[CoupledState]):
     ) -> tuple[bool, float]:
         sim, config = self._rollout_world, self._config
         sim.restore(state, regrasp=False)
+        self._last_error = np.inf
         goal_cost = velocity_cost = regularization = robot_regularization = 0.0
         squared_error = 0.0
         for control in controls:
@@ -440,7 +505,11 @@ class _LimbRolloutProblem(RolloutProblem[CoupledState]):
             + config.velocity_regularization_weight * regularization
             + config.robot_velocity_regularization_weight * robot_regularization
         )
+        self._last_error = float(np.sqrt(squared_error))
         return False, cost
+
+    def is_near_goal(self) -> bool:
+        return self._last_error < self._reach
 
     def _get_velocity_penalty(
         self, velocities: NDArray[np.float64], squared_error: float
@@ -472,15 +541,19 @@ class _LimbRolloutProblem(RolloutProblem[CoupledState]):
 
 
 class LimbMPCPlanner(
-    Planner[LimbState, NDArray[np.float64], LimbTask, NDArray[np.float64], MPCParams]
+    TrainablePlanner[
+        LimbState, NDArray[np.float64], LimbTask, NDArray[np.float64], MPCParams
+    ]
 ):
     """Plans torque corrections for a limb task with predictive-sampling MPC.
 
     One iteration of the budget is one MPC step. The policy is the committed
     controls up to the step where the replay reaches the task's goal, which ends the
     task, then STOP to the horizon, so nothing moves after a plan that stops short
-    of the goal (for example, at a retargeted goal). Its planning statistics are
-    the number of rollouts, the number of MPC steps, whether the goal was
+    of the goal (for example, at a retargeted goal). The model in the parameters
+    seeds each MPC step; if planning with it fails, the planner plans again without
+    it, and the statistics count both attempts. They are the number of rollouts,
+    MPC steps, and seeded steps, whether it fell back, whether the goal was
     retargeted, and the replayed distance to the goal. The default parameters, if
     given, replace MPCParams().
     """
@@ -495,6 +568,35 @@ class LimbMPCPlanner(
 
     def get_default_params(self) -> MPCParams:
         return self._default_params
+
+    def get_model(self, params: MPCParams) -> ConditionalModel:
+        return params.model
+
+    def set_model(self, params: MPCParams, model: ConditionalModel) -> MPCParams:
+        return dataclasses.replace(params, model=model)
+
+    def get_plan_examples(
+        self,
+        task: LimbTask,
+        belief: Belief[NDArray[np.float64]],
+        policy: Policy[LimbState, NDArray[np.float64]],
+    ) -> Dataset:
+        """One row per MPC step of the plan: the features MPC's seeder saw, and
+        the next horizon of controls."""
+        assert isinstance(belief, RangeOfMotionBelief), "Need a RangeOfMotionBelief"
+        assert isinstance(policy, LimbMPCPolicy), "Need a plan from plan()"
+        controls, horizon = list(policy.controls), policy.horizon
+        x, y = [], []
+        for step, state in enumerate(policy.states):
+            previous = controls[step - 1] if step else np.zeros(NUM_ROBOT_JOINTS)
+            x.append(get_mpc_features(state, policy.target, belief, step, previous))
+            y.append(get_control_window(controls, step, horizon).ravel())
+        return Dataset(
+            x=np.array(x),
+            y=np.array(y),
+            costs=np.zeros(len(x)),
+            groups=np.zeros(len(x), dtype=np.int64),
+        )
 
     def close(self) -> None:
         """Disconnect the planner's simulators."""
@@ -520,73 +622,130 @@ class LimbMPCPlanner(
         params: MPCParams,
         budget: Budget,
         rng: np.random.Generator,
-    ) -> OpenLoopPolicy[LimbState, NDArray[np.float64]]:
+    ) -> LimbMPCPolicy:
         """Find torque corrections that reach the goal under the believed limits.
 
         Raises PlanningFailure if MPC breaks a constraint, diverges, runs out of
-        steps or budget, or the replay misses the goal.
+        steps or budget, or the replay misses the goal, with and without the
+        model.
         """
+        assert isinstance(belief, RangeOfMotionBelief), "Need a RangeOfMotionBelief"
         start_time = time.perf_counter()
-        model, config = self._model, params.config
         particles = np.stack([belief.sample(rng) for _ in range(params.num_particles)])
         limits = ParticleLimits.from_particles(
-            model.variant, particles, params.confidence
+            self._model.variant, particles, params.confidence
         )
-        goal, retargeted = retarget(np.asarray(task.goal), limits, model.variant)
+        goal, retargeted = retarget(np.asarray(task.goal), limits, self._model.variant)
         if not limits(goal):
             raise PlanningFailure("The goal is outside the believed range of motion")
-        start = task.initial_state
+        stats = {
+            "num_rollouts": 0.0,
+            "num_mpc_steps": 0.0,
+            "num_seeded_steps": 0.0,
+            "fell_back": 0.0,
+            "retargeted": float(retargeted),
+        }
+        attempt = _Attempt(task, goal, limits, belief, params, budget, start_time, rng)
+        try:
+            return self._plan_once(attempt, stats, use_model=True)
+        except PlanningFailure:
+            if not attempt.model_proposed:
+                raise
+        stats["fell_back"] = 1.0
+        return self._plan_once(attempt, stats, use_model=False)
+
+    def _plan_once(
+        self, attempt: "_Attempt", stats: dict[str, float], use_model: bool
+    ) -> LimbMPCPolicy:
+        model, config = self._model, attempt.params.config
+        start = attempt.task.initial_state
         world, rollout_world = self._get_worlds(start.coupled)
-        checker = _Checker(model, limits, dict(start.resting_penetration))
-        problem = _LimbRolloutProblem(
-            world, rollout_world, goal, config, model.action_repeat, checker
-        )
-        lower, upper = world.robot_torque_limits
-        mpc = PredictiveSampling(config.sampling, problem, lower, upper, rng)
+        checker = _Checker(model, attempt.limits, dict(start.resting_penetration))
         threshold = max(
             world.goal_tolerance - config.replay_slack, world.goal_tolerance / 2
         )
-
+        problem = _LimbRolloutProblem(
+            world,
+            rollout_world,
+            attempt.goal,
+            config,
+            model.action_repeat,
+            checker,
+            threshold,
+        )
         controls: list[NDArray[np.float64]] = []
-        error = best_error = problem.get_error()
-        num_steps = num_stale = 0
-        while error >= threshold:
-            if len(controls) >= model.horizon:
-                raise PlanningFailure(f"Ran out of steps at an error of {error:.3f}")
-            if num_stale >= config.divergence_patience:
-                raise PlanningFailure(f"Diverged at an error of {best_error:.3f}")
-            if budget.is_exhausted(time.perf_counter() - start_time, num_steps):
-                raise PlanningFailure("Ran out of planning budget")
-            try:
-                committed = mpc.step()
-            except NoFeasibleControls as failure:
-                raise PlanningFailure(str(failure)) from failure
-            num_steps += 1
-            for control in committed:
-                for _ in range(model.action_repeat):
-                    broken = checker.step(world, control)
-                    if broken:
-                        raise PlanningFailure(f"MPC broke a constraint: {broken}")
-                controls.append(control)
-            error = problem.get_error()
-            if best_error - error > config.divergence_tolerance:
-                num_stale = 0
-            else:
-                num_stale += 1
-            best_error = min(best_error, error)
+        states: list[CoupledState] = []
 
-        actions = self._replay(world, start, controls, task.goal, checker)
-        replay_error = world.get_limb_error(world.env.limb.get_joint_positions(), goal)
+        def seeder(state: CoupledState, step: int, num: int) -> list:
+            previous = controls[-1] if controls else np.zeros(NUM_ROBOT_JOINTS)
+            x = get_mpc_features(state, attempt.goal, attempt.belief, step, previous)
+            draws = attempt.params.model.sample(x, num, attempt.rng)
+            attempt.model_proposed |= len(draws) > 0
+            horizon = config.sampling.horizon
+            return list(draws.reshape(len(draws), horizon, NUM_ROBOT_JOINTS))
+
+        lower, upper = world.robot_torque_limits
+        mpc = PredictiveSampling(
+            config.sampling,
+            problem,
+            lower,
+            upper,
+            attempt.rng,
+            seeder if use_model else None,
+            attempt.params.seed,
+        )
+        error = best_error = problem.get_error()
+        num_stale = 0
+        try:
+            while error >= threshold:
+                if len(controls) >= model.horizon:
+                    raise PlanningFailure(
+                        f"Ran out of steps at an error of {error:.3f}"
+                    )
+                if num_stale >= config.divergence_patience:
+                    raise PlanningFailure(f"Diverged at an error of {best_error:.3f}")
+                elapsed = time.perf_counter() - attempt.start_time
+                if attempt.budget.is_exhausted(elapsed, int(stats["num_mpc_steps"])):
+                    raise PlanningFailure("Ran out of planning budget")
+                state = world.capture()
+                try:
+                    committed = mpc.step()
+                except NoFeasibleControls as failure:
+                    raise PlanningFailure(str(failure)) from failure
+                stats["num_mpc_steps"] += 1
+                for control in committed:
+                    for _ in range(model.action_repeat):
+                        broken = checker.step(world, control)
+                        if broken:
+                            raise PlanningFailure(f"MPC broke a constraint: {broken}")
+                    states.append(state)
+                    controls.append(control)
+                    state = world.capture()
+                error = problem.get_error()
+                if best_error - error > config.divergence_tolerance:
+                    num_stale = 0
+                else:
+                    num_stale += 1
+                best_error = min(best_error, error)
+        finally:
+            stats["num_rollouts"] += mpc.num_rollouts
+            stats["num_seeded_steps"] += mpc.num_seeded_steps
+
+        actions = self._replay(world, start, controls, attempt.task.goal, checker)
+        replay_error = world.get_limb_error(
+            world.env.limb.get_joint_positions(), attempt.goal
+        )
         if replay_error >= world.goal_tolerance:
             raise PlanningFailure(f"The replay ended {replay_error:.3f} from the goal")
-        stats = {
-            "num_rollouts": float(mpc.num_rollouts),
-            "num_mpc_steps": float(num_steps),
-            "retargeted": float(retargeted),
-            "replay_error": replay_error,
-        }
         padding = [STOP] * (model.horizon - len(actions))
-        return OpenLoopPolicy(actions + padding, stats)
+        return LimbMPCPolicy(
+            actions + padding,
+            {**stats, "replay_error": replay_error},
+            attempt.goal,
+            config.sampling.horizon,
+            states,
+            controls,
+        )
 
     def _replay(
         self,
@@ -611,3 +770,18 @@ class LimbMPCPlanner(
             if world.get_limb_error(positions, task_goal) < world.goal_tolerance:
                 return controls[: step + 1]
         return controls
+
+
+@dataclass
+class _Attempt:
+    """What both of a plan's attempts share."""
+
+    task: LimbTask
+    goal: NDArray[np.float64]
+    limits: ParticleLimits
+    belief: RangeOfMotionBelief
+    params: MPCParams
+    budget: Budget
+    start_time: float
+    rng: np.random.Generator
+    model_proposed: bool = False

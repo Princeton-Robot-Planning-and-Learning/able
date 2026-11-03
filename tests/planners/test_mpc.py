@@ -4,16 +4,21 @@ import dataclasses
 
 import numpy as np
 import pytest
+from pybullet_helpers.geometry import SE2Pose
 
 from able.beliefs.range_of_motion import RangeOfMotionBelief
 from able.envs.limb.human import RangeOfMotionPrior, get_variant
 from able.envs.limb.model import LimbModel, LimbTask
+from able.envs.limb.sim import CoupledState
 from able.envs.limb.tasks import LimbTaskDistribution, make_domain
 from able.envs.simulated import SimulatedEnvironment
 from able.episodes import run_episode
+from able.models.base import ConditionalModel, Dataset
+from able.models.exact_match_cache import ExactMatchCache
 from able.planners.mpc import (
     LimbMPCConfig,
     LimbMPCPlanner,
+    LimbMPCPolicy,
     MPCParams,
     NoFeasibleControls,
     ParticleLimits,
@@ -22,6 +27,8 @@ from able.planners.mpc import (
     RolloutProblem,
     SeedConfig,
     get_control_basis,
+    get_control_window,
+    get_mpc_features,
     retarget,
 )
 from able.structs import Budget, PlanningFailure
@@ -249,11 +256,22 @@ def test_retarget():
     assert np.array_equal(np.delete(moved, joint), np.delete(beyond, joint))
 
 
-def test_plan_reaches_the_goal(setup):
+@pytest.fixture(name="plain", scope="module")
+def _plain(setup):
+    """A plan made with a model that records what the seeder saw and proposes
+    nothing, so it plans as if there were no model."""
+    _, task, planner = setup
+    recorder = _RecordingModel()
+    params = dataclasses.replace(FAST, model=recorder)
+    policy = planner.plan(task, _prior(), params, Budget(), np.random.default_rng(0))
+    return policy, recorder.inputs
+
+
+def test_plan_reaches_the_goal(setup, plain):
     """Tests that the plan reaches the goal in the real environment, which ends the
     task."""
-    domain, task, planner = setup
-    policy = planner.plan(task, _prior(), FAST, Budget(), np.random.default_rng(0))
+    domain, task, _ = setup
+    policy, _ = plain
     stats = policy.get_planning_stats()
     assert stats["num_mpc_steps"] > 0 and stats["num_rollouts"] > 0
     assert stats["retargeted"] == 0.0
@@ -280,3 +298,104 @@ def test_planning_failures(setup):
     )
     with pytest.raises(PlanningFailure, match="Diverged"):
         planner.plan(task, _prior(), short, Budget(), rng)
+
+
+class _RecordingModel(ConditionalModel):
+    """Records every input it is asked about and proposes the given output, if any."""
+
+    def __init__(self, output: np.ndarray | None = None) -> None:
+        self.inputs: list[np.ndarray] = []
+        self.output = output
+
+    def fit(self, dataset: Dataset) -> "_RecordingModel":
+        return self
+
+    def sample(self, x, num_samples, rng) -> np.ndarray:
+        self.inputs.append(x)
+        if self.output is None:
+            return np.zeros((0, 0))
+        return np.tile(self.output, (num_samples, 1))
+
+
+def test_features_and_labels():
+    """Tests the model's input and the padded control window."""
+    belief = _prior()
+    coupled = CoupledState(
+        SE2Pose(0.0, 0.0, 0.0),
+        tuple(range(13)),
+        tuple(range(13)),
+        tuple(range(6)),
+        tuple(range(6)),
+    )
+    x = get_mpc_features(coupled, np.ones(6), belief, 3, np.full(7, 2.0))
+    assert x.shape == (6 + 7 + 6 + 3 + 3 + 1 + 6 + 7 + 7,)
+    assert x[25] == 3.0 and np.all(x[-7:] == 2.0)
+    controls = [np.full(7, float(i)) for i in range(3)]
+    window = get_control_window(controls, 1, 4)
+    assert window.shape == (4, 7)
+    assert list(window[:, 0]) == [1.0, 2.0, 2.0, 2.0]
+
+
+def test_plan_examples_match_the_seeder(setup, plain):
+    """Tests that the training rows are what the seeder saw, and the labels are the
+    controls that followed."""
+    _, task, planner = setup
+    policy, inputs = plain
+    assert isinstance(policy, LimbMPCPolicy)
+    stats = policy.get_planning_stats()
+    assert stats["num_seeded_steps"] == 0 and stats["fell_back"] == 0
+    examples = planner.get_plan_examples(task, _prior(), policy)
+    assert len(examples) == len(policy.controls) == len(inputs)
+    assert np.allclose(examples.x, np.array(inputs))
+    horizon = FAST.config.sampling.horizon
+    assert examples.y.shape == (len(examples), horizon * 7)
+    assert np.allclose(examples.y[0][:7], policy.controls[0])
+
+
+def test_a_trained_model_seeds_mpc(setup, plain):
+    """Tests that a cache of a plan's rows seeds replanning the same task, with
+    fewer rollouts."""
+    domain, task, planner = setup
+    plain_policy, _ = plain
+    examples = planner.get_plan_examples(task, _prior(), plain_policy)
+    cache = ExactMatchCache(key_resolution=1e-6).fit(examples)
+    seeded_params = dataclasses.replace(
+        FAST, model=cache, seed=SeedConfig(num_rollouts=1, tolerance=1.0)
+    )
+    seeded = planner.plan(
+        task, _prior(), seeded_params, Budget(), np.random.default_rng(0)
+    )
+    stats = seeded.get_planning_stats()
+    assert stats["num_seeded_steps"] > 0 and stats["fell_back"] == 0
+    assert stats["num_rollouts"] < plain_policy.get_planning_stats()["num_rollouts"]
+    real_env = domain.real_env
+    assert isinstance(real_env, SimulatedEnvironment)
+    trajectory = run_episode(real_env, task, seeded)
+    assert real_env.check_goal(task, trajectory.states[-1])
+
+
+class _FailingWithModel(LimbMPCPlanner):
+    """Fails whenever it plans with a model that proposed something."""
+
+    def _plan_once(self, attempt, stats, use_model):
+        if use_model:
+            attempt.model_proposed = self.model_proposes
+            raise PlanningFailure("Stalled with the model")
+        return super()._plan_once(attempt, stats, use_model)
+
+    model_proposes = True
+
+
+def test_fallback_without_the_model(setup):
+    """Tests that a failed plan with the model is replanned without it, unless the
+    model proposed nothing."""
+    domain, task, _ = setup
+    planner = _FailingWithModel(domain.env_model)
+    try:
+        policy = planner.plan(task, _prior(), FAST, Budget(), np.random.default_rng(0))
+        assert policy.get_planning_stats()["fell_back"] == 1
+        planner.model_proposes = False
+        with pytest.raises(PlanningFailure, match="Stalled"):
+            planner.plan(task, _prior(), FAST, Budget(), np.random.default_rng(0))
+    finally:
+        planner.close()
