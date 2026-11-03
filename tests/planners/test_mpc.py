@@ -20,6 +20,7 @@ from able.planners.mpc import (
     PredictiveSampling,
     PredictiveSamplingConfig,
     RolloutProblem,
+    SeedConfig,
     get_control_basis,
     retarget,
 )
@@ -106,6 +107,72 @@ def test_constraints():
     mpc = PredictiveSampling(config, problem, lower, upper, np.random.default_rng(0))
     with pytest.raises(NoFeasibleControls):
         mpc.step()
+
+
+def _pd_controls(state: np.ndarray, horizon: int, sign: float = 1.0) -> np.ndarray:
+    """Per-step controls of a PD controller toward the goal (away if sign < 0)."""
+    controls = []
+    for _ in range(horizon):
+        control = np.clip(sign * 4.0 * (GOAL - state[:2]) - 3.0 * state[2:], -3, 3)
+        controls.append(control)
+        state = _simulate(state, control[None])[-1]
+    return np.array(controls)
+
+
+class _PDBar(_PointMass):
+    """The PD controller toward the goal is the only extra candidate."""
+
+    def get_extra_candidates(self, state, noise_scale, rng) -> list:
+        return [_pd_controls(state, 12)[[0, 4, 7, 11]]]
+
+
+def _run(problem: _PointMass, mpc: PredictiveSampling, num_steps: int) -> list:
+    committed = []
+    for _ in range(num_steps):
+        controls = mpc.step()
+        committed.append(controls)
+        problem.state = _simulate(problem.state, controls)[-1]
+    return committed
+
+
+def test_seeding():
+    """Tests that good proposals are committed with few rollouts, bad ones fall back
+    to the full batch, and no proposals change nothing."""
+    config = PredictiveSamplingConfig(noise_scale=2.0, noise_reference_error=1.0)
+    bounds = (np.full(2, -3.0), np.full(2, 3.0))
+
+    def seeder(state, step, num):
+        del step, num
+        return [_pd_controls(state, config.horizon)]
+
+    problem = _PointMass()
+    mpc = PredictiveSampling(config, problem, *bounds, np.random.default_rng(0), seeder)
+    _run(problem, mpc, 60)
+    assert problem.get_error() < 0.1
+    assert mpc.num_seeded_steps == 60 and mpc.num_rollouts == 60
+
+    # The PD controls are the bar, so proposals that push away are never good enough.
+    problem = _PDBar()
+    away = PredictiveSampling(
+        config,
+        problem,
+        *bounds,
+        np.random.default_rng(0),
+        lambda state, step, num: [_pd_controls(state, config.horizon, sign=-1.0)],
+        SeedConfig(num_rollouts=1),
+    )
+    _run(problem, away, 10)
+    assert away.num_seeded_steps == 0 and away.num_full_steps == 10
+
+    plain_problem, empty_problem = _PointMass(), _PointMass()
+    plain = PredictiveSampling(config, plain_problem, *bounds, np.random.default_rng(0))
+    empty = PredictiveSampling(
+        config, empty_problem, *bounds, np.random.default_rng(0), lambda *_: []
+    )
+    for first, second in zip(
+        _run(plain_problem, plain, 5), _run(empty_problem, empty, 5)
+    ):
+        assert np.array_equal(first, second)
 
 
 VARIANT = get_variant("human-left-arm")
