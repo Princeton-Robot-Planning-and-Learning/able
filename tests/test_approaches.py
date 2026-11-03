@@ -11,6 +11,7 @@ from able.approaches import (
     make_friction_dreaming_robot,
     make_friction_prior_only_robot,
     make_friction_scratch_robot,
+    make_human_reach_scratch_robot,
     make_limb_current_belief_robot,
     make_limb_dreaming_robot,
     make_limb_prior_only_robot,
@@ -22,6 +23,7 @@ from able.beliefs.interval import IntervalBelief
 from able.cycle import CycleBudgets, run_cycles
 from able.envs.base import FiniteTaskDistribution
 from able.envs.friction.tasks import make_domain as make_friction_domain
+from able.envs.human_reach.tasks import make_domain as make_reach_domain
 from able.envs.limb.model import LimbTask
 from able.envs.limb.tasks import LimbTaskDistribution
 from able.envs.limb.tasks import make_domain as make_limb_domain
@@ -290,3 +292,15 @@ def test_make_friction_learning_robots():
     params = prior_only.planner_params
     prior_only.sleep(Budget(max_iterations=1), rng)
     assert prior_only.planner_params is params
+
+
+def test_make_human_reach_scratch_robot():
+    """Tests that the human reach scratch robot uses the requested PDDLStream
+    settings and never changes its parameters."""
+    domain = make_reach_domain(seed=0, num_requested=2, num_clutter=0)
+    robot = make_human_reach_scratch_robot(domain, max_time=10.0, num_particles=8)
+    params = robot.planner_params
+    assert params.max_time == 10.0 and params.num_particles == 8
+    assert robot.belief is domain.initial_belief
+    robot.sleep(Budget(max_iterations=1), np.random.default_rng(0))
+    assert robot.planner_params is params

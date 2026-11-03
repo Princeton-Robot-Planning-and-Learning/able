@@ -1,0 +1,17 @@
+# @package _global_
+env:
+  domain:
+    _target_: able.envs.human_reach.tasks.make_domain
+    # Requested items to deliver, and clutter on the bedside.
+    num_requested: 4
+    num_clutter: 4
+    num_particles: 2000
+  # Instantiated with the domain's environment model, only when recording videos.
+  renderer:
+    _target_: able.rendering.human_reach.HumanReachRenderer
+# Planning a human reach task takes minutes, so evaluate fewer tasks and dream less
+# than on the arm.
+num_eval_tasks: 2
+budgets:
+  sleep:
+    max_iterations: 4

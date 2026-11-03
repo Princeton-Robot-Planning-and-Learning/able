@@ -11,6 +11,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from able.belief_updaters.friction import FrictionBeliefUpdater
+from able.belief_updaters.human_reach import ReachBeliefUpdater
 from able.belief_updaters.joint_limits import JointLimitBeliefUpdater
 from able.belief_updaters.range_of_motion import RangeOfMotionBeliefUpdater
 from able.beliefs.interval import IntervalBelief
@@ -19,6 +20,9 @@ from able.envs.friction.model import FrictionModel, FrictionState, FrictionTask
 from able.envs.friction.query import FrictionQuery, PushRecord
 from able.envs.friction.tasks import FrictionDomain
 from able.envs.friction.world import Push
+from able.envs.human_reach.model import ReachModel, ReachPlan, ReachState, ReachTask
+from able.envs.human_reach.query import ReachQuery, ReachResponse
+from able.envs.human_reach.tasks import ReachDomain
 from able.envs.limb.model import LimbModel, LimbState, LimbTask
 from able.envs.limb.query import LimbQuery, QueryOutcome
 from able.envs.limb.tasks import LimbDomain
@@ -26,6 +30,7 @@ from able.envs.two_link_arm import ArmDomain, ArmTask, JointQuery, TwoLinkArmMod
 from able.info_gatherers.base import NullInformationGatherer
 from able.info_gatherers.probe_floor import ProbeFloorGatherer
 from able.info_gatherers.push_to_limit import PushToLimitGatherer
+from able.info_gatherers.reach_query import ReachQueryGatherer
 from able.learners.base import NullLearner
 from able.learners.belief_sources import (
     CurrentBeliefSource,
@@ -37,6 +42,7 @@ from able.learners.rollout_model_learner import RolloutModelLearner
 from able.models.base import ConditionalModel
 from able.models.exact_match_cache import ExactMatchCache
 from able.planners.mpc import LimbMPCPlanner, MPCParams
+from able.planners.pddlstream import PDDLStreamParams, ReachPDDLStreamPlanner
 from able.planners.pomcpow import (
     FrictionPOMCPOWPlanner,
     POMCPOWConfig,
@@ -62,6 +68,15 @@ FrictionRobot = Robot[
     POMCPOWParams,
     FrictionQuery,
     PushRecord,
+]
+ReachRobot = Robot[
+    ReachState,
+    ReachPlan,
+    ReachTask,
+    ArmArray,
+    PDDLStreamParams,
+    ReachQuery,
+    ReachResponse,
 ]
 
 
@@ -509,6 +524,48 @@ def make_friction_dreaming_robot(
             refit="per_sleep",
             num_training_tasks=num_training_tasks,
         ),
+        belief_updater=belief_updater,
+        info_gatherer=gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
+def _make_reach_parts(
+    domain: ReachDomain, max_time: float, num_particles: int, delta: float
+) -> tuple[ReachModel, ReachPDDLStreamPlanner, ReachBeliefUpdater, ReachQueryGatherer]:
+    """The human reach robot's model of the environment, planner, belief updater,
+    and gatherer. PDDLStream plans for up to max_time seconds, and a pose is usable
+    if at least 1 - delta of num_particles belief particles reach it."""
+    env_model = domain.env_model
+    assert isinstance(env_model, ReachModel)
+    params = PDDLStreamParams(
+        max_time=max_time, num_particles=num_particles, delta=delta
+    )
+    belief_updater = ReachBeliefUpdater(env_model.sim.shoulder)
+    return (
+        env_model,
+        ReachPDDLStreamPlanner(env_model, params),
+        belief_updater,
+        ReachQueryGatherer(belief_updater, env_model.config),
+    )
+
+
+def make_human_reach_scratch_robot(
+    domain: ReachDomain,
+    max_time: float = 300.0,
+    num_particles: int = 256,
+    delta: float = 0.1,
+    recorder: CycleRecorder[ReachState, ReachTask, ArmArray] | None = None,
+) -> ReachRobot:
+    """A robot that plans with PDDLStream, asks the person to reach for the gripper,
+    and never learns."""
+    del recorder  # unused because the robot imagines nothing while it sleeps
+    _, planner, belief_updater, gatherer = _make_reach_parts(
+        domain, max_time, num_particles, delta
+    )
+    return Robot(
+        planner=planner,
+        learner=NullLearner(),
         belief_updater=belief_updater,
         info_gatherer=gatherer,
         initial_belief=domain.initial_belief,

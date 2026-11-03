@@ -245,3 +245,39 @@ def test_friction_dreaming(tmp_path: Path) -> None:
     assert cfg.approach_name == "friction_dreaming"
     assert len(pd.read_csv(tmp_path / "eval_results.csv")) == 1
     assert list(pd.read_csv(tmp_path / "cycle_results.csv").num_executed_tasks) == [1]
+
+
+def test_human_reach(tmp_path: Path) -> None:
+    """Tests one short cycle in the human reach environment, with videos."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "env=human_reach",
+            "approach=human_reach_scratch",
+            "num_cycles=1",
+            "num_eval_tasks=1",
+            "env.domain.num_requested=1",
+            "env.domain.num_clutter=0",
+            "env.domain.num_particles=50",
+            # Every bedside pose is usable, so planning is quick.
+            "approach.delta=1.0",
+            "approach.max_time=60",
+            "budgets.information_gathering.max_iterations=1",
+            "record_videos=true",
+            f"hydra.run.dir={tmp_path}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert list(pd.read_csv(tmp_path / "eval_results.csv").task_id) == [0]
+    cycle_df = pd.read_csv(tmp_path / "cycle_results.csv")
+    assert list(cycle_df.num_queries) == [1]
+    assert list(cycle_df.num_executed_tasks) == [1]
+    assert sorted(p.name for p in (tmp_path / "videos").iterdir()) == [
+        "cycle_000_2_queries.mp4",
+        "cycle_000_3_execution.mp4",
+        "cycle_000_4_evaluation.mp4",
+    ]
