@@ -23,6 +23,7 @@ def test_run_single_experiment(tmp_path: Path) -> None:
                 f"approach={approach}",
                 "num_cycles=2",
                 "budgets.sleep.max_iterations=1",
+                "env.planner_params.max_batches=2",
                 f"hydra.run.dir={run_dir}",
             ],
             capture_output=True,
@@ -41,6 +42,8 @@ def test_run_single_experiment(tmp_path: Path) -> None:
         assert list(eval_df.cycle.unique()) == [0, 1]
         for column in ("success", "planning_wall_time", "total_cost", "num_samples"):
             assert column in eval_df.columns
+        # Each of the two batches has at most 64 samples plus 4 cached plans.
+        assert eval_df.num_samples.max() <= 2 * (64 + 4)
 
         cycle_df = pd.read_csv(run_dir / "cycle_results.csv")
         assert list(cycle_df.cycle) == [0, 1]

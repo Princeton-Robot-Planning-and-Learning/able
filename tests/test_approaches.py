@@ -9,6 +9,7 @@ from able.approaches import (
     make_scratch_robot,
 )
 from able.envs.two_link_arm import make_domain
+from able.planners.random_shooting import RandomShootingParams
 from able.structs import Budget
 
 
@@ -56,3 +57,23 @@ def test_make_prior_only_robot():
     assert params.warm_starts
     robot.sleep(Budget(max_iterations=1), rng)
     assert robot.planner_params is params
+
+
+def test_planner_params():
+    """Tests that every robot starts from the given planner parameters."""
+    domain = make_domain(seed=0)
+    params = RandomShootingParams(key_resolution=0.2)
+    robots = [
+        make_scratch_robot(domain, planner_params=params),
+        make_current_belief_robot(domain, Budget(), planner_params=params),
+        make_prior_only_robot(domain, Budget(), planner_params=params),
+        make_dreaming_robot(
+            domain,
+            gathering_budget=Budget(max_iterations=0),
+            execution_budget=Budget(max_iterations=1),
+            planning_budget=Budget(),
+            planner_params=params,
+        ),
+    ]
+    for robot in robots:
+        assert robot.planner_params is params

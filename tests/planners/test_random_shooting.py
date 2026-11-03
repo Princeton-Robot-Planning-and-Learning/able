@@ -14,6 +14,7 @@ from able.envs.two_link_arm import (
     make_domain,
 )
 from able.planners.random_shooting import (
+    RandomShootingParams,
     RandomShootingPlanner,
     add_warm_start,
     get_warm_start_key,
@@ -38,6 +39,17 @@ def _execute(model, policy, task, limits) -> tuple[np.ndarray, float]:
         state = result.state
         total_cost += result.cost
     return state, total_cost
+
+
+def test_default_params():
+    """Tests that the planner starts from the given parameters, or from
+    RandomShootingParams() if none are given."""
+    model = TwoLinkArmModel()
+    defaults = RandomShootingPlanner(model).get_default_params()
+    assert defaults.key_resolution == RandomShootingParams().key_resolution
+    assert not defaults.warm_starts
+    params = RandomShootingParams(key_resolution=0.2, threshold=0.04)
+    assert RandomShootingPlanner(model, params).get_default_params() is params
 
 
 def test_plan_reaches_goal_with_known_limits():

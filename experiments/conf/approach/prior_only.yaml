@@ -1,3 +1,4 @@
 _target_: able.approaches.make_prior_only_robot
 planning_budget: ${budgets.planning}
 max_warm_starts_per_key: 4
+planner_params: ${env.planner_params}

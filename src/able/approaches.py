@@ -1,8 +1,10 @@
 """Approaches for the two-link arm.
 
 An approach is a choice of planner, learner, belief updater, and information
-gatherer. Each function here builds a robot for an arm domain. The recorder, if
-given, sees what the robot imagines while it sleeps.
+gatherer. Each function here builds a robot for an arm domain. Every robot plans
+with random shooting and starts from the given planner parameters, or from the
+planner's defaults if none are given. The recorder, if given, sees what the robot
+imagines while it sleeps.
 """
 
 import numpy as np
@@ -30,6 +32,7 @@ ArmRobot = Robot[
 
 def make_scratch_robot(
     domain: ArmDomain,
+    planner_params: RandomShootingParams | None = None,
     recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
 ) -> ArmRobot:
     """A robot that plans from scratch with random shooting and never learns."""
@@ -37,7 +40,7 @@ def make_scratch_robot(
     env_model = domain.env_model
     assert isinstance(env_model, TwoLinkArmModel)
     return Robot(
-        planner=RandomShootingPlanner(env_model),
+        planner=RandomShootingPlanner(env_model, planner_params),
         learner=NullLearner(),
         belief_updater=JointLimitBeliefUpdater(),
         info_gatherer=NullInformationGatherer(),
@@ -49,6 +52,7 @@ def make_current_belief_robot(
     domain: ArmDomain,
     planning_budget: Budget,
     max_warm_starts_per_key: int = 4,
+    planner_params: RandomShootingParams | None = None,
     recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
 ) -> ArmRobot:
     """A robot that plans with random shooting and, while it sleeps, caches plans
@@ -62,7 +66,7 @@ def make_current_belief_robot(
     task_distribution = domain.task_distribution
     assert isinstance(env_model, TwoLinkArmModel)
     assert isinstance(task_distribution, FiniteTaskDistribution)
-    planner = RandomShootingPlanner(env_model)
+    planner = RandomShootingPlanner(env_model, planner_params)
     return Robot(
         planner=planner,
         learner=CurrentBeliefLearner(
@@ -81,6 +85,7 @@ def make_prior_only_robot(
     domain: ArmDomain,
     planning_budget: Budget,
     max_warm_starts_per_key: int = 4,
+    planner_params: RandomShootingParams | None = None,
     recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
 ) -> ArmRobot:
     """A robot that plans with random shooting and caches plans for every task
@@ -92,7 +97,7 @@ def make_prior_only_robot(
     assert isinstance(env_model, TwoLinkArmModel)
     assert isinstance(task_distribution, FiniteTaskDistribution)
     assert isinstance(prior, IntervalBelief)
-    planner = RandomShootingPlanner(env_model)
+    planner = RandomShootingPlanner(env_model, planner_params)
     return Robot(
         planner=planner,
         learner=PriorOnlyLearner(
@@ -114,6 +119,7 @@ def make_dreaming_robot(
     execution_budget: Budget,
     planning_budget: Budget,
     max_warm_starts_per_key: int = 4,
+    planner_params: RandomShootingParams | None = None,
     recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
 ) -> ArmRobot:
     """A robot that plans with random shooting and dreams while it sleeps.
@@ -126,7 +132,7 @@ def make_dreaming_robot(
     task_distribution = domain.task_distribution
     assert isinstance(env_model, TwoLinkArmModel)
     assert isinstance(task_distribution, FiniteTaskDistribution)
-    planner = RandomShootingPlanner(env_model)
+    planner = RandomShootingPlanner(env_model, planner_params)
     belief_updater = JointLimitBeliefUpdater()
     info_gatherer: NullInformationGatherer = NullInformationGatherer()
     learner = DreamingLearner(

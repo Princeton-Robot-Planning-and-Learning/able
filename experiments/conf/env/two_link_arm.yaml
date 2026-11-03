@@ -3,6 +3,17 @@ domain:
   num_goals: 6
   edge_probability: 0.5
   goal_tolerance: 0.1
+# Starting parameters of the random shooting planner, shared by every approach.
+planner_params:
+  _target_: able.planners.random_shooting.RandomShootingParams
+  batch_size: 64
+  max_batches: 25
+  threshold: 0.08
+  patience: 8
+  num_belief_samples: 32
+  action_noise_fraction: 0.15
+  warm_start_noise: 0.05
+  key_resolution: 0.1
 # Instantiated with the domain's environment model, only when recording videos.
 renderer:
   _target_: able.rendering.two_link_arm.TwoLinkArmRenderer

@@ -78,14 +78,20 @@ class RandomShootingPlanner(
     Each sampled sequence is a random base displacement plus per-step noise. The
     planner returns an open-loop policy. Its planning statistics are the number of
     sequences evaluated, the expected cost of the plan, and whether a warm start
-    was used.
+    was used. A robot starts from the default parameters, which are
+    RandomShootingParams() unless given.
     """
 
-    def __init__(self, model: TwoLinkArmModel) -> None:
+    def __init__(
+        self, model: TwoLinkArmModel, default_params: RandomShootingParams | None = None
+    ) -> None:
         self._model = model
+        self._default_params = (
+            RandomShootingParams() if default_params is None else default_params
+        )
 
     def get_default_params(self) -> RandomShootingParams:
-        return RandomShootingParams()
+        return self._default_params
 
     def plan(
         self,
