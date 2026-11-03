@@ -79,6 +79,7 @@ def test_sampled_tasks(domain):
     for task in tasks:
         start = task.initial_state
         assert start.coupled.grasp_frame is not None
+        assert np.array_equal(start.goal, task.goal) and not start.reached
         for positions in (start.limb_positions, task.goal):
             assert np.all(lower[active] <= positions[active] + 1e-9)
             assert np.all(positions[active] <= upper[active] + 1e-9)

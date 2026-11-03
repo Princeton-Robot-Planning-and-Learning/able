@@ -231,7 +231,7 @@ class LimbTaskDistribution(TaskDistribution[LimbTask]):
                 if not box.min_separation <= separation <= box.max_separation:
                     continue
                 if self._can_carry(limb_init, limb_goal, start, rng):
-                    initial_state = self._model.get_initial_state(start)
+                    initial_state = self._model.get_initial_state(start, limb_goal)
                     return LimbTask(initial_state=initial_state, goal=limb_goal)
         raise RuntimeError("No reachable task found")
 
