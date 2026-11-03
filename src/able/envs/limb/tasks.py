@@ -162,7 +162,9 @@ class TaskBox:
     min_separation: float = 0.5
     max_separation: float = 1.5
     robot_jitter: float = 0.2
-    max_start_draws: int = 40
+    # About 4% of draws need more than 40 starts (goals at the limits are often
+    # unreachable); the most seen was 78.
+    max_start_draws: int = 400
     max_goal_draws: int = 60
     max_configuration_draws: int = 200
 
