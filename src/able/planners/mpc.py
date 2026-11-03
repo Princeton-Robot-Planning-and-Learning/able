@@ -26,7 +26,7 @@ from able.envs.limb.constraints import (
     limb_in_collision,
 )
 from able.envs.limb.human import LimbVariant
-from able.envs.limb.model import LimbModel, LimbState, LimbTask
+from able.envs.limb.model import STOP, LimbModel, LimbState, LimbTask
 from able.envs.limb.sim import CoupledState, LimbSim
 from able.planners.base import Planner
 from able.policies.base import OpenLoopPolicy
@@ -396,7 +396,8 @@ class LimbMPCPlanner(
 
     One iteration of the budget is one MPC step. The policy is the committed
     controls up to the step where the replay reaches the task's goal, which ends the
-    task, padded with zero corrections to the horizon. Its planning statistics are
+    task, then STOP to the horizon, so nothing moves after a plan that stops short
+    of the goal (for example, at a retargeted goal). Its planning statistics are
     the number of rollouts, the number of MPC steps, whether the goal was
     retargeted, and the replayed distance to the goal.
     """
@@ -498,7 +499,7 @@ class LimbMPCPlanner(
             "retargeted": float(retargeted),
             "replay_error": replay_error,
         }
-        padding = [np.zeros(NUM_ROBOT_JOINTS)] * (model.horizon - len(actions))
+        padding = [STOP] * (model.horizon - len(actions))
         return OpenLoopPolicy(actions + padding, stats)
 
     def _replay(

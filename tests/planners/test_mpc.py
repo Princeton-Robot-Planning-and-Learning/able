@@ -192,6 +192,8 @@ def test_plan_reaches_the_goal(setup):
     assert stats["retargeted"] == 0.0
     assert stats["replay_error"] < 0.1
     assert len(policy.actions) == domain.env_model.horizon
+    num_controls = sum(not np.isnan(a).all() for a in policy.actions)
+    assert all(np.isnan(a).all() for a in policy.actions[num_controls:])
     real_env = domain.real_env
     assert isinstance(real_env, SimulatedEnvironment)
     trajectory = run_episode(real_env, task, policy)
