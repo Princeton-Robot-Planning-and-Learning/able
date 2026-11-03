@@ -71,7 +71,7 @@ class ReachModel(
 
     def __init__(
         self,
-        num_requested: int = 4,
+        num_requested: int = 2,
         num_clutter: int = 4,
         config: BedsideStocking3DEnvConfig = BedsideStocking3DEnvConfig(),
     ) -> None:
