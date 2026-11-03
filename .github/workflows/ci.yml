@@ -74,4 +74,4 @@ jobs:
       run: uv sync --all-extras --dev
     - name: Pytest
       run: |
-       uv run pytest tests/ -n auto --dist loadgroup
+       uv run pytest tests/ -n auto --dist loadgroup --durations=20
