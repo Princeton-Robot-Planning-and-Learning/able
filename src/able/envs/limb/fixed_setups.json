@@ -1,0 +1,258 @@
+{
+ "bed-left-arm": {
+  "variant": "bed-left-arm",
+  "offset": 0.03,
+  "roll": 3.141592653589793,
+  "base": [
+   0.9790837520645541,
+   0.4007698289009253,
+   2.6179938779914944
+  ],
+  "stats": {
+   "reach": 0.225,
+   "mpc_success": 0.75,
+   "mpc_seconds": 115.45049905776978,
+   "mpc_tried": 4
+  }
+ },
+ "bed-left-leg": {
+  "variant": "bed-left-leg",
+  "offset": 0.03,
+  "roll": 0.0,
+  "base": [
+   0.9156089612526267,
+   -0.6241813890013539,
+   2.8797932657906435
+  ],
+  "stats": {
+   "reach": 0.175,
+   "mpc_success": 0.5,
+   "mpc_seconds": 147.1223360300064,
+   "mpc_tried": 4
+  }
+ },
+ "bed-right-arm": {
+  "variant": "bed-right-arm",
+  "offset": 0.0,
+  "roll": 3.141592653589793,
+  "base": [
+   -0.9441967293255074,
+   0.62574659593425,
+   0.0
+  ],
+  "stats": {
+   "reach": 0.4,
+   "mpc_success": 0.75,
+   "mpc_seconds": 136.1076990365982,
+   "mpc_tried": 4
+  }
+ },
+ "bed-right-leg": {
+  "variant": "bed-right-leg",
+  "offset": 0.06,
+  "roll": 3.141592653589793,
+  "base": [
+   -0.9342854312460088,
+   -0.4774924142928165,
+   0.5235987755982988
+  ],
+  "stats": {
+   "reach": 0.225,
+   "mpc_success": 0.0,
+   "mpc_seconds": 150.89339762926102,
+   "mpc_tried": 4
+  }
+ },
+ "human-left-arm": {
+  "variant": "human-left-arm",
+  "offset": 0.06,
+  "roll": 3.141592653589793,
+  "base": [
+   0.2086931364407838,
+   0.2996055953552836,
+   0.0
+  ],
+  "stats": {
+   "reach": 0.15,
+   "mpc_success": 1.0,
+   "mpc_seconds": 82.86418378353119,
+   "mpc_tried": 2
+  }
+ },
+ "human-left-leg": {
+  "variant": "human-left-leg",
+  "offset": 0.0,
+  "roll": 0.0,
+  "base": [
+   0.181418101302725,
+   0.47416220786351626,
+   0.0
+  ],
+  "stats": {
+   "reach": 0.075,
+   "mpc_success": 1.0,
+   "mpc_seconds": 165.81624841690063,
+   "mpc_tried": 1
+  }
+ },
+ "human-right-arm": {
+  "variant": "human-right-arm",
+  "offset": 0.06,
+  "roll": 0.0,
+  "base": [
+   0.31202479730074645,
+   0.1513236383563425,
+   -2.3561944901923453
+  ],
+  "stats": {
+   "reach": 0.075,
+   "mpc_success": 0.3333333333333333,
+   "mpc_seconds": 86.9267388979594,
+   "mpc_tried": 3
+  }
+ },
+ "human-right-leg": {
+  "variant": "human-right-leg",
+  "offset": 0.06,
+  "roll": 0.0,
+  "base": [
+   0.48184670743748115,
+   0.12804011490992973,
+   0.5235987755982988
+  ],
+  "stats": {
+   "reach": 0.175,
+   "mpc_success": 0.25,
+   "mpc_seconds": 173.00310957431793,
+   "mpc_tried": 4
+  }
+ },
+ "isolated-left-arm": {
+  "variant": "isolated-left-arm",
+  "offset": 0.03,
+  "roll": 0.0,
+  "base": [
+   1.2321334533142039,
+   -0.19106183208931754,
+   0.2617993877991494
+  ],
+  "stats": {
+   "reach": 0.2,
+   "mpc_success": 0.75,
+   "mpc_seconds": 93.95191144943237,
+   "mpc_tried": 4
+  }
+ },
+ "isolated-left-leg": {
+  "variant": "isolated-left-leg",
+  "offset": 0.06,
+  "roll": 3.141592653589793,
+  "base": [
+   0.4925896239652489,
+   0.47528037489165775,
+   1.0471975511965974
+  ],
+  "stats": {
+   "reach": 0.275,
+   "mpc_success": 0.5,
+   "mpc_seconds": 172.13199281692505,
+   "mpc_tried": 4
+  }
+ },
+ "isolated-right-arm": {
+  "variant": "isolated-right-arm",
+  "offset": 0.06,
+  "roll": 0.0,
+  "base": [
+   0.2581114122291912,
+   0.025180184122849808,
+   -2.094395102393196
+  ],
+  "stats": {
+   "reach": 0.375,
+   "mpc_success": 1.0,
+   "mpc_seconds": 94.06938177347183,
+   "mpc_tried": 4
+  }
+ },
+ "isolated-right-leg": {
+  "variant": "isolated-right-leg",
+  "offset": 0.0,
+  "roll": 3.141592653589793,
+  "base": [
+   0.6128049379802502,
+   0.25933954901608247,
+   -1.3089969389957476
+  ],
+  "stats": {
+   "reach": 0.325,
+   "mpc_success": 0.25,
+   "mpc_seconds": 132.7787059545517,
+   "mpc_tried": 4
+  }
+ },
+ "wheelchair-left-arm": {
+  "variant": "wheelchair-left-arm",
+  "offset": 0.03,
+  "roll": 0.0,
+  "base": [
+   0.5593990217696555,
+   -0.949443209922697,
+   0.5235987755982988
+  ],
+  "stats": {
+   "reach": 0.05,
+   "mpc_success": 1.0,
+   "mpc_seconds": 173.49441957473755,
+   "mpc_tried": 1
+  }
+ },
+ "wheelchair-left-leg": {
+  "variant": "wheelchair-left-leg",
+  "offset": 0.06,
+  "roll": 3.141592653589793,
+  "base": [
+   0.1905514422031699,
+   -1.3852275075992313,
+   0.2617993877991494
+  ],
+  "stats": {
+   "reach": 0.05,
+   "mpc_success": 0.0,
+   "mpc_seconds": 163.36201685667038,
+   "mpc_tried": 4
+  }
+ },
+ "wheelchair-right-arm": {
+  "variant": "wheelchair-right-arm",
+  "offset": 0.0,
+  "roll": 0.0,
+  "base": [
+   0.23963016887987576,
+   -0.8957337829747021,
+   3.141592653589793
+  ],
+  "stats": {
+   "reach": 0.075,
+   "mpc_success": 1.0,
+   "mpc_seconds": 117.9379551410675,
+   "mpc_tried": 1
+  }
+ },
+ "wheelchair-right-leg": {
+  "variant": "wheelchair-right-leg",
+  "offset": 0.0,
+  "roll": 0.0,
+  "base": [
+   -0.07790902987608544,
+   -1.3817428140343424,
+   0.0
+  ],
+  "stats": {
+   "reach": 0.125,
+   "mpc_success": 0.6666666666666666,
+   "mpc_seconds": 153.042112270991,
+   "mpc_tried": 3
+  }
+ }
+}
