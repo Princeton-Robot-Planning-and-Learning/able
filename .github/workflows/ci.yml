@@ -72,6 +72,13 @@ jobs:
       run: uv python install ${{ matrix.python-version }}    
     - name: Install the project
       run: uv sync --all-extras --dev
+    # pybullet_helpers compiles the Kinova arm's IKFast solver on first use, which
+    # takes minutes, so keep the compiled module between runs.
+    - name: Cache the IKFast solver
+      uses: actions/cache@v4
+      with:
+        path: .venv/lib/python${{ matrix.python-version }}/site-packages/pybullet_helpers/third_party/ikfast/kortex/*.so
+        key: ikfast-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
     - name: Pytest
       run: |
        uv run pytest tests/ -n auto --dist loadgroup --durations=20
