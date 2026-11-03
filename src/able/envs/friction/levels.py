@@ -6,6 +6,7 @@ holes and 0.20 m.
 """
 
 import dataclasses
+from typing import Any
 
 from able.envs.friction.world import MAPS, THREE_ROUTES, PuckPhysics, PuckWorld
 
@@ -35,3 +36,19 @@ def register_level(level: str) -> tuple[str, PuckPhysics]:
     world = level_world(level)
     MAPS[world.puck_map.name] = world.puck_map
     return world.puck_map.name, world.physics
+
+
+def make_level_env(sim: str, level: str) -> Any:
+    """The level's simulator: "2d" (PyMunk)."""
+    map_name, physics = register_level(level)
+    if sim == "2d":
+        # pylint: disable-next=import-outside-toplevel
+        from able.envs.friction.sim2d import (
+            DynPuckPushing2DEnvConfig,
+            ObjectCentricDynPuckPushing2DEnv,
+        )
+
+        return ObjectCentricDynPuckPushing2DEnv(
+            DynPuckPushing2DEnvConfig(map_name=map_name, physics=physics)
+        )
+    raise ValueError(f"Unknown simulator {sim!r}; expected '2d'")
