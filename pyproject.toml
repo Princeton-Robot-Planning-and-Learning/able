@@ -20,6 +20,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The limb repositioning environment (PyBullet).
+limb = [
+    "kindergarden @ git+https://github.com/Princeton-Robot-Planning-and-Learning/kindergarden.git@3f57bb6e07f89f8701e6b86410c773860ea9db2d",
+    "pybullet_helpers>=0.1.0",
+    "scipy",
+]
 develop = [
     "black",
     "docformatter",
@@ -72,5 +78,7 @@ exclude = ["venv/*", ".venv/*"]
 [[tool.mypy.overrides]]
 module = [
     "matplotlib.*",
+    "pybullet.*",
+    "scipy.*",
 ]
 ignore_missing_imports = true
