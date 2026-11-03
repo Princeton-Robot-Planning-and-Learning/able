@@ -531,16 +531,23 @@ def make_friction_dreaming_robot(
 
 
 def _make_reach_parts(
-    domain: ReachDomain, max_time: float, num_particles: int, delta: float
+    domain: ReachDomain,
+    max_time: float,
+    num_particles: int,
+    delta: float,
+    model: ConditionalModel | None = None,
 ) -> tuple[ReachModel, ReachPDDLStreamPlanner, ReachBeliefUpdater, ReachQueryGatherer]:
     """The human reach robot's model of the environment, planner, belief updater,
-    and gatherer. PDDLStream plans for up to max_time seconds, and a pose is usable
-    if at least 1 - delta of num_particles belief particles reach it."""
+    and gatherer. PDDLStream plans for up to max_time seconds, a pose is usable if
+    at least 1 - delta of num_particles belief particles reach it, and the model,
+    if given, ranks the placements."""
     env_model = domain.env_model
     assert isinstance(env_model, ReachModel)
     params = PDDLStreamParams(
         max_time=max_time, num_particles=num_particles, delta=delta
     )
+    if model is not None:
+        params = dataclasses.replace(params, model=model)
     belief_updater = ReachBeliefUpdater(env_model.sim.shoulder)
     return (
         env_model,
@@ -566,6 +573,119 @@ def make_human_reach_scratch_robot(
     return Robot(
         planner=planner,
         learner=NullLearner(),
+        belief_updater=belief_updater,
+        info_gatherer=gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
+def make_human_reach_current_belief_robot(
+    domain: ReachDomain,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_training_tasks: int = 1,
+    max_time: float = 300.0,
+    num_particles: int = 256,
+    delta: float = 0.1,
+    recorder: CycleRecorder[ReachState, ReachTask, ArmArray] | None = None,
+) -> ReachRobot:
+    """A human reach robot whose model, while it sleeps, learns plans for sampled
+    scenes under its current belief. It never anticipates belief updates."""
+    del recorder  # unused because the robot imagines nothing while it sleeps
+    _, planner, belief_updater, gatherer = _make_reach_parts(
+        domain, max_time, num_particles, delta, model
+    )
+    return Robot(
+        planner=planner,
+        learner=ModelLearner(
+            planner,
+            domain.task_distribution,
+            CurrentBeliefSource(),
+            planning_budget,
+            refit="per_sleep",
+            num_training_tasks=num_training_tasks,
+        ),
+        belief_updater=belief_updater,
+        info_gatherer=gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
+def make_human_reach_prior_only_robot(
+    domain: ReachDomain,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_training_tasks: int = 1,
+    max_time: float = 300.0,
+    num_particles: int = 256,
+    delta: float = 0.1,
+    recorder: CycleRecorder[ReachState, ReachTask, ArmArray] | None = None,
+) -> ReachRobot:
+    """A human reach robot whose model learns plans for sampled scenes under the
+    prior in its first sleep, and never learns again."""
+    del recorder  # unused because the robot imagines nothing while it sleeps
+    _, planner, belief_updater, gatherer = _make_reach_parts(
+        domain, max_time, num_particles, delta, model
+    )
+    return Robot(
+        planner=planner,
+        learner=ModelLearner(
+            planner,
+            domain.task_distribution,
+            PriorSource(domain.initial_belief),
+            planning_budget,
+            refit="per_sleep",
+            max_sleeps=1,
+            num_training_tasks=num_training_tasks,
+        ),
+        belief_updater=belief_updater,
+        info_gatherer=gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
+def make_human_reach_dreaming_robot(
+    domain: ReachDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_training_tasks: int = 1,
+    max_time: float = 300.0,
+    num_particles: int = 256,
+    delta: float = 0.1,
+    recorder: CycleRecorder[ReachState, ReachTask, ArmArray] | None = None,
+) -> ReachRobot:
+    """A human reach robot that dreams while it sleeps: its model learns plans for
+    sampled scenes under the beliefs it imagines holding at evaluation.
+
+    The budgets should match the cycle budgets for information gathering, task
+    execution, and planning.
+    """
+    env_model, planner, belief_updater, gatherer = _make_reach_parts(
+        domain, max_time, num_particles, delta, model
+    )
+    belief_source: ImaginedNextBeliefSource = ImaginedNextBeliefSource(
+        env_model,
+        domain.task_distribution,
+        planner,
+        belief_updater,
+        gatherer,
+        gathering_budget=gathering_budget,
+        execution_budget=execution_budget,
+        planning_budget=planning_budget,
+        recorder=recorder,
+    )
+    return Robot(
+        planner=planner,
+        learner=ModelLearner(
+            planner,
+            domain.task_distribution,
+            belief_source,
+            planning_budget,
+            refit="per_sleep",
+            num_training_tasks=num_training_tasks,
+        ),
         belief_updater=belief_updater,
         info_gatherer=gatherer,
         initial_belief=domain.initial_belief,

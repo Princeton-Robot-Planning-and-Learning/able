@@ -100,3 +100,11 @@ python experiments/run_single_experiment.py env=human_reach approach=human_reach
 
 `env.domain.num_requested` and `env.domain.num_clutter` set the scene, 2 and 4 by default. Under the prior, only 3 bedside spots are reachable with 90% probability, so scenes with more requested items often have no plan until the belief narrows. PDDLStream plans for up to 5 minutes (`approach.max_time`), and planning a scene takes from seconds to minutes. As in the other environments, the robot asks no queries by default; a query presents the gripper at points along a direction from the person's shoulder.
 
+The robots that learn rank PDDLStream's placements for each requested item with a flow-matching model of where plans put it, trained while they sleep on plans for sampled scenes. As in the other environments, they differ only in the beliefs they train under: `human_reach_current_belief`, `human_reach_prior_only`, and `human_reach_dreaming`. To compare them with `human_reach_scratch` over five seeds:
+
+```
+./experiments/run_human_reach_comparison.sh
+```
+
+The human reach environment evaluates 2 tasks per cycle and dreams 4 times per sleep, planning 1 training scene per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
+
