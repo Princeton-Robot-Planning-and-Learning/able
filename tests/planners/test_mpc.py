@@ -8,7 +8,7 @@ from pybullet_helpers.geometry import SE2Pose
 
 from able.beliefs.range_of_motion import RangeOfMotionBelief
 from able.envs.limb.human import RangeOfMotionPrior, get_variant
-from able.envs.limb.model import LimbModel, LimbTask
+from able.envs.limb.model import LimbModel
 from able.envs.limb.sim import CoupledState
 from able.envs.limb.tasks import LimbTaskDistribution, make_domain
 from able.envs.simulated import SimulatedEnvironment
@@ -199,24 +199,17 @@ def _prior() -> RangeOfMotionBelief:
 
 @pytest.fixture(name="setup", scope="module")
 def _setup():
-    domain = make_domain(seed=0, horizon=40)
+    domain = make_domain(seed=0, horizon=60)
     model = domain.env_model
     assert isinstance(model, LimbModel)
     distribution = domain.task_distribution
     assert isinstance(distribution, LimbTaskDistribution)
-    task = _make_nearby_task(model, distribution)
+    # A sampled task that the fast configuration solves in about 45 MPC steps.
+    task = distribution.sample(np.random.default_rng(3))
     planner = LimbMPCPlanner(model)
     yield domain, task, planner
     planner.close()
     _close(distribution, model)
-
-
-def _make_nearby_task(model: LimbModel, distribution: LimbTaskDistribution) -> LimbTask:
-    """A sampled task's start, with a goal that bends the elbow a little more."""
-    start = distribution.sample(np.random.default_rng(0)).initial_state.coupled
-    goal = np.array(start.limb_positions)
-    goal[VARIANT.active_joints[2]] += 0.15 * VARIANT.active_signs[2]
-    return LimbTask(initial_state=model.get_initial_state(start, goal), goal=goal)
 
 
 def _close(distribution: LimbTaskDistribution, model: LimbModel) -> None:
