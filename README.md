@@ -26,10 +26,24 @@ To run one approach with one seed:
 python experiments/run_single_experiment.py approach=dreaming seed=0
 ```
 
-Each run writes its resolved `config.yaml`, `eval_results.csv` (one row per evaluation task per cycle), and `cycle_results.csv` (one row per cycle, including sleep time). To plot any set of runs:
+Each run writes its resolved `config.yaml`, `eval_results.csv` (one row per evaluation task per cycle), and `cycle_results.csv` (one row per cycle, including sleep time and whether the belief changed between sleep and evaluation). To plot any set of runs:
 
 ```
 python experiments/analysis/plot_cycle_results.py --results_dir <directory containing the runs>
+```
+
+### Comparing dreaming with the current-belief baseline
+
+To sweep one setting and measure how much dreaming gains over `current_belief` for each value (10 seeds by default):
+
+```
+./experiments/run_gap_sweep.sh env.domain.edge_probability 0,0.25,0.5,0.75,1
+```
+
+The gains are the planning time saved per evaluation task and the increase in the rate of planning with cached plans, both overall and on revision cycles, where the belief changed between sleep and evaluation. The table (`gap_summary.md`) reports them for cycles 1–5, the second half of the run, and all cycles, along with success rates. The plot (`gap_summary.png`) shows them against the swept value. Results go to `logs/gap_sweep/<date>_<time>_<setting>/`. To summarize runs that share one setting, such as the output of `run_comparison.sh`:
+
+```
+python experiments/analysis/summarize_gap.py --results_dir <directory containing the runs>
 ```
 
 ### Videos

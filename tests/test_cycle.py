@@ -124,7 +124,10 @@ def test_run_cycles():
         rng=rng,
     )
     assert [result.cycle for result in results] == [0, 1, 2]
+    assert results[0].sleep_belief is domain.initial_belief
     previous_width = IntervalBelief(JOINT_LIMIT_PRIOR).get_total_width()
+    for previous, result in zip(results, results[1:]):
+        assert result.sleep_belief is previous.belief
     for result in results:
         assert not result.gathered_data
         assert len(result.executions) == 2

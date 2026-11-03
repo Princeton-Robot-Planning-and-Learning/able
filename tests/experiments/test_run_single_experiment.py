@@ -49,6 +49,7 @@ def test_run_single_experiment(tmp_path: Path) -> None:
         assert list(cycle_df.cycle) == [0, 1]
         assert list(cycle_df.num_executed_tasks) == [1, 1]
         assert (cycle_df.sleep_wall_time >= 0).all()
+        assert cycle_df.belief_changed.dtype == bool
 
 
 def test_record_videos(tmp_path: Path) -> None:

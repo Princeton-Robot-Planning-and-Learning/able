@@ -52,11 +52,13 @@ class CycleResult(
 ):
     """Everything recorded in one cycle.
 
-    The belief is the one after information gathering and task execution, which
-    is also the belief the robot was evaluated under.
+    The sleep belief is the one the robot slept on at the start of the cycle. The
+    belief is the one after information gathering and task execution, which is
+    also the belief the robot was evaluated under.
     """
 
     cycle: int
+    sleep_belief: Belief[HiddenParamsType]
     sleep_wall_time: float
     gathered_data: list[QueryResponse[QueryType, ResponseType]]
     executions: list[EpisodeResult[StateType, ActType, TaskType]]
@@ -268,6 +270,7 @@ def run_cycles(
     results = []
     for cycle in range(num_cycles):
         recorder.start_stage(cycle, Stage.SLEEP)
+        sleep_belief = robot.belief
         start_time = time.perf_counter()
         robot.sleep(budgets.sleep, sleep_rng)
         sleep_wall_time = time.perf_counter() - start_time
@@ -305,6 +308,7 @@ def run_cycles(
         results.append(
             CycleResult(
                 cycle=cycle,
+                sleep_belief=sleep_belief,
                 sleep_wall_time=sleep_wall_time,
                 gathered_data=data,
                 executions=executions,

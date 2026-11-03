@@ -102,13 +102,19 @@ def _get_eval_rows(results: list[CycleResult]) -> list[dict[str, Any]]:
 
 def _get_cycle_rows(results: list[CycleResult]) -> list[dict[str, Any]]:
     """One row per cycle, with the time spent sleeping and what the robot did between
-    sleeping and evaluation."""
+    sleeping and evaluation.
+
+    The belief changed if the belief the robot was evaluated under differs from the one
+    it slept on. Beliefs are compared with ==, so a belief class without its own
+    equality counts every update as a change.
+    """
     return [
         {
             "cycle": result.cycle,
             "sleep_wall_time": result.sleep_wall_time,
             "num_queries": len(result.gathered_data),
             "num_executed_tasks": len(result.executions),
+            "belief_changed": bool(result.belief != result.sleep_belief),
         }
         for result in results
     ]
