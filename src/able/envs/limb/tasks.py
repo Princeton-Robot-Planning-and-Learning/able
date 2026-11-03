@@ -154,16 +154,13 @@ def solve_grasp_ik(
 class TaskBox:
     """How tasks are drawn, as on the two-link arm: start and goal configurations of
     the active joints are uniform within the person's true range, and far enough
-    apart. With probability edge_probability, each active joint of the goal is at
-    the limit its motion sets, where reaching reveals the limit. Beyond
-    max_separation, MPC does not converge."""
+    apart. There are no goals at the limits, which would reveal them in one
+    execution. Beyond max_separation, MPC does not converge."""
 
-    edge_probability: float = 0.5
     min_separation: float = 0.5
     max_separation: float = 1.5
     robot_jitter: float = 0.2
-    # About 4% of draws need more than 40 starts (goals at the limits are often
-    # unreachable); the most seen was 78.
+    # Some starts cannot be grasped or carried to any goal, so allow many.
     max_start_draws: int = 400
     max_goal_draws: int = 60
     max_configuration_draws: int = 200
@@ -194,7 +191,6 @@ class LimbTaskDistribution(TaskDistribution[LimbTask]):
         self._nominal_limb = np.array(config.scene.limb_init_joint_positions)
         self._nominal_robot = np.array(config.robot_initial_joints)
         self._low, self._high = model.variant.get_joint_limits(true_theta)
-        self._edges = model.variant.get_bounds(true_theta)
         self._grasp: Pose | None = None
         self._resting: dict[int, float] = {}
 
@@ -228,7 +224,7 @@ class LimbTaskDistribution(TaskDistribution[LimbTask]):
             if start is None:
                 continue
             for _ in range(box.max_goal_draws):
-                limb_goal = self.draw_limb_configuration(rng, box.edge_probability)
+                limb_goal = self.draw_limb_configuration(rng)
                 separation = sim.get_limb_error(limb_init, limb_goal)
                 if not box.min_separation <= separation <= box.max_separation:
                     continue
@@ -247,19 +243,13 @@ class LimbTaskDistribution(TaskDistribution[LimbTask]):
                 for body in get_scene_collision_ids(sim)
             )
 
-    def draw_limb_configuration(
-        self, rng: np.random.Generator, edge_probability: float = 0.0
-    ) -> NDArray[np.float64]:
-        """Active joints uniform within the person's range, or at the limit of their
-        motion with edge_probability, clear of the furniture. The other joints keep
-        the variant's values."""
-        variant = self._model.variant
+    def draw_limb_configuration(self, rng: np.random.Generator) -> NDArray[np.float64]:
+        """Active joints uniform within the person's range, clear of the furniture.
+        The other joints keep the variant's values."""
         for _ in range(self._box.max_configuration_draws):
             positions = self._nominal_limb.copy()
-            for motion, joint in enumerate(variant.active_joints):
+            for joint in self._model.variant.active_joints:
                 positions[joint] = rng.uniform(self._low[joint], self._high[joint])
-                if rng.random() < edge_probability:
-                    positions[joint] = self._edges[motion]
             if not self._in_furniture(positions):
                 return positions
         raise RuntimeError("No limb configuration clear of the furniture")
