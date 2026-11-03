@@ -51,7 +51,7 @@ explicit = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-able = ["py.typed"]
+able = ["py.typed", "envs/limb/*.json"]
 
 [tool.black]
 line-length = 88

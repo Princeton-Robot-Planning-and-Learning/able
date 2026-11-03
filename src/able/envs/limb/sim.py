@@ -31,6 +31,8 @@ BASE_REACH = 3.0
 # Damping singular coupling Jacobians, as in limb-manipulation.
 JACOBIAN_DAMPING = 0.1
 SINGULARITY_THRESHOLD = 0.02
+# Headroom below the robot's torque limits for holding the limb (N m).
+TORQUE_FEASIBILITY_MARGIN = 1.0
 
 
 @dataclass(frozen=True)
@@ -354,6 +356,20 @@ class LimbSim:
     def advance_corrected(self, correction: NDArray[np.float64]) -> HumanTorques:
         """Step once under the correction on top of the hold torque."""
         return self.advance(self.get_commanded_torque(correction))
+
+    def get_control_saturation(self) -> float:
+        """The torque needed to hold still as a fraction of the robot's limits,
+        less a margin; infinite near a singular grasp."""
+        limb_jacobian = self._get_tool_jacobian(self.env.limb)
+        if np.linalg.svd(limb_jacobian, compute_uv=False)[-1] < SINGULARITY_THRESHOLD:
+            return float("inf")
+        hold = self._get_arm_gravity_torque() + self._get_limb_coupling_torque()
+        if not hold.any():
+            return 0.0
+        space = self.env.torque_action_space
+        upper = np.asarray(space.high) - TORQUE_FEASIBILITY_MARGIN
+        lower = np.asarray(space.low) + TORQUE_FEASIBILITY_MARGIN
+        return float(np.max(np.maximum(hold / upper, hold / lower)))
 
     def get_limb_directed_torque(
         self, goal: NDArray[np.float64], gain: float
