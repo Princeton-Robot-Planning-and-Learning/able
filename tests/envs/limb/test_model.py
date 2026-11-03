@@ -23,20 +23,31 @@ def _start(model):
     return model.sim.capture()
 
 
+def _make_task(model: LimbModel, start, elbow_offset: float) -> LimbTask:
+    """A task whose goal bends the elbow by the offset from the start."""
+    goal = np.array(start.limb_positions)
+    goal[3] += elbow_offset
+    return LimbTask(initial_state=model.get_initial_state(start, goal), goal=goal)
+
+
 def test_initial_state(model, start):
-    """Tests that a task starts with the limb's resting contact and nothing seen."""
-    state = model.get_initial_state(start)
+    """Tests that a task starts with the goal, the limb's resting contact, and
+    nothing seen."""
+    task = _make_task(model, start, 0.5)
+    state = task.initial_state
+    assert np.array_equal(state.goal, task.goal)
+    assert not state.reached and not state.failure and not state.violated
     assert state.signalled == (None, None, None)
-    assert not state.failure and not state.violated
     assert state.resting_penetration
     assert np.allclose(state.max_reach, model.get_reach(state.limb_positions))
+    assert _make_task(model, start, 0.0).initial_state.reached
 
 
 def test_steps_are_deterministic(model, start):
     """Tests that stepping from a state gives the same result, also after the
     simulator has moved on."""
     rng = np.random.default_rng(0)
-    state = model.get_initial_state(start)
+    state = _make_task(model, start, 0.5).initial_state
     action = np.array([1.0, -1.0, 0.5, 0.0, 0.2, 0.0, 0.0])
     first = model.sample_next_state(state, action, THETA, rng)
     model.sample_next_state(first, action, THETA, rng)
@@ -45,16 +56,22 @@ def test_steps_are_deterministic(model, start):
     assert not np.allclose(first.limb_positions, state.limb_positions)
 
 
-def test_holding_still_reaches_a_goal_at_the_start(model, start):
-    """Tests costs and the goal check for a task whose goal is the start."""
+def test_reaching_the_goal_ends_the_task(model, start):
+    """Tests that the state stays fixed once the limb reaches the goal, which
+    completes the task."""
     rng = np.random.default_rng(0)
-    state = model.get_initial_state(start)
-    task = LimbTask(initial_state=state, goal=state.limb_positions)
-    for _ in range(model.horizon):
-        next_state = model.sample_next_state(state, np.zeros(7), THETA, rng)
-        assert model.get_cost(task, state, np.zeros(7), next_state, THETA) == 0.0
+    task = _make_task(model, start, 0.15)
+    state = task.initial_state
+    for _ in range(50):
+        if state.reached:
+            break
+        action = model.sim.get_limb_directed_torque(task.goal, gain=2.0)
+        next_state = model.sample_next_state(state, action, THETA, rng)
+        assert model.get_cost(task, state, action, next_state, THETA) == 0.0
         state = next_state
-    assert model.get_terminal_cost(task, state, THETA) < 0.01
+    assert state.reached
+    assert model.sample_next_state(state, np.full(7, 5.0), THETA, rng) is state
+    assert model.get_terminal_cost(task, state, THETA) < model.sim.goal_tolerance
     assert model.check_goal(task, state, THETA)
 
 
@@ -62,8 +79,8 @@ def test_passing_the_limit(model, start):
     """Tests that a person with a narrow range signals the limit, which fails the
     task."""
     rng = np.random.default_rng(0)
-    state = model.get_initial_state(start)
-    task = LimbTask(initial_state=state, goal=state.limb_positions)
+    task = _make_task(model, start, 0.5)
+    state = task.initial_state
     reach = np.array(state.max_reach)
     # Put each limit just inside the limb's current reach, where it is positive.
     narrow = np.where(reach > 0.05, reach - 0.05, 1.0)
@@ -77,11 +94,10 @@ def test_passing_the_limit(model, start):
 def test_broken_constraints_freeze_the_state(model, start):
     """Tests that a torque past the robot's limits fails and stops the motion."""
     rng = np.random.default_rng(0)
-    state = model.get_initial_state(start)
-    failed = model.sample_next_state(state, np.full(7, 1e4), THETA, rng)
-    assert failed.failure == "robot torque limits"
+    task = _make_task(model, start, 0.5)
+    failed = model.sample_next_state(task.initial_state, np.full(7, 1e4), THETA, rng)
+    assert failed.failure == "robot torque limits" and not failed.reached
     assert model.sample_next_state(failed, np.zeros(7), THETA, rng) is failed
-    task = LimbTask(initial_state=state, goal=state.limb_positions)
     assert not model.check_goal(task, failed, THETA)
 
 

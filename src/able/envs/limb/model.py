@@ -4,8 +4,9 @@ The robot holds the person's limb and moves it to a goal configuration. Each act
 is a robot torque correction (on top of the torque that holds the system still),
 applied for action_repeat simulator steps. The hidden parameters theta scale the
 person's range of motion. They do not change the physics: moving the limb past the
-person's limit fails the task, and the person signals where it happened. A broken
-safety constraint ends the motion, and the state stays fixed afterwards.
+person's limit fails the task, and the person signals where it happened. As in
+kinder's environment, the task ends when the limb reaches the goal, and a broken
+safety constraint ends the motion; either way the state stays fixed afterwards.
 """
 
 import dataclasses
@@ -34,18 +35,21 @@ from able.structs import Task
 class LimbState:
     """The coupled robot and limb state, and what the episode has shown so far.
 
-    For each active motion, max_reach is the farthest the limb has gone toward the
-    limit, as a scale of the normal range, and signalled is the joint angle
-    magnitude where the person first signalled that the limb passed their limit
-    (None if they have not). A nonempty failure names the broken constraint.
-    The resting penetration is the limb's contact with the person at the start of
-    the task, which collision checks allow.
+    The goal is the task's goal configuration, and reached says whether the limb
+    has come within the goal tolerance. For each active motion, max_reach is the
+    farthest the limb has gone toward the limit, as a scale of the normal range,
+    and signalled is the joint angle magnitude where the person first signalled
+    that the limb passed their limit (None if they have not). A nonempty failure
+    names the broken constraint. The resting penetration is the limb's contact
+    with the person at the start of the task, which collision checks allow.
     """
 
     coupled: CoupledState
+    goal: NDArray[np.float64]
     max_reach: tuple[float, ...]
     signalled: tuple[float | None, ...]
     resting_penetration: tuple[tuple[int, float], ...]
+    reached: bool = False
     failure: str = ""
 
     @property
@@ -59,7 +63,7 @@ class LimbState:
         return any(s is not None for s in self.signalled)
 
 
-# The goal is the limb's goal joint positions.
+# The goal is the limb's goal joint positions, which the initial state also holds.
 LimbTask = Task[LimbState, NDArray[np.float64]]
 
 
@@ -76,10 +80,11 @@ class LimbModel(
     """A PyBullet model of the robot moving the person's limb.
 
     The model steps one simulator, restoring it only when asked to step from a
-    state other than the one it produced last. Each step costs nothing, and the
-    terminal cost is the distance from the limb to the goal. A task succeeds if
-    that distance is within the environment's tolerance, no constraint broke, and
-    the limb never passed the person's limit.
+    state other than the one it produced last. The task ends when the limb is
+    within the environment's goal tolerance at the end of an action. Each step
+    costs nothing, and the terminal cost is the distance from the limb to the goal.
+    A task succeeds if the limb reached the goal, no constraint broke, and the limb
+    never passed the person's limit.
     """
 
     def __init__(
@@ -120,15 +125,23 @@ class LimbModel(
         self._sim, self._sim_state = None, None
         self._queries.close()
 
-    def get_initial_state(self, coupled: CoupledState) -> LimbState:
-        """The state at the start of a task, with the limb's resting contact."""
+    def get_initial_state(
+        self, coupled: CoupledState, goal: NDArray[np.float64]
+    ) -> LimbState:
+        """The state at the start of a task with the goal, with the limb's resting
+        contact."""
         sim = self.sim
         sim.restore(coupled)
+        positions = np.array(coupled.limb_positions)
+        goal = np.array(goal, dtype=np.float64)
+        goal.setflags(write=False)
         state = LimbState(
             coupled=coupled,
-            max_reach=tuple(self.get_reach(np.array(coupled.limb_positions))),
+            goal=goal,
+            max_reach=tuple(self.get_reach(positions)),
             signalled=(None,) * len(self.variant.active_motions),
             resting_penetration=tuple(sorted(get_resting_penetration(sim).items())),
+            reached=sim.get_limb_error(positions, goal) < sim.goal_tolerance,
         )
         self._sim_state = state
         return state
@@ -146,7 +159,7 @@ class LimbModel(
         hidden_params: NDArray[np.float64],
         rng: np.random.Generator,
     ) -> LimbState:
-        if state.failure:
+        if state.failure or state.reached:
             return state
         sim = self.sim
         if state is not self._sim_state:
@@ -181,11 +194,14 @@ class LimbModel(
                     signalled[motion] = float(scale * magnitudes[motion])
             if failure:
                 break
+        coupled = sim.capture()
+        error = sim.get_limb_error(coupled.limb_positions, state.goal)
         next_state = dataclasses.replace(
             state,
-            coupled=sim.capture(),
+            coupled=coupled,
             max_reach=tuple(max_reach),
             signalled=tuple(signalled),
+            reached=not failure and error < sim.goal_tolerance,
             failure=failure,
         )
         self._sim_state = next_state
@@ -213,9 +229,7 @@ class LimbModel(
     def check_goal(
         self, task: LimbTask, state: LimbState, hidden_params: NDArray[np.float64]
     ) -> bool:
-        if state.failure or state.violated:
-            return False
-        return self.get_goal_error(task, state) < self.sim.goal_tolerance
+        return state.reached and not state.failure and not state.violated
 
     def sample_response(
         self,
