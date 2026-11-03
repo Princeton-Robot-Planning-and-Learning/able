@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 
 from able.envs.human_reach import streams
-from able.envs.human_reach.problem import build_stream_context, plan_bedside
 from able.envs.human_reach.scene import ObjectCentricBedsideStocking3DEnv, reach_margin
+from able.planners.pddlstream import build_stream_context, plan_bedside
 
 THETA = np.array([0.7, 0.6, 0.65])
 
