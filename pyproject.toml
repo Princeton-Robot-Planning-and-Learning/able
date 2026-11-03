@@ -32,9 +32,10 @@ friction = [
     "pybullet_helpers>=0.1.0",
     "scipy",
 ]
-# The human reach environment (PyBullet).
+# The human reach environment (PyBullet, PDDLStream).
 human_reach = [
     "kindergarden @ git+https://github.com/Princeton-Robot-Planning-and-Learning/kindergarden.git@3f57bb6e07f89f8701e6b86410c773860ea9db2d",
+    "pddlstream @ git+https://github.com/Princeton-Robot-Planning-and-Learning/pddlstream.git@5919a844b8c947acdb49bedb6e8b2b93e6a70c0c",
     "pybullet_helpers>=0.1.0",
 ]
 develop = [
@@ -63,7 +64,7 @@ explicit = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-able = ["py.typed", "envs/limb/*.json"]
+able = ["py.typed", "envs/limb/*.json", "envs/human_reach/pddl/*.pddl"]
 
 [tool.black]
 line-length = 88
@@ -90,6 +91,7 @@ exclude = ["venv/*", ".venv/*"]
 [[tool.mypy.overrides]]
 module = [
     "matplotlib.*",
+    "pddlstream.*",
     "pybullet.*",
     "scipy.*",
 ]
