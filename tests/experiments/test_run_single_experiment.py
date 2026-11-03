@@ -216,3 +216,32 @@ def test_friction(tmp_path: Path) -> None:
         "cycle_000_3_execution.mp4",
         "cycle_000_4_evaluation.mp4",
     ]
+
+
+def test_friction_dreaming(tmp_path: Path) -> None:
+    """Tests one short cycle of the dreaming robot in the friction environment."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "env=friction",
+            "approach=friction_dreaming",
+            "num_cycles=1",
+            "num_eval_tasks=1",
+            "budgets.sleep.max_iterations=1",
+            "env.domain.horizon=2",
+            "env.domain.num_particles=20",
+            "approach.num_sims=20",
+            "approach.max_depth=2",
+            "approach.model.num_steps=5",
+            f"hydra.run.dir={tmp_path}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    cfg = OmegaConf.load(tmp_path / "config.yaml")
+    assert cfg.approach_name == "friction_dreaming"
+    assert len(pd.read_csv(tmp_path / "eval_results.csv")) == 1
+    assert list(pd.read_csv(tmp_path / "cycle_results.csv").num_executed_tasks) == [1]

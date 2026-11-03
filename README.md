@@ -80,3 +80,11 @@ python experiments/run_single_experiment.py env=friction approach=friction_scrat
 
 `env.domain.level` chooses how hard the maze is, from `L1` (no holes, a large goal) to `L4` (four holes, a small goal). Planning a push takes several seconds with the default 1000 simulations, and a task takes up to 15 pushes. As on the arm and the limb, the robot asks no queries by default; a query probes the floor the belief is least sure of.
 
+The robots that learn guide POMCPOW with a flow-matching model of good pushes, used for half of its proposals. While they sleep they roll out sampled tasks under a training belief and learn the well-visited pushes of the rollouts that reach the goal. As on the arm and the limb, they differ only in the beliefs they train under: `friction_current_belief`, `friction_prior_only`, and `friction_dreaming`. To compare them with `friction_scratch` over five seeds:
+
+```
+./experiments/run_friction_comparison.sh
+```
+
+The friction environment evaluates 2 tasks per cycle and dreams 4 times per sleep, rolling out 1 training task per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
+
