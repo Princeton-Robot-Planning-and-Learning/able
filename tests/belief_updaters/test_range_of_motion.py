@@ -26,7 +26,7 @@ def _prior() -> RangeOfMotionBelief:
 
 def _state(max_reach, signalled=(None, None, None)) -> LimbState:
     coupled = CoupledState(SE2Pose(0.0, 0.0, 0.0), (), (), (0.0,) * 6, (), None)
-    return LimbState(coupled, tuple(max_reach), tuple(signalled), ())
+    return LimbState(coupled, np.zeros(6), tuple(max_reach), tuple(signalled), ())
 
 
 def _response(motion, answer, reached_target=False, settled=True, peak=0.5):
