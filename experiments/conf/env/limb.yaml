@@ -1,0 +1,9 @@
+domain:
+  _target_: able.envs.limb.tasks.make_domain
+  # One of {isolated, human, bed, wheelchair}-{left, right}-{arm, leg}.
+  variant: human-left-arm
+  # Control steps per episode; each lasts 12 simulator steps.
+  horizon: 300
+# Instantiated with the domain's environment model, only when recording videos.
+renderer:
+  _target_: able.rendering.limb.LimbRenderer
