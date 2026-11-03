@@ -5,8 +5,8 @@ import pytest
 from pybullet_helpers.geometry import SE2Pose
 
 from able.envs.human_reach.execute import _base_path, execute_plan
-from able.envs.human_reach.problem import plan_bedside
 from able.envs.human_reach.scene import ObjectCentricBedsideStocking3DEnv
+from able.planners.pddlstream import plan_bedside
 
 THETA = np.array([0.7, 0.6, 0.65])
 
