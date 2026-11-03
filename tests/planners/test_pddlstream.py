@@ -121,7 +121,7 @@ class _FailingWithModel(ReachPDDLStreamPlanner):
         if proposal is not None:
             return None
         return super()._solve(
-            task, particles, params, budget, rng, proposal, stats, start
+            task, particles, params, budget, rng, proposal, stats, start_time
         )
 
 
