@@ -22,7 +22,8 @@ _SURFACE = "#fcfcfb"
 class LimbRenderer(Renderer[LimbState, LimbTask, NDArray[np.float64]]):
     """Draws the robot and the person next to the belief over their range.
 
-    The left panel is the simulator's camera view of the current state. The right
+    The left panel is the simulator's camera view of the current state, with the
+    task's goal configuration as a translucent green limb. The right
     panel shows, for each motion, the belief's mean plus or minus one standard
     deviation within the prior's range, its floor, and ticks at the true scale
     (and the sampled scale in dreams). The renderer restores the state in a
@@ -39,7 +40,7 @@ class LimbRenderer(Renderer[LimbState, LimbTask, NDArray[np.float64]]):
         self._fig = Figure(figsize=(width / dpi, height / dpi), dpi=dpi)
         self._fig.set_facecolor(_SURFACE)
         self._canvas = FigureCanvasAgg(self._fig)
-        self._view = self._fig.add_axes((0.01, 0.02, 0.45, 0.86))
+        self._view = self._fig.add_axes((0.01, 0.02, 0.45, 0.82))
         self._belief = self._fig.add_axes((0.62, 0.15, 0.35, 0.65))
 
     def _get_sim(self) -> LimbSim:
@@ -80,6 +81,9 @@ class LimbRenderer(Renderer[LimbState, LimbTask, NDArray[np.float64]]):
         state = snapshot.states[-1]
         sim = self._get_sim()
         sim.restore(state.coupled)
+        goal_limb = getattr(sim.env.scene, "goal_limb", None)
+        if goal_limb is not None and snapshot.task is not None:
+            goal_limb.set_joints(list(snapshot.task.goal))
         view.imshow(sim.env.render())
         lines = [f"Step {len(snapshot.states) - 1}"]
         if snapshot.task is not None:
