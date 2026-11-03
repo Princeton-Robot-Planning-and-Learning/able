@@ -19,7 +19,8 @@ from able.envs.two_link_arm import (
 )
 from able.info_gatherers.base import NullInformationGatherer
 from able.learners.current_belief import CurrentBeliefLearner
-from able.planners.random_shooting import RandomShootingPlanner, get_warm_start_key
+from able.models.exact_match_cache import ExactMatchCache
+from able.planners.random_shooting import RandomShootingPlanner, get_plan_features
 from able.robot import Robot
 from able.structs import Budget
 
@@ -60,8 +61,10 @@ def test_caches_plans_for_current_belief():
     new_params = learner.learn(
         belief, params, Budget(max_iterations=2), np.random.default_rng(0)
     )
-    assert set(new_params.warm_starts) == {
-        get_warm_start_key(task, belief, params.key_resolution) for task in tasks
+    cache = new_params.model
+    assert isinstance(cache, ExactMatchCache)
+    assert set(cache.entries) == {
+        cache.get_key(get_plan_features(task, belief)) for task in tasks
     }
 
 

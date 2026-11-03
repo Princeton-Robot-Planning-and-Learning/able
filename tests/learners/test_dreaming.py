@@ -11,6 +11,7 @@ from able.envs.two_link_arm import ArmTask, TwoLinkArmModel, make_domain
 from able.info_gatherers.base import NullInformationGatherer
 from able.learners.base import Learner, NullLearner
 from able.learners.dreaming import DreamingLearner
+from able.models.exact_match_cache import ExactMatchCache
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
 from able.robot import Robot
 from able.structs import Budget
@@ -69,7 +70,10 @@ def test_learn_adds_warm_starts():
     domain = make_domain(seed=0)
     assert isinstance(domain.task_distribution, FiniteTaskDistribution)
     model = TwoLinkArmModel()
-    planner = RandomShootingPlanner(model)
+    cache = ExactMatchCache(max_per_key=2)
+    planner = RandomShootingPlanner(
+        model, RandomShootingParams(num_proposals=2, model=cache)
+    )
     updater = JointLimitBeliefUpdater()
     learner = DreamingLearner(
         model,
@@ -80,16 +84,17 @@ def test_learn_adds_warm_starts():
         gathering_budget=Budget(max_iterations=0),
         execution_budget=Budget(max_iterations=1),
         planning_budget=Budget(),
-        max_warm_starts_per_key=2,
     )
     params = planner.get_default_params()
     belief = domain.initial_belief
     new_params = learner.learn(
         belief, params, Budget(max_iterations=3), np.random.default_rng(0)
     )
-    assert not params.warm_starts
-    assert new_params.warm_starts
-    assert all(1 <= len(entries) <= 2 for entries in new_params.warm_starts.values())
+    assert not cache.entries
+    trained = new_params.model
+    assert isinstance(trained, ExactMatchCache)
+    assert trained.entries
+    assert all(1 <= len(entries) <= 2 for entries in trained.entries.values())
     assert new_params.batch_size == params.batch_size
     assert belief == domain.initial_belief
 

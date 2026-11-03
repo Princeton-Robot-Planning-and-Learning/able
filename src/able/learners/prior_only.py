@@ -27,11 +27,8 @@ class PriorOnlyLearner(PlanCachingLearner):
         task_distribution: FiniteTaskDistribution[ArmTask],
         planner: RandomShootingPlanner,
         planning_budget: Budget,
-        max_warm_starts_per_key: int = 4,
     ) -> None:
-        super().__init__(
-            task_distribution, planner, planning_budget, max_warm_starts_per_key
-        )
+        super().__init__(task_distribution, planner, planning_budget)
         self._prior = prior
         self._has_trained = False
 

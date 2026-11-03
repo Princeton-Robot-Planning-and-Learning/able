@@ -1,8 +1,7 @@
-"""Random shooting for the two-link arm, with warm starts from cached plans."""
+"""Random shooting for the two-link arm, with warm starts proposed by a model."""
 
 import time
 from dataclasses import dataclass, field
-from typing import Hashable, Mapping
 
 import numpy as np
 from numpy.typing import NDArray
@@ -10,12 +9,11 @@ from numpy.typing import NDArray
 from able.beliefs.base import Belief
 from able.beliefs.interval import IntervalBelief
 from able.envs.two_link_arm import ArmTask, TwoLinkArmModel
+from able.models.base import ConditionalModel, Dataset
+from able.models.exact_match_cache import ExactMatchCache
 from able.planners.base import Planner
 from able.policies.base import OpenLoopPolicy
 from able.structs import Budget, PlanningFailure
-
-# A cached plan: its expected cost and its action sequence with shape (T, 2).
-WarmStart = tuple[float, NDArray[np.float64]]
 
 
 @dataclass(frozen=True, eq=False)
@@ -26,9 +24,10 @@ class RandomShootingParams:
     best expected cost is within `threshold` of the cost lower bound, when
     `patience` consecutive batches fail to improve on it, or after `max_batches`.
 
-    The warm starts map a discretized (goal, belief) key to cached plans. When the
-    key for a planning problem is present, the first batch consists of the cached
-    plans plus perturbations of them.
+    The model proposes up to `num_proposals` plans for the features of a planning
+    problem (see get_plan_features()). If it proposes any, the first batch consists
+    of the proposed plans plus perturbations of them. The default model is an empty
+    cache, which proposes nothing.
     """
 
     batch_size: int = 64
@@ -38,29 +37,17 @@ class RandomShootingParams:
     num_belief_samples: int = 32
     action_noise_fraction: float = 0.15
     warm_start_noise: float = 0.05
-    key_resolution: float = 0.1
-    warm_starts: Mapping[Hashable, tuple[WarmStart, ...]] = field(default_factory=dict)
+    num_proposals: int = 4
+    model: ConditionalModel = field(default_factory=ExactMatchCache)
 
 
-def get_warm_start_key(
-    task: ArmTask, belief: IntervalBelief, resolution: float
-) -> Hashable:
-    """The cache key for planning for the task under the belief."""
-    goal_key = tuple(int(v) for v in np.round(task.goal / resolution))
-    return (goal_key, belief.get_discretized_key(resolution))
-
-
-def add_warm_start(
-    warm_starts: dict[Hashable, tuple[WarmStart, ...]],
-    key: Hashable,
-    cost: float,
-    actions: NDArray[np.float64],
-    max_per_key: int = 4,
-) -> None:
-    """Add a plan to the warm starts in place, keeping the cheapest plans per key."""
-    entries = list(warm_starts.get(key, ())) + [(cost, actions.copy())]
-    entries.sort(key=lambda entry: entry[0])
-    warm_starts[key] = tuple(entries[:max_per_key])
+def get_plan_features(task: ArmTask, belief: IntervalBelief) -> NDArray[np.float64]:
+    """The features of planning for the task under the belief: the goal, then the
+    midpoint and width of each interval."""
+    intervals = belief.intervals
+    return np.concatenate(
+        [task.goal, intervals.mean(axis=1), intervals[:, 1] - intervals[:, 0]]
+    )
 
 
 class RandomShootingPlanner(
@@ -78,14 +65,22 @@ class RandomShootingPlanner(
     Each sampled sequence is a random base displacement plus per-step noise. The
     planner returns an open-loop policy. Its planning statistics are the number of
     sequences evaluated, the expected cost of the plan, and whether a warm start
-    was used.
+    was used. The default parameters, if given, replace RandomShootingParams(), for
+    example to choose the model.
     """
 
-    def __init__(self, model: TwoLinkArmModel) -> None:
+    def __init__(
+        self,
+        model: TwoLinkArmModel,
+        default_params: RandomShootingParams | None = None,
+    ) -> None:
         self._model = model
+        self._default_params = (
+            RandomShootingParams() if default_params is None else default_params
+        )
 
     def get_default_params(self) -> RandomShootingParams:
-        return RandomShootingParams()
+        return self._default_params
 
     def plan(
         self,
@@ -100,7 +95,7 @@ class RandomShootingPlanner(
         One iteration of the budget is one batch of action sequences.
         """
         start_time = time.perf_counter()
-        assert isinstance(belief, IntervalBelief), "Warm starts need IntervalBelief"
+        assert isinstance(belief, IntervalBelief), "Plan features need IntervalBelief"
         hidden_params = np.stack(
             [belief.sample(rng) for _ in range(params.num_belief_samples)]
         )
@@ -108,8 +103,8 @@ class RandomShootingPlanner(
             self._model.get_cost_lower_bound(task, hidden_params).mean()
         )
         target_cost = lower_bound + params.threshold
-        key = get_warm_start_key(task, belief, params.key_resolution)
-        warm_start_batch = self._get_warm_start_batch(key, params, rng)
+        features = get_plan_features(task, belief)
+        warm_start_batch = self._get_warm_start_batch(features, params, rng)
 
         best_cost = np.inf
         best_actions: NDArray[np.float64] | None = None
@@ -158,13 +153,35 @@ class RandomShootingPlanner(
         noise = rng.normal(0.0, params.action_noise_fraction * bound, (num, horizon, 2))
         return np.clip(base + noise, -bound, bound)
 
+    def get_plan_examples(
+        self,
+        task: ArmTask,
+        belief: IntervalBelief,
+        policy: OpenLoopPolicy[NDArray[np.float64], NDArray[np.float64]],
+    ) -> Dataset:
+        """One training row for a model from a plan found for the task under the
+        belief.
+
+        The input is the plan features, the output is the flattened action
+        sequence, and the cost is the plan's expected cost.
+        """
+        return Dataset(
+            x=get_plan_features(task, belief)[None],
+            y=np.array(policy.actions).reshape(1, -1),
+            costs=np.array([policy.get_planning_stats()["expected_cost"]]),
+            groups=np.zeros(1, dtype=np.int64),
+        )
+
     def _get_warm_start_batch(
-        self, key: Hashable, params: RandomShootingParams, rng: np.random.Generator
+        self,
+        features: NDArray[np.float64],
+        params: RandomShootingParams,
+        rng: np.random.Generator,
     ) -> NDArray[np.float64] | None:
-        entries = params.warm_starts.get(key)
-        if not entries:
+        proposals = params.model.sample(features, params.num_proposals, rng)
+        if len(proposals) == 0:
             return None
-        seeds = np.stack([actions for _, actions in entries])
+        seeds = proposals.reshape(len(proposals), self._model.horizon, 2)
         reps = max(1, params.batch_size // len(seeds))
         perturbed = np.repeat(seeds, reps, axis=0) + rng.normal(
             0.0, params.warm_start_noise, size=(len(seeds) * reps,) + seeds.shape[1:]

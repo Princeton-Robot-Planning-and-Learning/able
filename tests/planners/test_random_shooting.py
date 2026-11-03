@@ -13,10 +13,11 @@ from able.envs.two_link_arm import (
     TwoLinkArmModel,
     make_domain,
 )
+from able.models.exact_match_cache import ExactMatchCache
 from able.planners.random_shooting import (
+    RandomShootingParams,
     RandomShootingPlanner,
-    add_warm_start,
-    get_warm_start_key,
+    get_plan_features,
 )
 from able.structs import Budget, PlanningFailure
 
@@ -77,13 +78,8 @@ def test_warm_start_reduces_samples():
     assert all(n > params.batch_size for n in scratch_samples)
 
     policy = planner.plan(task, belief, params, Budget(), np.random.default_rng(0))
-    actions = np.array([policy.get_action(np.zeros(2)) for _ in range(model.horizon)])
-    warm_starts: dict = {}
-    key = get_warm_start_key(task, belief, params.key_resolution)
-    add_warm_start(
-        warm_starts, key, policy.get_planning_stats()["expected_cost"], actions
-    )
-    warm_params = dataclasses.replace(params, warm_starts=warm_starts)
+    examples = planner.get_plan_examples(task, belief, policy)
+    warm_params = dataclasses.replace(params, model=params.model.fit(examples))
 
     policy = planner.plan(
         task, belief, warm_params, Budget(), np.random.default_rng(10)
@@ -130,20 +126,48 @@ def test_budget():
         planner.plan(task, belief, params, Budget(max_iterations=0), rng)
 
 
-def test_warm_start_helpers():
-    """Tests get_warm_start_key() and add_warm_start()."""
+def test_get_plan_features():
+    """Tests that nearby goals share a cache key and distant goals do not."""
     belief = IntervalBelief(JOINT_LIMIT_PRIOR)
     task = ArmTask(initial_state=np.zeros(2), goal=np.array([0.81, 1.19]))
     nearby = ArmTask(initial_state=np.zeros(2), goal=np.array([0.79, 1.21]))
     distant = ArmTask(initial_state=np.zeros(2), goal=np.array([0.5, 1.2]))
-    key = get_warm_start_key(task, belief, 0.1)
-    assert get_warm_start_key(nearby, belief, 0.1) == key
-    assert get_warm_start_key(distant, belief, 0.1) != key
+    features = get_plan_features(task, belief)
+    assert features.shape == (2 + 4 + 4,)
+    assert np.array_equal(features[:2], task.goal)
+    assert np.allclose(features[2:6], JOINT_LIMIT_PRIOR.mean(axis=1))
+    cache = ExactMatchCache(key_resolution=0.1)
+    key = cache.get_key(features)
+    assert cache.get_key(get_plan_features(nearby, belief)) == key
+    assert cache.get_key(get_plan_features(distant, belief)) != key
+    narrower = IntervalBelief(JOINT_LIMIT_PRIOR / 2)
+    assert cache.get_key(get_plan_features(task, narrower)) != key
 
-    warm_starts: dict = {}
-    actions = np.zeros((15, 2))
-    for cost in (0.5, 0.1, 0.4, 0.3, 0.2):
-        add_warm_start(warm_starts, key, cost, actions, max_per_key=4)
-    assert [cost for cost, _ in warm_starts[key]] == [0.1, 0.2, 0.3, 0.4]
-    actions[0, 0] = 1.0
-    assert warm_starts[key][0][1][0, 0] == 0.0
+
+def test_get_plan_examples():
+    """Tests that a plan becomes one row that the model proposes back."""
+    model = TwoLinkArmModel()
+    planner = RandomShootingPlanner(model)
+    task = ArmTask(initial_state=np.zeros(2), goal=GOAL)
+    belief = _known_belief(TRUE_LIMITS)
+    params = planner.get_default_params()
+    policy = planner.plan(task, belief, params, Budget(), np.random.default_rng(0))
+    examples = planner.get_plan_examples(task, belief, policy)
+    assert len(examples) == 1
+    assert np.array_equal(examples.x[0], get_plan_features(task, belief))
+    assert np.array_equal(examples.y[0], np.array(policy.actions).ravel())
+    assert examples.costs[0] == policy.get_planning_stats()["expected_cost"]
+    proposals = params.model.fit(examples).sample(
+        examples.x[0], params.num_proposals, np.random.default_rng(0)
+    )
+    assert np.array_equal(proposals, examples.y)
+
+
+def test_default_params():
+    """Tests that the planner returns the default parameters it was given."""
+    model = TwoLinkArmModel()
+    default = RandomShootingPlanner(model).get_default_params()
+    assert default.batch_size == RandomShootingParams().batch_size
+    assert isinstance(default.model, ExactMatchCache) and not default.model.entries
+    params = RandomShootingParams(batch_size=8)
+    assert RandomShootingPlanner(model, params).get_default_params() is params
