@@ -12,7 +12,7 @@ first to check that the plan reaches the goal and breaks no constraint.
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Generic
+from typing import Any, Callable, Generic
 
 import numpy as np
 from kinder.envs.dynamic3d.limb_utils import NUM_ROBOT_JOINTS
@@ -59,6 +59,24 @@ class PredictiveSamplingConfig:
     min_noise_ratio: float = 0.3
 
 
+@dataclass(frozen=True)
+class SeedConfig:
+    """How predictive sampling uses a seeder.
+
+    Up to num_rollouts proposals (the first is the seed) are scored before the full
+    batch. The first one that reaches the goal, or costs at most (1 + tolerance)
+    times the best of the problem's extra candidates, is committed.
+    """
+
+    num_rollouts: int = 8
+    tolerance: float = 0.0
+
+
+# Proposes up to num per-step control sequences, each (horizon, dim), for a state
+# and step.
+Seeder = Callable[[Any, int, int], list[NDArray[np.float64]]]
+
+
 def get_control_basis(horizon: int, num_control_points: int) -> NDArray[np.float64]:
     """The (horizon, num_control_points) matrix that interpolates control points to
     per-step controls."""
@@ -99,6 +117,11 @@ class RolloutProblem(ABC, Generic[StateType]):
         del state, noise_scale, rng  # unused by default
         return []
 
+    def is_near_goal(self) -> bool:
+        """Whether the last rollout ended close enough to count as reaching the
+        goal. The default is never."""
+        return False
+
 
 class PredictiveSampling(Generic[StateType]):
     """Chooses controls one step at a time by sampling and scoring candidates.
@@ -106,6 +129,12 @@ class PredictiveSampling(Generic[StateType]):
     The candidates are the previous plan shifted by the committed steps, zero
     controls, the problem's extra candidates, and noisy copies of the shifted plan,
     all clipped to [lower, upper]. Rejected rollouts lose to any accepted one.
+
+    With a seeder, each step first scores the problem's extra candidates (a bar
+    that does not depend on the seeder) and then the proposals, and commits a
+    proposal that the seed config accepts. Otherwise it fills the batch with the
+    usual candidates and commits the best of everything scored. The first
+    proposal of the first step also seeds the plan that later steps shift.
     """
 
     def __init__(
@@ -115,6 +144,8 @@ class PredictiveSampling(Generic[StateType]):
         lower: NDArray[np.float64],
         upper: NDArray[np.float64],
         rng: np.random.Generator,
+        seeder: Seeder | None = None,
+        seed_config: SeedConfig = SeedConfig(),
     ) -> None:
         self._config = config
         self._problem = problem
@@ -126,11 +157,20 @@ class PredictiveSampling(Generic[StateType]):
         ).astype(int)
         self._num_commit = int(np.clip(config.commit_steps, 1, config.horizon))
         self._nominal = np.zeros((config.num_control_points, len(lower)))
+        self._seeder = seeder
+        self._seed_config = seed_config
+        self._step_index = 0
         self.num_rollouts = 0
+        self.num_seeded_steps = 0
+        self.num_full_steps = 0
 
     def expand(self, points: NDArray[np.float64]) -> NDArray[np.float64]:
         """Control points to per-step controls."""
         return self._basis @ points
+
+    def project(self, controls: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Per-step controls to the control points that fit them best."""
+        return np.asarray(np.linalg.lstsq(self._basis, controls, rcond=None)[0])
 
     def step(self) -> NDArray[np.float64]:
         """The controls to apply next, with shape (commit_steps, dim).
@@ -138,14 +178,57 @@ class PredictiveSampling(Generic[StateType]):
         Raises NoFeasibleControls if every candidate breaks a constraint.
         """
         state = self._problem.get_state()
-        candidates = self._sample_candidates(state, self._problem.get_error())
-        scores = [self._problem.rollout(state, self.expand(c)) for c in candidates]
-        self.num_rollouts += len(candidates)
-        best = min(range(len(scores)), key=scores.__getitem__)
-        if scores[best][0]:
+        error = self._problem.get_error()
+        proposals = self._get_proposals(state)
+        if proposals and self._step_index == 0:
+            self._nominal = self._clip(self.project(proposals[0]))
+        # Each entry: control points, per-step controls, and (rejected, cost).
+        scored: list[tuple[Any, NDArray[np.float64], tuple[bool, float]]] = []
+        if proposals:
+            scale = self._get_noise_scale(error)
+            for extra in self._problem.get_extra_candidates(state, scale, self._rng):
+                points = self._clip(extra)
+                controls = self.expand(points)
+                scored.append((points, controls, self._rollout(state, controls)))
+            costs = [cost for _, _, (rejected, cost) in scored if not rejected]
+            threshold = min(costs, default=np.inf) * (1 + self._seed_config.tolerance)
+            for controls in proposals:
+                result = self._rollout(state, controls)
+                scored.append((self.project(controls), controls, result))
+                rejected, cost = result
+                if not rejected and (self._problem.is_near_goal() or cost <= threshold):
+                    self.num_seeded_steps += 1
+                    return self._commit(scored[-1][0], controls)
+        self.num_full_steps += 1
+        num_left = self._config.num_rollouts - len(scored)
+        for points in self._sample_candidates(state, error, num_left, not proposals):
+            controls = self.expand(points)
+            scored.append((points, controls, self._rollout(state, controls)))
+        points, controls, (rejected, _) = min(scored, key=lambda entry: entry[2])
+        if rejected:
             raise NoFeasibleControls("Every MPC candidate breaks a constraint")
-        self._nominal = candidates[best]
-        return self.expand(candidates[best])[: self._num_commit]
+        return self._commit(points, controls)
+
+    def _get_proposals(self, state: StateType) -> list[NDArray[np.float64]]:
+        if self._seeder is None or self._seed_config.num_rollouts < 1:
+            return []
+        proposals = self._seeder(
+            state, self._step_index, self._seed_config.num_rollouts
+        )
+        return [np.clip(p, self._lower, self._upper) for p in proposals]
+
+    def _rollout(
+        self, state: StateType, controls: NDArray[np.float64]
+    ) -> tuple[bool, float]:
+        self.num_rollouts += 1
+        return self._problem.rollout(state, controls)
+
+    def _commit(
+        self, points: NDArray[np.float64], controls: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        self._nominal = self._clip(points)
+        self._step_index += self._num_commit
+        return controls[: self._num_commit]
 
     def _get_noise_scale(self, error: float) -> float:
         config = self._config
@@ -156,7 +239,7 @@ class PredictiveSampling(Generic[StateType]):
         return np.clip(points, self._lower, self._upper)
 
     def _sample_candidates(
-        self, state: StateType, error: float
+        self, state: StateType, error: float, num_rollouts: int, with_extra: bool
     ) -> list[NDArray[np.float64]]:
         scale = self._get_noise_scale(error)
         # Shift the previous plan by the committed steps, extending its last control
@@ -167,11 +250,10 @@ class PredictiveSampling(Generic[StateType]):
         shifted = np.vstack([expanded[self._num_commit :], ramp])
         nominal = shifted[self._control_indices]
         candidates = [self._clip(nominal), np.zeros_like(nominal)]
-        candidates.extend(
-            self._clip(c)
-            for c in self._problem.get_extra_candidates(state, scale, self._rng)
-        )
-        num_noisy = max(self._config.num_rollouts - len(candidates), 0)
+        if with_extra:
+            extra = self._problem.get_extra_candidates(state, scale, self._rng)
+            candidates.extend(self._clip(c) for c in extra)
+        num_noisy = max(num_rollouts - len(candidates), 0)
         noise = self._rng.normal(scale=scale, size=(num_noisy,) + nominal.shape)
         candidates.extend(self._clip(nominal + sample) for sample in noise)
         return candidates
