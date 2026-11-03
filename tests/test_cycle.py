@@ -85,7 +85,7 @@ def test_evaluate():
 
 def test_execute():
     """Tests that execution updates the belief during the episode."""
-    domain = make_domain(seed=0, edge_probability=1.0, true_limits=TRUE_LIMITS)
+    domain = make_domain(seed=0, true_limits=TRUE_LIMITS)
     robot = _make_robot(domain)
     rng = np.random.default_rng(0)
     params = robot.planner_params
@@ -110,7 +110,7 @@ def test_execute():
 
 def test_run_cycles():
     """Tests several cycles end to end with a learner that does nothing."""
-    domain = make_domain(seed=0, edge_probability=1.0, true_limits=TRUE_LIMITS)
+    domain = make_domain(seed=0, true_limits=TRUE_LIMITS)
     robot = _make_robot(domain)
     rng = np.random.default_rng(0)
     eval_tasks = [domain.task_distribution.sample(rng) for _ in range(4)]

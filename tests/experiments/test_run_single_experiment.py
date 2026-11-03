@@ -83,9 +83,9 @@ def test_run_single_experiment(tmp_path: Path) -> None:
         assert cfg.approach_name == approach
         assert cfg.env_name == "two_link_arm"
 
-        # Two cycles of six evaluation tasks each.
+        # Two cycles of 12 evaluation tasks each.
         eval_df = pd.read_csv(run_dir / "eval_results.csv")
-        assert len(eval_df) == 12
+        assert len(eval_df) == 24
         assert list(eval_df.cycle.unique()) == [0, 1]
         for column in ("success", "planning_wall_time", "total_cost", "num_samples"):
             assert column in eval_df.columns

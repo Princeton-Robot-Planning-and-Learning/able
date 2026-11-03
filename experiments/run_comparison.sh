@@ -8,7 +8,9 @@ set -e
 cd "$(dirname "$0")/.."
 SEEDS="${SEEDS:-0,1,2,3,4}"
 SWEEP_DIR="logs/comparison/$(date +%Y-%m-%d_%H-%M-%S)"
+# Hydra varies the last override fastest, so the approaches run back to back for
+# each seed and see similar machine load.
 python experiments/run_single_experiment.py -m \
-    approach=scratch,prior_only,current_belief,dreaming \
-    seed="$SEEDS" hydra.sweep.dir="$SWEEP_DIR" "$@"
+    seed="$SEEDS" approach=scratch,prior_only,current_belief,dreaming \
+    hydra.sweep.dir="$SWEEP_DIR" "$@"
 python experiments/analysis/plot_cycle_results.py --results_dir "$SWEEP_DIR"

@@ -1,7 +1,6 @@
 domain:
   _target_: able.envs.two_link_arm.make_domain
-  num_goals: 6
-  edge_probability: 0.5
+  num_goals: 12
   goal_tolerance: 0.1
 # Instantiated with the domain's environment model, only when recording videos.
 renderer:

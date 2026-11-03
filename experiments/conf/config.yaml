@@ -15,7 +15,7 @@ budgets:
   # One iteration is one dream for the dreaming learner.
   sleep:
     _target_: able.structs.Budget
-    max_iterations: 8
+    max_iterations: 64
   # One iteration is one query.
   information_gathering:
     _target_: able.structs.Budget

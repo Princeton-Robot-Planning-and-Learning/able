@@ -224,23 +224,19 @@ def sample_goal_positions(
     true_limits: NDArray[np.float64],
     num_goals: int,
     rng: np.random.Generator,
-    edge_probability: float = 0.5,
 ) -> NDArray[np.float64]:
     """Sample end-effector goals that are reachable under the true joint limits.
 
-    Each goal is the end-effector position of a joint configuration sampled within
-    the limits, and within 80% of the distance a joint can travel in one episode.
-    With probability edge_probability, each joint angle is moved to one of its
-    limits. Those goals sit at the edge of the range of motion, and reaching for
-    them reveals the limits. Returns an array with shape (num_goals, 2).
+    Each goal is the end-effector position of a joint configuration sampled
+    uniformly within the limits, and within 80% of the distance a joint can travel
+    in one episode. The goal configurations lie inside the range of motion, so the
+    robot learns the limits gradually, as its motion reaches new joint angles.
+    Returns an array with shape (num_goals, 2).
     """
     max_travel = 0.8 * model.max_joint_displacement * model.horizon
     lows = np.maximum(true_limits[[0, 2]], -max_travel)
     highs = np.minimum(true_limits[[1, 3]], max_travel)
     joints = rng.uniform(lows, highs, size=(num_goals, 2))
-    at_edge = rng.random((num_goals, 2)) < edge_probability
-    at_lower = rng.random((num_goals, 2)) < 0.5
-    joints = np.where(at_edge, np.where(at_lower, lows, highs), joints)
     return model.forward_kinematics(joints)
 
 
@@ -256,8 +252,7 @@ ArmDomain = Domain[
 
 def make_domain(
     seed: int,
-    num_goals: int = 6,
-    edge_probability: float = 0.5,
+    num_goals: int = 12,
     true_limits: NDArray[np.float64] | None = None,
     goal_tolerance: float = 0.1,
 ) -> ArmDomain:
@@ -271,7 +266,7 @@ def make_domain(
     model = TwoLinkArmModel(goal_tolerance=goal_tolerance)
     if true_limits is None:
         true_limits = rng.uniform(JOINT_LIMIT_PRIOR[:, 0], JOINT_LIMIT_PRIOR[:, 1])
-    goals = sample_goal_positions(model, true_limits, num_goals, rng, edge_probability)
+    goals = sample_goal_positions(model, true_limits, num_goals, rng)
     tasks = [ArmTask(initial_state=np.zeros(2), goal=goal) for goal in goals]
     return Domain(
         env_model=model,

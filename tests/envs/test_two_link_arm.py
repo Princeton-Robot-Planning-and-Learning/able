@@ -158,9 +158,7 @@ def test_sample_goal_positions():
     rng = np.random.default_rng(0)
     for true_limits in _sample_limits(rng, num=10):
         belief = IntervalBelief(np.stack([true_limits - 1e-9, true_limits + 1e-9], 1))
-        goals = sample_goal_positions(
-            model, true_limits, num_goals=6, rng=rng, edge_probability=0.5
-        )
+        goals = sample_goal_positions(model, true_limits, num_goals=6, rng=rng)
         assert goals.shape == (6, 2)
         for goal in goals:
             solutions = model.inverse_kinematics(goal)
@@ -170,18 +168,6 @@ def test_sample_goal_positions():
                 np.all(lows <= solution) and np.all(solution <= highs)
                 for solution in solutions
             )
-
-    # With edge probability one, every goal configuration has both joints at a limit.
-    true_limits = np.array([-1.0, 1.5, -2.0, 0.7])
-    goals = sample_goal_positions(
-        model, true_limits, num_goals=6, rng=rng, edge_probability=1.0
-    )
-    for goal in goals:
-        assert any(
-            np.isclose(solution[0], true_limits[:2]).any()
-            and np.isclose(solution[1], true_limits[2:]).any()
-            for solution in model.inverse_kinematics(goal)
-        )
 
 
 def test_make_domain():
@@ -193,7 +179,7 @@ def test_make_domain():
             id(t): t for t in (domain.task_distribution.sample(rng) for _ in range(200))
         }.values()
     )
-    assert len(tasks) == 6
+    assert len(tasks) == 12
     for task in tasks:
         assert np.allclose(task.initial_state, 0.0)
     assert domain.initial_belief == IntervalBelief(JOINT_LIMIT_PRIOR)
