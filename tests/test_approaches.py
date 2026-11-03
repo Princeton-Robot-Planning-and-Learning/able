@@ -7,6 +7,7 @@ import numpy as np
 from able.approaches import (
     make_current_belief_robot,
     make_dreaming_robot,
+    make_friction_scratch_robot,
     make_limb_current_belief_robot,
     make_limb_dreaming_robot,
     make_limb_prior_only_robot,
@@ -17,6 +18,7 @@ from able.approaches import (
 from able.beliefs.interval import IntervalBelief
 from able.cycle import CycleBudgets, run_cycles
 from able.envs.base import FiniteTaskDistribution
+from able.envs.friction.tasks import make_domain as make_friction_domain
 from able.envs.limb.tasks import make_domain as make_limb_domain
 from able.envs.two_link_arm import make_domain
 from able.models.exact_match_cache import ExactMatchCache
@@ -227,3 +229,15 @@ def test_make_limb_learning_robots():
     params = prior_only.planner_params
     prior_only.sleep(Budget(max_iterations=1), rng)
     assert prior_only.planner_params is params
+
+
+def test_make_friction_scratch_robot():
+    """Tests that the friction scratch robot uses the requested POMCPOW settings
+    and never changes its parameters."""
+    domain = make_friction_domain(seed=0, num_particles=10)
+    robot = make_friction_scratch_robot(domain, num_sims=20, max_depth=3)
+    params = robot.planner_params
+    assert params.config.num_sims == 20 and params.config.max_depth == 3
+    assert robot.belief is domain.initial_belief
+    robot.sleep(Budget(max_iterations=1), np.random.default_rng(0))
+    assert robot.planner_params is params

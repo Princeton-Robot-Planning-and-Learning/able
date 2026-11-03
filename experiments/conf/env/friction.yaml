@@ -1,0 +1,20 @@
+# @package _global_
+env:
+  domain:
+    _target_: able.envs.friction.tasks.make_domain
+    # The simulator: 2d (PyMunk).
+    sim: 2d
+    # One of L1-L4, which set the holes and the goal radius.
+    level: L2
+    # Pushes per episode.
+    horizon: 15
+    num_particles: 500
+  # Instantiated with the domain's environment model, only when recording videos.
+  renderer:
+    _target_: able.rendering.friction.FrictionRenderer
+# Planning a friction task takes about a minute, so evaluate fewer tasks and dream
+# less than on the arm.
+num_eval_tasks: 2
+budgets:
+  sleep:
+    max_iterations: 4
