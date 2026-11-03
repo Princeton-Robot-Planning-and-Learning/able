@@ -42,7 +42,7 @@ def make_prior_belief(
 
 def make_domain(
     seed: int,
-    num_requested: int = 4,
+    num_requested: int = 2,
     num_clutter: int = 4,
     num_particles: int = 2000,
     config: BedsideStocking3DEnvConfig = BedsideStocking3DEnvConfig(),
