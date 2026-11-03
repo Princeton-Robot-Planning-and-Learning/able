@@ -26,8 +26,9 @@ limb = [
     "pybullet_helpers>=0.1.0",
     "scipy",
 ]
-# The friction environment.
+# The friction environment (PyMunk in 2D).
 friction = [
+    "kindergarden @ git+https://github.com/Princeton-Robot-Planning-and-Learning/kindergarden.git@3f57bb6e07f89f8701e6b86410c773860ea9db2d",
     "scipy",
 ]
 develop = [
