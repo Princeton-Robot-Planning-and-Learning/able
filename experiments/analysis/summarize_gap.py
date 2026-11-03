@@ -216,10 +216,13 @@ def plot_gaps(
     ax.set_ylim(0.0, 1.05)
     ax.set_ylabel("Success rate (all cycles)")
     ax.legend(frameon=False, fontsize=9)
+    values = sorted(gaps[lever].unique())
     for ax in axes:
         ax.set_xlabel(lever)
         if log_x:
             ax.set_xscale("log", base=2)
+            ax.minorticks_off()
+        ax.set_xticks(values, labels=[f"{value:g}" for value in values])
         ax.grid(color="#e4e3df", linewidth=1)
         ax.set_axisbelow(True)
         for side in ("top", "right"):

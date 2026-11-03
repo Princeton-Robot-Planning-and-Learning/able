@@ -16,7 +16,9 @@ VALUES="$2"
 shift 2
 SEEDS="${SEEDS:-0,1,2,3,4,5,6,7,8,9}"
 SWEEP_DIR="logs/gap_sweep/$(date +%Y-%m-%d_%H-%M-%S)_${LEVER}"
+# Hydra varies the last override fastest, so the two approaches run back to back
+# for each seed and value and see similar machine load.
 python experiments/run_single_experiment.py -m \
-    approach=current_belief,dreaming seed="$SEEDS" "$LEVER=$VALUES" \
+    "$LEVER=$VALUES" seed="$SEEDS" approach=current_belief,dreaming \
     hydra.sweep.dir="$SWEEP_DIR" "$@"
 python experiments/analysis/summarize_gap.py --results_dir "$SWEEP_DIR" --lever "$LEVER"
