@@ -19,8 +19,10 @@ from able.beliefs.base import Belief
 from able.beliefs.particles import ParticleBelief
 from able.envs.friction.model import NO_PUSH, FrictionModel, FrictionState, FrictionTask
 from able.envs.friction.pomdp import PuckObservation, PuckPushingModel, PuckState
-from able.envs.friction.world import Push
-from able.planners.base import Planner
+from able.envs.friction.world import SURFACE_NAMES, PuckWorld, Push
+from able.models.base import ConditionalModel, Dataset
+from able.models.flow_matching import FlowMatchingModel
+from able.planners.base import TrainablePlanner
 from able.policies.base import Policy
 from able.structs import Budget, PlanningFailure
 
@@ -266,11 +268,122 @@ class POMCPOW(Generic[S, A, O]):
         return total
 
 
+# The model's input and output sizes for a push.
+X_DIM, Y_DIM = 13, 4
+
+
 @dataclass(frozen=True)
+class ProposalConfig:
+    """How the model proposes pushes inside POMCPOW, and which root pushes become
+    its training labels."""
+
+    mix: float = 0.5  # chance a proposal comes from the model
+    num_draws: int = 16  # model draws cached per puck cell
+    cell: float = 0.05  # cache resolution (m)
+    min_visit_fraction: float = 0.2  # labels, relative to the most visited push
+
+
+@dataclass(frozen=True, eq=False)
 class POMCPOWParams:
-    """Parameters of the friction POMCPOW planner."""
+    """Parameters of the friction POMCPOW planner.
+
+    The model proposes pushes from get_push_features(); an untrained model proposes
+    nothing, and POMCPOW then searches as without it.
+    """
 
     config: POMCPOWConfig = POMCPOWConfig(max_depth=8)
+    model: ConditionalModel = field(default_factory=FlowMatchingModel)
+    proposal: ProposalConfig = ProposalConfig()
+
+
+def get_push_features(
+    puck: NDArray[np.float64],
+    goal: tuple[float, float],
+    world: PuckWorld,
+    belief: ParticleBelief,
+) -> NDArray[np.float64]:
+    """The model's input for a push: puck, goal, the floor under the puck
+    (one-hot), and the belief's mean and standard deviation."""
+    floor = np.zeros(len(SURFACE_NAMES))
+    surface = world.surface_at(puck)
+    if surface >= 0:
+        floor[surface] = 1.0
+    return np.concatenate([puck, goal, floor, belief.mean, belief.std])
+
+
+def encode_push(push: Push) -> list[float]:
+    """The model's output for a push: (cos, sin) of the heading, speed, stance."""
+    stance = 0.0 if push.stance is None else push.stance
+    return [math.cos(push.angle), math.sin(push.angle), push.speed, stance]
+
+
+def decode_push(pomdp: PuckPushingModel, row: NDArray[np.float64]) -> Push:
+    """The push for a model output, rounded and limited as the POMDP's sampler
+    does."""
+    phys = pomdp.world.physics
+    angle = round(math.atan2(row[1], row[0]), 4)
+    speed = round(float(np.clip(row[2], phys.min_speed, phys.max_speed)), 4)
+    if pomdp.stance_mode == "auto":
+        return Push(angle, speed)
+    if pomdp.stance_mode == "grid":
+        stance = float(pomdp.stances[np.argmin(np.abs(pomdp.stances - row[3]))])
+    else:
+        stance = float(row[3])
+    limit = phys.max_stance
+    return Push(angle, speed, min(max(round(stance, 4), -limit), limit))
+
+
+class _ModelProposer:
+    """POMCPOW's action proposer: with probability mix, an untried feasible push
+    from the model's draws for the node's puck cell, else the POMDP's sampler."""
+
+    def __init__(
+        self,
+        pomdp: PuckPushingModel,
+        model: ConditionalModel,
+        config: ProposalConfig,
+        goal: tuple[float, float],
+        belief: ParticleBelief,
+    ) -> None:
+        self._pomdp = pomdp
+        self._model = model
+        self._config = config
+        self._goal = goal
+        self._belief = belief
+        self._cache: dict[tuple[int, ...], list[Push]] = {}
+
+    def draw(self, puck: NDArray[np.float64], rng: np.random.Generator) -> list[Push]:
+        """The cached feasible pushes for the puck's cell, drawn on first use."""
+        key = self._get_key(puck)
+        if key not in self._cache:
+            x = get_push_features(puck, self._goal, self._pomdp.world, self._belief)
+            self.fill(puck, self._model.sample(x, self._config.num_draws, rng))
+        return self._cache[key]
+
+    def fill(self, puck: NDArray[np.float64], rows: NDArray[np.float64]) -> None:
+        """Cache the feasible pushes among the model's outputs for the puck's cell."""
+        pushes = (decode_push(self._pomdp, row) for row in rows)
+        feasible = self._pomdp.world.push_feasible
+        self._cache[self._get_key(puck)] = list(
+            dict.fromkeys(p for p in pushes if feasible(puck, p.angle, p.stance))
+        )
+
+    def _get_key(self, puck: NDArray[np.float64]) -> tuple[int, ...]:
+        return tuple(int(v) for v in np.round(puck / self._config.cell))
+
+    def __call__(
+        self,
+        state: PuckState,
+        states: Sequence[PuckState],
+        tried: Sequence[Push],
+        rng: np.random.Generator,
+    ) -> Push | None:
+        del states  # unused because proposals depend on the sampled state
+        if rng.random() < self._config.mix:
+            for push in self.draw(state.puck_array, rng):
+                if push not in tried:
+                    return push
+        return self._pomdp.propose(state, tried, rng)
 
 
 @dataclass(frozen=True)
@@ -288,24 +401,28 @@ class FrictionPOMCPOWPolicy(Policy[FrictionState, Push]):
 
     The policy keeps its own copy of the belief and updates it after every push
     with the robot's belief updater, so each search knows what earlier pushes
-    showed. After the task ends it returns NO_PUSH without searching. All searches
-    share the planning budget, where one iteration is one simulation.
+    showed. If the model proposes pushes, they guide the search; if that search
+    finds no push, the policy searches again without the model. After the task ends
+    it returns NO_PUSH without searching. All searches share the planning budget,
+    where one iteration is one simulation.
     """
 
     def __init__(
         self,
         planner: "FrictionPOMCPOWPlanner",
+        task: FrictionTask,
         belief: ParticleBelief,
         params: POMCPOWParams,
         budget: Budget,
         rng: np.random.Generator,
     ) -> None:
         self._planner = planner
+        self._goal = task.goal
         self._belief = belief
         self._params = params
         self._budget = budget
         self._rng = rng
-        self._num_sims = 0
+        self._stats = {"num_sims": 0, "num_seeded_searches": 0, "num_fallbacks": 0}
         self._search_time = 0.0
         self._previous: tuple[FrictionState, Push] | None = None
         self._planned: tuple[FrictionState, Push] | None = None
@@ -315,6 +432,11 @@ class FrictionPOMCPOWPolicy(Policy[FrictionState, Push]):
     def belief(self) -> ParticleBelief:
         """The policy's belief, updated with the pushes so far."""
         return self._belief
+
+    @property
+    def params(self) -> POMCPOWParams:
+        """The parameters the policy plans with."""
+        return self._params
 
     def plan_first_push(self, state: FrictionState) -> None:
         """Search the push for the task's initial state ahead of the episode."""
@@ -339,24 +461,51 @@ class FrictionPOMCPOWPolicy(Policy[FrictionState, Push]):
         return push
 
     def get_planning_stats(self) -> dict[str, float]:
-        return {"num_sims": self._num_sims, "num_searches": len(self.searches)}
+        return {**self._stats, "num_searches": len(self.searches)}
 
     def _search(self, state: FrictionState) -> Push:
-        config = self._get_config()
-        push, stats = self._planner.search(state, self._belief, config, self._rng)
-        self._num_sims += stats.num_sims
-        self._search_time += stats.seconds
+        proposer = self._make_proposer(state)
+        if proposer is not None:
+            self._stats["num_seeded_searches"] += 1
+        push, root_values = self._run(state, proposer)
+        if push is None and proposer is not None:
+            self._stats["num_fallbacks"] += 1
+            push, root_values = self._run(state, None)
         if push is None:
             raise PlanningFailure("No feasible push")
-        self.searches.append(PushSearch(state, push, tuple(stats.root_values)))
+        self.searches.append(PushSearch(state, push, root_values))
         return push
+
+    def _run(
+        self, state: FrictionState, proposer: ActionProposer | None
+    ) -> tuple[Push | None, tuple[tuple[Push, int, float], ...]]:
+        config = self._get_config()
+        push, stats = self._planner.search(
+            state, self._belief, config, self._rng, proposer
+        )
+        self._stats["num_sims"] += stats.num_sims
+        self._search_time += stats.seconds
+        return push, tuple(stats.root_values)
+
+    def _make_proposer(self, state: FrictionState) -> _ModelProposer | None:
+        """A proposer from the model, or None if it proposes nothing at the root."""
+        params, pomdp = self._params, self._planner.pomdp
+        x = get_push_features(state.puck_array, self._goal, pomdp.world, self._belief)
+        rows = params.model.sample(x, params.proposal.num_draws, self._rng)
+        if len(rows) == 0:
+            return None
+        proposer = _ModelProposer(
+            pomdp, params.model, params.proposal, self._goal, self._belief
+        )
+        proposer.fill(state.puck_array, rows)
+        return proposer
 
     def _get_config(self) -> POMCPOWConfig:
         """The search configuration within what is left of the budget."""
         config, budget = self._params.config, self._budget
         num_sims, max_time = config.num_sims, config.max_time
         if budget.max_iterations is not None:
-            num_sims = min(num_sims, budget.max_iterations - self._num_sims)
+            num_sims = min(num_sims, budget.max_iterations - self._stats["num_sims"])
         if budget.max_wall_time is not None:
             left = budget.max_wall_time - self._search_time
             max_time = left if max_time is None else min(max_time, left)
@@ -366,16 +515,20 @@ class FrictionPOMCPOWPolicy(Policy[FrictionState, Push]):
 
 
 class FrictionPOMCPOWPlanner(
-    Planner[FrictionState, Push, FrictionTask, NDArray[np.float64], POMCPOWParams]
+    TrainablePlanner[
+        FrictionState, Push, FrictionTask, NDArray[np.float64], POMCPOWParams
+    ]
 ):
     """Plans friction tasks with POMCPOW, one push at a time.
 
     The root states put each belief particle's frictions at the robot's view of the
     puck and itself. Leaf values roll out greedy pushes whose speeds assume the
     belief's mean frictions. plan() searches the first push, and the policy
-    searches each later one after updating its belief. Planning fails if no push is
-    feasible or the budget runs out. The statistics are the number of simulations
-    and searches. The default parameters, if given, replace POMCPOWParams().
+    searches each later one after updating its belief. The model in the parameters
+    proposes pushes. Planning fails if no push is feasible or the budget runs out.
+    The statistics are the number of simulations, searches, searches the model
+    guided, and fallbacks without it. The default parameters, if given, replace
+    POMCPOWParams().
     """
 
     def __init__(
@@ -398,6 +551,48 @@ class FrictionPOMCPOWPlanner(
 
     def get_default_params(self) -> POMCPOWParams:
         return self._default_params
+
+    def get_model(self, params: POMCPOWParams) -> ConditionalModel:
+        return params.model
+
+    def set_model(
+        self, params: POMCPOWParams, model: ConditionalModel
+    ) -> POMCPOWParams:
+        return replace(params, model=model)
+
+    def get_plan_examples(
+        self,
+        task: FrictionTask,
+        belief: Belief[NDArray[np.float64]],
+        policy: Policy[FrictionState, Push],
+    ) -> Dataset:
+        """Rows from each push the policy searched so far: the features under the
+        belief, and each root push visited at least min_visit_fraction as often as
+        the most visited one, plus the chosen push. A row's cost is the negative of
+        the push's value, and its group is the search."""
+        assert isinstance(belief, ParticleBelief), "Need a ParticleBelief"
+        assert isinstance(policy, FrictionPOMCPOWPolicy), "Need a plan from plan()"
+        fraction = policy.params.proposal.min_visit_fraction
+        x, y, costs, groups = [], [], [], []
+        for index, search in enumerate(policy.searches):
+            features = get_push_features(
+                search.state.puck_array, task.goal, self.pomdp.world, belief
+            )
+            top = max(visits for _, visits, _ in search.root_values)
+            for push, visits, value in search.root_values:
+                if visits >= fraction * top or push == search.push:
+                    x.append(features)
+                    y.append(encode_push(push))
+                    costs.append(-value)
+                    groups.append(index)
+        if not x:
+            return Dataset.empty(X_DIM, Y_DIM)
+        return Dataset(
+            x=np.array(x),
+            y=np.array(y),
+            costs=np.array(costs),
+            groups=np.array(groups, dtype=np.int64),
+        )
 
     def search(
         self,
@@ -428,6 +623,6 @@ class FrictionPOMCPOWPlanner(
         rng: np.random.Generator,
     ) -> FrictionPOMCPOWPolicy:
         assert isinstance(belief, ParticleBelief), "Need a ParticleBelief"
-        policy = FrictionPOMCPOWPolicy(self, belief, params, budget, rng)
+        policy = FrictionPOMCPOWPolicy(self, task, belief, params, budget, rng)
         policy.plan_first_push(task.initial_state)
         return policy
