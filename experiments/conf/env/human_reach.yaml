@@ -3,7 +3,7 @@ env:
   domain:
     _target_: able.envs.human_reach.tasks.make_domain
     # Requested items to deliver, and clutter on the bedside.
-    num_requested: 4
+    num_requested: 2
     num_clutter: 4
     num_particles: 2000
   # Instantiated with the domain's environment model, only when recording videos.

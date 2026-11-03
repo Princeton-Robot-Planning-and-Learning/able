@@ -98,5 +98,5 @@ A robot moves requested items from far furniture to the bedside of a person sitt
 python experiments/run_single_experiment.py env=human_reach approach=human_reach_scratch
 ```
 
-`env.domain.num_requested` and `env.domain.num_clutter` set the scene, 4 and 4 by default. PDDLStream plans for up to 5 minutes (`approach.max_time`). As in the other environments, the robot asks no queries by default; a query presents the gripper at points along a direction from the person's shoulder.
+`env.domain.num_requested` and `env.domain.num_clutter` set the scene, 2 and 4 by default. Under the prior, only 3 bedside spots are reachable with 90% probability, so scenes with more requested items often have no plan until the belief narrows. PDDLStream plans for up to 5 minutes (`approach.max_time`), and planning a scene takes from seconds to minutes. As in the other environments, the robot asks no queries by default; a query presents the gripper at points along a direction from the person's shoulder.
 
