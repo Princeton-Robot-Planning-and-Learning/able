@@ -15,7 +15,6 @@ from able.structs import (
     PlannerParamsType,
     StateType,
     TaskType,
-    Trajectory,
 )
 
 
@@ -55,9 +54,9 @@ class TrainablePlanner(
 ):
     """A planner whose parameters hold a conditional model that guides planning.
 
-    The planner decides what the model's inputs and outputs are. It turns plans,
-    and optionally executed episodes, into training rows, and learners fit the model
-    to those rows and put it back into the parameters.
+    The planner decides what the model's inputs and outputs are. It turns plans into
+    training rows, and learners fit the model to those rows and put it back into
+    the parameters.
     """
 
     @abstractmethod
@@ -79,17 +78,3 @@ class TrainablePlanner(
     ) -> Dataset:
         """Training rows from a policy that plan() returned for the task under the
         belief."""
-
-    def get_execution_examples(
-        self,
-        task: TaskType,
-        belief: Belief[HiddenParamsType],
-        trajectory: Trajectory[StateType, ActType],
-    ) -> Dataset:
-        """Training rows from an executed episode of the task, labeled with the
-        belief after the execution.
-
-        The default has no rows, so the model learns only from plans.
-        """
-        del task, belief, trajectory  # unused by default
-        return Dataset.empty()

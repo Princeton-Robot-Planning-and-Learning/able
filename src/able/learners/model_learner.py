@@ -16,8 +16,6 @@ from able.structs import (
     HiddenParamsType,
     PlannerParamsType,
     PlanningFailure,
-    Task,
-    Trajectory,
 )
 
 REFIT_TIMINGS = ("per_iteration", "per_sleep")
@@ -40,9 +38,9 @@ class ModelLearner(
     sleep. Fitting always trains on all of the data, so the timing only changes
     which model each iteration plans with.
 
-    If learn_from_executions is set, the training data also includes the rows the
-    planner makes from the episodes the robot executes. After max_sleeps sleeps, if
-    set, the learner stops changing the parameters.
+    The learner never sees the real environment: all of its data comes from
+    planning. After max_sleeps sleeps, if set, the learner stops changing the
+    parameters.
     """
 
     def __init__(
@@ -52,7 +50,6 @@ class ModelLearner(
         belief_source: BeliefSource[HiddenParamsType, PlannerParamsType],
         planning_budget: Budget,
         refit: str = "per_iteration",
-        learn_from_executions: bool = False,
         max_sleeps: int | None = None,
     ) -> None:
         assert refit in REFIT_TIMINGS, f"refit must be one of {REFIT_TIMINGS}"
@@ -61,7 +58,6 @@ class ModelLearner(
         self._belief_source = belief_source
         self._planning_budget = planning_budget
         self._refit = refit
-        self._learn_from_executions = learn_from_executions
         self._max_sleeps = max_sleeps
         self._dataset = Dataset.empty()
         self._num_sleeps = 0
@@ -100,21 +96,6 @@ class ModelLearner(
         if self._refit == "per_sleep":
             params = self._fit(params)
         return params
-
-    def observe_execution(
-        self,
-        task: Task[Any, Any],
-        trajectory: Trajectory[Any, Any],
-        belief: Belief[HiddenParamsType],
-    ) -> None:
-        """Add the planner's rows for the execution, if learning from executions.
-
-        The rows are used from the next fit on.
-        """
-        if not self._learn_from_executions:
-            return
-        examples = self._planner.get_execution_examples(task, belief, trajectory)
-        self._dataset = Dataset.concatenate([self._dataset, examples])
 
     def _fit(self, params: PlannerParamsType) -> PlannerParamsType:
         if len(self._dataset) == 0:

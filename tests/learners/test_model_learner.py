@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 
 from able.belief_updaters.joint_limits import JointLimitBeliefUpdater
-from able.beliefs.base import Belief
 from able.beliefs.interval import IntervalBelief
 from able.envs.base import FiniteTaskDistribution
 from able.envs.two_link_arm import (
@@ -34,7 +33,7 @@ from able.planners.random_shooting import (
     RandomShootingPlanner,
     get_plan_features,
 )
-from able.structs import Budget, Trajectory
+from able.structs import Budget
 
 TASKS = [
     ArmTask(initial_state=np.zeros(2), goal=np.array(goal))
@@ -53,25 +52,6 @@ class _CountingCache(ExactMatchCache):
         fitted = super().fit(dataset)
         assert isinstance(fitted, _CountingCache)
         return fitted
-
-
-class _ExecutionRowsPlanner(RandomShootingPlanner):
-    """Turns each executed episode into one row with the plan features and the
-    executed actions."""
-
-    def get_execution_examples(
-        self,
-        task: ArmTask,
-        belief: Belief[np.ndarray],
-        trajectory: Trajectory[np.ndarray, np.ndarray],
-    ) -> Dataset:
-        assert isinstance(belief, IntervalBelief)
-        return Dataset(
-            x=get_plan_features(task, belief)[None],
-            y=np.array(trajectory.actions).reshape(1, -1),
-            costs=np.array([trajectory.total_cost]),
-            groups=np.zeros(1, dtype=np.int64),
-        )
 
 
 def _cache_entries(params: RandomShootingParams) -> dict:
@@ -174,37 +154,6 @@ def test_max_sleeps():
     )
     assert _cache_entries(trained)
     assert learner.learn(prior, trained, Budget(max_iterations=1), rng) is trained
-
-
-def test_learn_from_executions():
-    """Tests that executions add training rows only when enabled."""
-    belief = IntervalBelief(JOINT_LIMIT_PRIOR)
-    task = ArmTask(initial_state=np.zeros(2), goal=np.array([0.3, 1.7]))
-    horizon = TwoLinkArmModel().horizon
-    trajectory = Trajectory(
-        states=(np.zeros(2),) * (horizon + 1),
-        actions=(np.zeros(2),) * horizon,
-        costs=(0.5,) * horizon,
-    )
-    for enabled in (True, False):
-        planner = _ExecutionRowsPlanner(TwoLinkArmModel())
-        learner: ModelLearner = ModelLearner(
-            planner,
-            FiniteTaskDistribution(TASKS),
-            CurrentBeliefSource(),
-            Budget(),
-            learn_from_executions=enabled,
-        )
-        learner.observe_execution(task, trajectory, belief)
-        assert len(learner.dataset) == int(enabled)
-        params = learner.learn(
-            belief,
-            planner.get_default_params(),
-            Budget(max_iterations=1),
-            np.random.default_rng(0),
-        )
-        key = ExactMatchCache().get_key(get_plan_features(task, belief))
-        assert (key in _cache_entries(params)) == enabled
 
 
 def _train_twice(learner: Learner, planner: RandomShootingPlanner, domain) -> dict:
