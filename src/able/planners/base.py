@@ -1,4 +1,4 @@
-"""Base class for planners."""
+"""Base classes for planners, including planners that learn a model."""
 
 from abc import ABC, abstractmethod
 from typing import Generic
@@ -6,6 +6,7 @@ from typing import Generic
 import numpy as np
 
 from able.beliefs.base import Belief
+from able.models.base import ConditionalModel, Dataset
 from able.policies.base import Policy
 from able.structs import (
     ActType,
@@ -46,3 +47,34 @@ class Planner(
         policy does while it runs. Raises PlanningFailure if no policy is found
         within the budget.
         """
+
+
+class TrainablePlanner(
+    Planner[StateType, ActType, TaskType, HiddenParamsType, PlannerParamsType]
+):
+    """A planner whose parameters hold a conditional model that guides planning.
+
+    The planner decides what the model's inputs and outputs are. It turns plans into
+    training rows, and learners fit the model to those rows and put it back into
+    the parameters.
+    """
+
+    @abstractmethod
+    def get_model(self, params: PlannerParamsType) -> ConditionalModel:
+        """The model in the parameters."""
+
+    @abstractmethod
+    def set_model(
+        self, params: PlannerParamsType, model: ConditionalModel
+    ) -> PlannerParamsType:
+        """New parameters with the model replaced."""
+
+    @abstractmethod
+    def get_plan_examples(
+        self,
+        task: TaskType,
+        belief: Belief[HiddenParamsType],
+        policy: Policy[StateType, ActType],
+    ) -> Dataset:
+        """Training rows from a policy that plan() returned for the task under the
+        belief."""
