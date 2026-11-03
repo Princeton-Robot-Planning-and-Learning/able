@@ -10,15 +10,21 @@ import dataclasses
 import numpy as np
 from numpy.typing import NDArray
 
+from able.belief_updaters.friction import FrictionBeliefUpdater
 from able.belief_updaters.joint_limits import JointLimitBeliefUpdater
 from able.belief_updaters.range_of_motion import RangeOfMotionBeliefUpdater
 from able.beliefs.interval import IntervalBelief
 from able.envs.base import FiniteTaskDistribution
+from able.envs.friction.model import FrictionModel, FrictionState, FrictionTask
+from able.envs.friction.query import FrictionQuery, PushRecord
+from able.envs.friction.tasks import FrictionDomain
+from able.envs.friction.world import Push
 from able.envs.limb.model import LimbModel, LimbState, LimbTask
 from able.envs.limb.query import LimbQuery, QueryOutcome
 from able.envs.limb.tasks import LimbDomain
 from able.envs.two_link_arm import ArmDomain, ArmTask, JointQuery, TwoLinkArmModel
 from able.info_gatherers.base import NullInformationGatherer
+from able.info_gatherers.probe_floor import ProbeFloorGatherer
 from able.info_gatherers.push_to_limit import PushToLimitGatherer
 from able.learners.base import NullLearner
 from able.learners.belief_sources import (
@@ -30,6 +36,11 @@ from able.learners.model_learner import ModelLearner
 from able.models.base import ConditionalModel
 from able.models.exact_match_cache import ExactMatchCache
 from able.planners.mpc import LimbMPCPlanner, MPCParams
+from able.planners.pomcpow import (
+    FrictionPOMCPOWPlanner,
+    POMCPOWConfig,
+    POMCPOWParams,
+)
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
 from able.recording.base import CycleRecorder
 from able.robot import Robot
@@ -41,6 +52,15 @@ ArmRobot = Robot[
 ]
 LimbRobot = Robot[
     LimbState, ArmArray, LimbTask, ArmArray, MPCParams, LimbQuery, QueryOutcome
+]
+FrictionRobot = Robot[
+    FrictionState,
+    Push,
+    FrictionTask,
+    ArmArray,
+    POMCPOWParams,
+    FrictionQuery,
+    PushRecord,
 ]
 
 
@@ -328,6 +348,46 @@ def make_limb_dreaming_robot(
             refit="per_sleep",
             num_training_tasks=num_training_tasks,
         ),
+        belief_updater=belief_updater,
+        info_gatherer=gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
+def _make_friction_parts(
+    domain: FrictionDomain, num_sims: int, max_depth: int
+) -> tuple[
+    FrictionModel, FrictionPOMCPOWPlanner, FrictionBeliefUpdater, ProbeFloorGatherer
+]:
+    """The friction robot's model of the environment, planner, belief updater, and
+    gatherer. POMCPOW runs num_sims simulations per push, max_depth pushes deep."""
+    env_model = domain.env_model
+    assert isinstance(env_model, FrictionModel)
+    params = POMCPOWParams(POMCPOWConfig(num_sims=num_sims, max_depth=max_depth))
+    belief_updater = FrictionBeliefUpdater(env_model.world)
+    return (
+        env_model,
+        FrictionPOMCPOWPlanner(env_model, belief_updater, default_params=params),
+        belief_updater,
+        ProbeFloorGatherer(env_model.world, belief_updater),
+    )
+
+
+def make_friction_scratch_robot(
+    domain: FrictionDomain,
+    num_sims: int = 1000,
+    max_depth: int = 8,
+    recorder: CycleRecorder[FrictionState, FrictionTask, ArmArray] | None = None,
+) -> FrictionRobot:
+    """A robot that plans each push with POMCPOW, probes the least certain floor,
+    and never learns."""
+    del recorder  # unused because the robot imagines nothing while it sleeps
+    _, planner, belief_updater, gatherer = _make_friction_parts(
+        domain, num_sims, max_depth
+    )
+    return Robot(
+        planner=planner,
+        learner=NullLearner(),
         belief_updater=belief_updater,
         info_gatherer=gatherer,
         initial_belief=domain.initial_belief,

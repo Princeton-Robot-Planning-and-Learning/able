@@ -67,3 +67,16 @@ The robots that learn seed MPC with a flow-matching model of the next controls, 
 ```
 
 The limb environment evaluates 2 tasks per cycle and dreams 4 times per sleep, planning 1 training task per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
+
+## Friction
+
+The friction environment needs the `friction` extra (`pip install -e ".[friction]"`).
+
+A robot pushes a puck through a maze to a goal, over three floors (blue, tan, and green) whose friction coefficients are unknown. Each action is one push, planned with POMCPOW from a particle belief over the frictions. The puck fails the task if it passes over a hole. To run the robot that plans from scratch:
+
+```
+python experiments/run_single_experiment.py env=friction approach=friction_scratch
+```
+
+`env.domain.level` chooses how hard the maze is, from `L1` (no holes, a large goal) to `L4` (four holes, a small goal). Planning a push takes several seconds with the default 1000 simulations, and a task takes up to 15 pushes. As on the arm and the limb, the robot asks no queries by default; a query probes the floor the belief is least sure of.
+

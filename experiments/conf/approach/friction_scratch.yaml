@@ -1,0 +1,4 @@
+_target_: able.approaches.make_friction_scratch_robot
+# POMCPOW simulations per push, and the search depth in pushes.
+num_sims: 1000
+max_depth: 8
