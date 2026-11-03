@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from able.beliefs.interval import IntervalBelief
-from able.envs.base import FiniteTaskDistribution
+from able.envs.base import FiniteTaskDistribution, TaskDistribution
 from able.envs.two_link_arm import (
     JOINT_LIMIT_PRIOR,
     ArmTask,
@@ -40,6 +40,15 @@ class _CountingCache(ExactMatchCache):
         fitted = super().fit(dataset)
         assert isinstance(fitted, _CountingCache)
         return fitted
+
+
+class _GoalDistribution(TaskDistribution[ArmTask]):
+    """An infinite distribution over reachable goals."""
+
+    def sample(self, rng: np.random.Generator) -> ArmTask:
+        radius, angle = rng.uniform(0.5, 1.8), rng.uniform(0, np.pi)
+        goal = radius * np.array([np.cos(angle), np.sin(angle)])
+        return ArmTask(initial_state=np.zeros(2), goal=goal)
 
 
 def _cache_entries(params: RandomShootingParams) -> dict:
@@ -142,3 +151,34 @@ def test_max_sleeps():
     )
     assert _cache_entries(trained)
     assert learner.learn(prior, trained, Budget(max_iterations=1), rng) is trained
+
+
+def test_sampled_training_tasks():
+    """Tests that an infinite task distribution trains on new sampled tasks in each
+    iteration."""
+    planner = _make_planner()
+    belief = IntervalBelief(JOINT_LIMIT_PRIOR)
+    learner: ModelLearner = ModelLearner(
+        planner,
+        _GoalDistribution(),
+        CurrentBeliefSource(),
+        Budget(),
+        num_training_tasks=3,
+    )
+    learner.learn(
+        belief,
+        planner.get_default_params(),
+        Budget(max_iterations=2),
+        np.random.default_rng(0),
+    )
+    goals = learner.dataset.x[:, :2]
+    assert len(goals) == 6
+    assert len({tuple(goal) for goal in goals}) == 6
+    with pytest.raises(AssertionError):
+        ModelLearner(
+            planner,
+            _GoalDistribution(),
+            CurrentBeliefSource(),
+            Budget(),
+            num_training_tasks=0,
+        )
