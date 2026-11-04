@@ -146,7 +146,7 @@ def test_limb(tmp_path: Path) -> None:
             sys.executable,
             str(SCRIPT),
             "env=limb",
-            "approach=limb_scratch",
+            "approach=scratch",
             "num_cycles=1",
             "num_eval_tasks=1",
             "env.domain.horizon=1",
@@ -180,7 +180,7 @@ def test_limb_dreaming(tmp_path: Path) -> None:
             sys.executable,
             str(SCRIPT),
             "env=limb",
-            "approach=limb_dreaming",
+            "approach=dreaming",
             "num_cycles=1",
             "num_eval_tasks=1",
             "budgets.sleep.max_iterations=1",
@@ -196,7 +196,7 @@ def test_limb_dreaming(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     cfg = OmegaConf.load(tmp_path / "config.yaml")
-    assert cfg.approach_name == "limb_dreaming"
+    assert cfg.approach_name == "dreaming"
     assert len(pd.read_csv(tmp_path / "eval_results.csv")) == 1
     assert list(pd.read_csv(tmp_path / "cycle_results.csv").num_executed_tasks) == [1]
 
@@ -208,7 +208,7 @@ def test_friction(tmp_path: Path) -> None:
             sys.executable,
             str(SCRIPT),
             "env=friction",
-            "approach=friction_scratch",
+            "approach=scratch",
             "num_cycles=1",
             "num_eval_tasks=1",
             "env.domain.horizon=2",
@@ -242,7 +242,7 @@ def test_friction_dreaming(tmp_path: Path) -> None:
             sys.executable,
             str(SCRIPT),
             "env=friction",
-            "approach=friction_dreaming",
+            "approach=dreaming",
             "num_cycles=1",
             "num_eval_tasks=1",
             "budgets.sleep.max_iterations=1",
@@ -259,7 +259,7 @@ def test_friction_dreaming(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     cfg = OmegaConf.load(tmp_path / "config.yaml")
-    assert cfg.approach_name == "friction_dreaming"
+    assert cfg.approach_name == "dreaming"
     assert len(pd.read_csv(tmp_path / "eval_results.csv")) == 1
     assert list(pd.read_csv(tmp_path / "cycle_results.csv").num_executed_tasks) == [1]
 
@@ -271,7 +271,7 @@ def test_human_reach(tmp_path: Path) -> None:
             sys.executable,
             str(SCRIPT),
             "env=human_reach",
-            "approach=human_reach_scratch",
+            "approach=scratch",
             "num_cycles=1",
             "num_eval_tasks=1",
             "env.domain.num_requested=1",
@@ -307,7 +307,7 @@ def test_human_reach_dreaming(tmp_path: Path) -> None:
             sys.executable,
             str(SCRIPT),
             "env=human_reach",
-            "approach=human_reach_dreaming",
+            "approach=dreaming",
             "num_cycles=1",
             "num_eval_tasks=1",
             "budgets.sleep.max_iterations=1",
@@ -325,6 +325,6 @@ def test_human_reach_dreaming(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     cfg = OmegaConf.load(tmp_path / "config.yaml")
-    assert cfg.approach_name == "human_reach_dreaming"
+    assert cfg.approach_name == "dreaming"
     assert len(pd.read_csv(tmp_path / "eval_results.csv")) == 1
     assert list(pd.read_csv(tmp_path / "cycle_results.csv").num_executed_tasks) == [1]

@@ -38,12 +38,23 @@ APPROACH_TO_LINESTYLE = {
 
 ENV_TO_DISPLAY_NAME = {
     "two_link_arm": "Two-link arm",
+    "limb": "Limb repositioning",
+    "friction": "Friction",
+    "human_reach": "Human reach",
 }
 
-# Each panel plots one column of eval_results.csv: (column, axis label, scale).
+# Each panel plots one column of eval_results.csv: (column, axis label).
 METRICS = [
-    ("planning_wall_time", "Planning time per task (ms)", 1000.0),
-    ("success", "Success rate", 1.0),
+    ("planning_wall_time", "Planning time per task"),
+    ("success", "Success rate"),
+]
+
+# The table's windows of cycles: (name, first cycle, last cycle or None for the end).
+TABLE_WINDOWS = [
+    ("cycle 0", 0, 0),
+    ("cycles 1–4", 1, 4),
+    ("last 5 cycles", -5, None),
+    ("all cycles", 0, None),
 ]
 
 
@@ -67,7 +78,11 @@ def _main(results_dir: Path, outfile: Path) -> None:
     for row, env in enumerate(envs):
         env_df = df[df["env"] == env]
         num_seeds = env_df["seed"].nunique()
-        for col, (metric, label, scale) in enumerate(METRICS):
+        for col, (metric, label) in enumerate(METRICS):
+            scale, unit = 1.0, ""
+            if metric == "planning_wall_time":
+                scale, unit = _get_time_scale(env_df[metric])
+                label = f"{label} ({unit})"
             ax = axes[row, col]
             summary = summarize_over_seeds(env_df, metric)
             for approach in approaches:
@@ -125,17 +140,85 @@ def _main(results_dir: Path, outfile: Path) -> None:
     plt.close(fig)
     _print_final_cycle(df)
     print(f"Wrote plot to {outfile}")
+    table = _make_table(df, combine_results_csvs(results_dir, "cycle_results.csv"))
+    table_file = outfile.with_name("summary_table.md")
+    table_file.write_text(table, encoding="utf-8")
+    print(table)
+    print(f"Wrote table to {table_file}")
+
+
+def _get_time_scale(times: pd.Series) -> tuple[float, str]:
+    """Milliseconds for fast planners and seconds for slow ones."""
+    return (1.0, "s") if times.mean() > 1.0 else (1000.0, "ms")
+
+
+def _over_seeds(df: pd.DataFrame, metric: str, first: int, last: int | None) -> str:
+    """The metric averaged over each seed's rows in the cycles, then the mean and
+    standard error over seeds."""
+    max_cycle = int(df["cycle"].max())
+    first = first if first >= 0 else max(0, max_cycle + 1 + first)
+    last = max_cycle if last is None else last
+    window = df[(df["cycle"] >= first) & (df["cycle"] <= last)]
+    per_seed = window.groupby("seed")[metric].mean()
+    if per_seed.empty:
+        return "–"
+    values = per_seed.to_numpy(dtype=np.float64)
+    sem = (
+        0.0 if len(values) < 2 else float(np.std(values, ddof=1) / np.sqrt(len(values)))
+    )
+    return f"{values.mean():.2f} ± {sem:.2f}"
+
+
+def _make_table(eval_df: pd.DataFrame, cycle_df: pd.DataFrame) -> str:
+    """A Markdown table per environment of planning time, success rate, and sleep
+    time. ± is one standard error over seeds."""
+    sections = []
+    for env in sorted(eval_df["env"].unique()):
+        env_df = eval_df[eval_df["env"] == env]
+        approaches = sorted(env_df["approach"].unique())
+        scale, unit = _get_time_scale(env_df["planning_wall_time"])
+        env_df = env_df.assign(planning_time=env_df["planning_wall_time"] * scale)
+        names = [APPROACH_TO_DISPLAY_NAME.get(a, a) for a in approaches]
+        lines = [
+            f"### {ENV_TO_DISPLAY_NAME.get(env, env)}",
+            "",
+            "| | " + " | ".join(names) + " |",
+            "| --- |" + " --- |" * len(names),
+        ]
+        rows = [
+            (f"Planning time ({unit}), {name}", "planning_time", first, last)
+            for name, first, last in TABLE_WINDOWS
+        ]
+        rows.append(("Success rate, all cycles", "success", 0, None))
+        for label, metric, first, last in rows:
+            cells = [
+                _over_seeds(env_df[env_df["approach"] == a], metric, first, last)
+                for a in approaches
+            ]
+            lines.append(f"| {label} | " + " | ".join(cells) + " |")
+        env_cycles = cycle_df[cycle_df["env"] == env]
+        cells = [
+            _over_seeds(
+                env_cycles[env_cycles["approach"] == a], "sleep_wall_time", 0, None
+            )
+            for a in approaches
+        ]
+        lines.append("| Sleep time (s), all cycles | " + " | ".join(cells) + " |")
+        sections.append("\n".join(lines))
+    footer = "± is one standard error over seeds."
+    return "\n\n".join(sections) + "\n\n" + footer + "\n"
 
 
 def _print_final_cycle(df: pd.DataFrame) -> None:
     """Print the final cycle's results, so they are visible without the plot."""
     final = df[df["cycle"] == df["cycle"].max()]
     for (env, approach), group in final.groupby(["env", "approach"]):
-        time_ms = 1000.0 * np.mean(group["planning_wall_time"])
+        scale, unit = _get_time_scale(df[df["env"] == env]["planning_wall_time"])
+        time = scale * np.mean(group["planning_wall_time"])
         success = np.mean(group["success"])
         print(
             f"{env}, {approach}, cycle {group['cycle'].iloc[0]}: "
-            f"planning time {time_ms:.2f} ms, success rate {success:.2f}"
+            f"planning time {time:.2f} {unit}, success rate {success:.2f}"
         )
 
 

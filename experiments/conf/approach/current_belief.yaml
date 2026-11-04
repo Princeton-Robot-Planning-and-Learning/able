@@ -1,3 +1,2 @@
-_target_: able.approaches.make_current_belief_robot
+# Shared by every environment; the factory is in env_approach/<env>/.
 planning_budget: ${budgets.planning}
-max_warm_starts_per_key: 4

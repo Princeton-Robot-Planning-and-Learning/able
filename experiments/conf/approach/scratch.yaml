@@ -1,1 +1,3 @@
-_target_: able.approaches.make_scratch_robot
+# The scratch robot needs no budgets. Each environment's factory is in
+# env_approach/<env>/scratch.yaml.
+{}
