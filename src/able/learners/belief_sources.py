@@ -2,7 +2,7 @@
 
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Generic
+from typing import Any, Callable, Generic, Hashable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -35,6 +35,17 @@ class BeliefSource(ABC, Generic[HiddenParamsType, PlannerParamsType]):
     ) -> Belief[HiddenParamsType]:
         """The belief to train under in an iteration, numbered from 1, given the
         robot's current belief and planner parameters."""
+
+    def observe_training_time(
+        self, belief: Belief[HiddenParamsType], training_time: float
+    ) -> None:
+        """Observe the wall time of planning for an iteration's training tasks
+        under the belief this source returned, with the planner parameters from
+        before the iteration's training.
+
+        Sources that do not use training times ignore it.
+        """
+        del belief, training_time  # unused because most sources ignore it
 
 
 class CurrentBeliefSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
@@ -236,3 +247,108 @@ class BeliefCoverageSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
             best = int(np.argmax(np.min(distances, axis=1)))
         self._chosen_features.append(features[best])
         return candidates[best]
+
+
+class NextCallSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
+    """Trains under a belief from the region where one more update is expected
+    to save the most planning time at the next planning call.
+
+    This adapts continual computation (Horvitz, AIJ 2001), which spends idle time
+    on the problem with the largest product of the probability that it arrives
+    next and the reduction in response time from computing more on it. At the
+    first iteration of each sleep, the source draws num_candidates beliefs from
+    the candidate source and groups them into regions with get_region. A region's
+    probability is the fraction of the candidates in it. Each iteration returns
+    the first candidate of the region with the largest product of probability and
+    estimated saving, with ties going to the more probable region. Update counts
+    persist across sleeps, as the training data does.
+
+    The saving is estimated from a profile of training times shared by all
+    regions. T(n) is the mean training time observed in regions with n earlier
+    updates, and the saving of an update to a region with n updates is T(n) -
+    T(n + 1), or zero if that is negative. An update whose saving has not been
+    measured is assumed to save as much as the last measured update. Before any
+    saving has been measured, an update is assumed to remove the whole training
+    time, and before any training time has been observed, every region has the
+    same saving. The profile assumes the learner refits after every iteration, so
+    each training plans with the updates before it.
+
+    The candidate source is usually an ImaginedNextBeliefSource, so the regions'
+    probabilities are those of the beliefs at evaluation.
+    """
+
+    def __init__(
+        self,
+        candidate_source: BeliefSource[HiddenParamsType, PlannerParamsType],
+        get_region: Callable[[Belief[HiddenParamsType]], Hashable],
+        num_candidates: int,
+    ) -> None:
+        assert num_candidates > 0, "Need at least one candidate"
+        self._candidate_source = candidate_source
+        self._get_region = get_region
+        self._num_candidates = num_candidates
+        self._num_updates: dict[Hashable, int] = {}
+        # The training times observed in regions with each number of updates.
+        self._training_times: list[list[float]] = []
+        # This sleep's regions, most probable first: (region, probability, belief).
+        self._regions: list[tuple[Hashable, float, Belief[HiddenParamsType]]] = []
+
+    def get_training_belief(
+        self,
+        iteration: int,
+        belief: Belief[HiddenParamsType],
+        params: PlannerParamsType,
+        rng: np.random.Generator,
+    ) -> Belief[HiddenParamsType]:
+        if iteration == 1:
+            self._regions = self._group_candidates(belief, params, rng)
+        scores = [
+            probability * self.estimate_saving(self._num_updates.get(region, 0))
+            for region, probability, _ in self._regions
+        ]
+        region, _, training_belief = self._regions[int(np.argmax(scores))]
+        self._num_updates[region] = self._num_updates.get(region, 0) + 1
+        return training_belief
+
+    def observe_training_time(
+        self, belief: Belief[HiddenParamsType], training_time: float
+    ) -> None:
+        num_earlier_updates = self._num_updates.get(self._get_region(belief), 0) - 1
+        assert num_earlier_updates >= 0, "Observed a belief this source did not return"
+        while len(self._training_times) <= num_earlier_updates:
+            self._training_times.append([])
+        self._training_times[num_earlier_updates].append(training_time)
+
+    def estimate_saving(self, num_updates: int) -> float:
+        """The estimated saving in training time of one more update to a region
+        with num_updates updates."""
+        profile = [float(np.mean(times)) for times in self._training_times]
+        if not profile:
+            return 1.0
+        savings = [max(0.0, t - t_next) for t, t_next in zip(profile, profile[1:])]
+        if num_updates < len(savings):
+            return savings[num_updates]
+        return savings[-1] if savings else profile[0]
+
+    def _group_candidates(
+        self,
+        belief: Belief[HiddenParamsType],
+        params: PlannerParamsType,
+        rng: np.random.Generator,
+    ) -> list[tuple[Hashable, float, Belief[HiddenParamsType]]]:
+        """Draw the candidates and return each region, its probability, and its
+        first candidate, most probable first."""
+        counts: dict[Hashable, int] = {}
+        first_candidates: dict[Hashable, Belief[HiddenParamsType]] = {}
+        for i in range(1, self._num_candidates + 1):
+            candidate = self._candidate_source.get_training_belief(
+                i, belief, params, rng
+            )
+            region = self._get_region(candidate)
+            counts[region] = counts.get(region, 0) + 1
+            first_candidates.setdefault(region, candidate)
+        regions = [
+            (region, count / self._num_candidates, first_candidates[region])
+            for region, count in counts.items()
+        ]
+        return sorted(regions, key=lambda entry: -entry[1])

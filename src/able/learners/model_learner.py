@@ -29,10 +29,11 @@ class ModelLearner(
     belief source.
 
     Each iteration of a sleep gets a belief from the belief source, plans for the
-    training tasks under it, and adds the plans to the training data. The data
-    accumulates across sleeps. One iteration of the budget is one training belief.
-    The training tasks of a finite task distribution are all of its tasks. Other
-    distributions draw num_training_tasks new tasks in each iteration.
+    training tasks under it, tells the belief source how long the planning took,
+    and adds the plans to the training data. The data accumulates across sleeps.
+    One iteration of the budget is one training belief. The training tasks of a
+    finite task distribution are all of its tasks. Other distributions draw
+    num_training_tasks new tasks in each iteration.
 
     The model is fit to all of the data either after every iteration, so later
     iterations plan with what earlier ones learned, or once at the end of each
@@ -93,7 +94,11 @@ class ModelLearner(
             training_belief = self._belief_source.get_training_belief(
                 num_iterations, belief, params, rng
             )
+            training_start_time = time.perf_counter()
             examples = self._plan_training_tasks(training_belief, params, rng)
+            self._belief_source.observe_training_time(
+                training_belief, time.perf_counter() - training_start_time
+            )
             self._dataset = Dataset.concatenate([self._dataset, examples])
             if self._refit == "per_iteration":
                 params = self._fit(params)
