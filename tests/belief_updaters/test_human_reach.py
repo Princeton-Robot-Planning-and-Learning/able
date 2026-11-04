@@ -4,7 +4,7 @@ import numpy as np
 
 from able.belief_updaters.human_reach import ReachBeliefUpdater, reached_log_likelihood
 from able.beliefs.particles import ParticleBelief
-from able.envs.human_reach.model import ReachState
+from able.envs.human_reach.model import NO_ACTION, ReachState
 from able.envs.human_reach.query import ReachQuery
 from able.structs import QueryResponse
 
@@ -51,17 +51,26 @@ def test_queries_and_deliveries_share_the_model():
     assert 0.5 <= posterior.mean[0] <= 0.8 and posterior.std[0] < belief.std[0]
 
 
-def test_deliveries_update_once_after_the_plan():
-    """Only the step that executes the plan updates the belief, one item at a time."""
+def test_each_delivery_updates_once():
+    """The action that places an item updates the belief; NO_ACTION does not."""
     belief = _prior()
     updater = ReachBeliefUpdater(SHOULDER)
-    deliveries = (
-        ("req0", tuple(SHOULDER + [0.6, 0.0, 0.0]), True),
-        ("req1", tuple(SHOULDER + [0.0, 0.0, -0.75]), False),
-    )
     before = ReachState(scene=None)
-    after = ReachState(scene=None, executed=True, deliveries=deliveries)
-    posterior = updater.update_from_transition(belief, before, (), after)
+    reached = ReachState(
+        scene=None,
+        num_actions=1,
+        delivery=("req0", tuple(SHOULDER + [0.6, 0, 0]), True),
+    )
+    posterior = updater.update_from_transition(belief, before, NO_ACTION, reached)
     assert isinstance(posterior, ParticleBelief)
-    assert posterior.mean[0] > belief.mean[0] and posterior.mean[2] < belief.mean[2]
-    assert updater.update_from_transition(belief, after, (), after) is belief
+    assert posterior.mean[0] > belief.mean[0]
+    missed = ReachState(
+        scene=None,
+        num_actions=2,
+        delivery=("req1", tuple(SHOULDER + [0.0, 0.0, -0.75]), False),
+    )
+    posterior = updater.update_from_transition(posterior, reached, NO_ACTION, missed)
+    assert isinstance(posterior, ParticleBelief)
+    assert posterior.mean[2] < belief.mean[2]
+    assert updater.update_from_transition(belief, missed, NO_ACTION, missed) is belief
+    assert updater.update_from_transition(belief, before, NO_ACTION, before) is belief

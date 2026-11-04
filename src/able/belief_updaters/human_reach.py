@@ -8,7 +8,7 @@ from numpy.typing import ArrayLike, NDArray
 from able.belief_updaters.base import BeliefUpdater
 from able.beliefs.base import Belief
 from able.beliefs.particles import ParticleBelief
-from able.envs.human_reach.model import ReachPlan, ReachState
+from able.envs.human_reach.model import ReachAction, ReachState
 from able.envs.human_reach.query import REACH_SCALE, ReachQuery, ReachResponse
 from able.envs.human_reach.scene import reach_margin
 from able.structs import QueryResponse
@@ -29,13 +29,16 @@ def reached_log_likelihood(
 
 
 class ReachBeliefUpdater(
-    BeliefUpdater[ReachState, ReachPlan, NDArray[np.float64], ReachQuery, ReachResponse]
+    BeliefUpdater[
+        ReachState, ReachAction, NDArray[np.float64], ReachQuery, ReachResponse
+    ]
 ):
     """Reweights reach particles by P(reached x | theta) = sigmoid(margin(x, theta) /
     scale), and resamples.
 
-    Queries and deliveries share this model. Each delivered item is one update, and
-    each query response is one update with all of its points.
+    Queries and deliveries share this model. Each delivered item is one update, after
+    the action that placed it, and each query response is one update with all of
+    its points.
     """
 
     def __init__(self, shoulder: NDArray[np.float64], scale: float = REACH_SCALE):
@@ -46,14 +49,14 @@ class ReachBeliefUpdater(
         self,
         belief: Belief[NDArray[np.float64]],
         state: ReachState,
-        action: ReachPlan,
+        action: ReachAction,
         next_state: ReachState,
     ) -> Belief[NDArray[np.float64]]:
-        if state.executed or not next_state.executed:
+        delivery = next_state.delivery
+        if next_state.num_actions == state.num_actions or delivery is None:
             return belief
-        for _, point, reached in next_state.deliveries:
-            belief = self._update(belief, [point], [reached])
-        return belief
+        _, point, reached = delivery
+        return self._update(belief, [point], [reached])
 
     def update_from_queries(
         self,
