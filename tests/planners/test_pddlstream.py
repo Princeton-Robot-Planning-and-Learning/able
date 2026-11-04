@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from able.beliefs.particles import ParticleBelief
-from able.envs.human_reach.model import ReachModel
+from able.envs.human_reach.model import NO_ACTION, ReachModel
 from able.envs.human_reach.tasks import make_domain
 from able.planners.pddlstream import (
     PDDLStreamParams,
@@ -73,7 +73,8 @@ def test_reach_planner(tmp_path, monkeypatch):
     policy = planner.plan(
         task, _point_belief(THETA), planner.get_default_params(), Budget(), rng
     )
-    (plan,) = policy.actions
+    assert len(policy.actions) == model.horizon
+    plan = [a for a in policy.actions if a != NO_ACTION]
     stats = policy.get_planning_stats()
     assert stats["plan_length"] == len(plan) and stats["stream_calls"] > 0
     places = [args[0] for name, args in plan if name == "place"]

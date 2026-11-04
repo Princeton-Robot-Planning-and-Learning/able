@@ -24,7 +24,13 @@ from pybullet_helpers.geometry import get_pose
 
 from able.beliefs.base import Belief
 from able.beliefs.particles import ParticleBelief
-from able.envs.human_reach.model import ReachModel, ReachPlan, ReachState, ReachTask
+from able.envs.human_reach.model import (
+    NO_ACTION,
+    ReachAction,
+    ReachModel,
+    ReachState,
+    ReachTask,
+)
 from able.envs.human_reach.scene import (
     BedsideStocking3DObjectCentricState,
     ObjectCentricBedsideStocking3DEnv,
@@ -232,11 +238,12 @@ class PDDLStreamParams:
 
 
 class ReachPDDLStreamPlanner(
-    Planner[ReachState, ReachPlan, ReachTask, NDArray[np.float64], PDDLStreamParams]
+    Planner[ReachState, ReachAction, ReachTask, NDArray[np.float64], PDDLStreamParams]
 ):
     """Plans the whole human reach task with PDDLStream, in a simulator of its own.
 
-    The policy is the plan as one action. The planning budget's wall time, if set,
+    The policy executes the plan's actions, then NO_ACTION until the horizon; a
+    plan longer than the horizon fails. The planning budget's wall time, if set,
     caps max_time. The statistics are the number of stream evaluations and the
     plan's length. The default parameters, if given, replace PDDLStreamParams().
     """
@@ -279,7 +286,7 @@ class ReachPDDLStreamPlanner(
         params: PDDLStreamParams,
         budget: Budget,
         rng: np.random.Generator,
-    ) -> OpenLoopPolicy[ReachState, ReachPlan]:
+    ) -> OpenLoopPolicy[ReachState, ReachAction]:
         """Plan under num_particles of the belief's particles.
 
         Raises PlanningFailure if PDDLStream finds no plan in time.
@@ -306,8 +313,12 @@ class ReachPDDLStreamPlanner(
         )
         if plan is None:
             raise PlanningFailure("PDDLStream found no plan")
+        horizon = self._model.horizon
+        if len(plan) > horizon:
+            raise PlanningFailure("The plan is longer than the horizon")
         stats = {
             "stream_calls": float(sum(ctx.calls.values())),
             "plan_length": len(plan),
         }
-        return OpenLoopPolicy([tuple(plan)], stats)
+        actions = [tuple(action) for action in plan]
+        return OpenLoopPolicy(actions + [NO_ACTION] * (horizon - len(plan)), stats)
