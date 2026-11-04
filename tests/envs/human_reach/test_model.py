@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from able.envs.human_reach.model import ReachModel, ReachTask
+from able.envs.human_reach.model import NO_ACTION, ReachModel, ReachTask
 from able.envs.human_reach.query import ReachQuery, bedside_directions
 from able.envs.human_reach.scene import ObjectCentricBedsideStocking3DEnv
 from able.planners.pddlstream import plan_bedside
@@ -23,27 +23,21 @@ def _task(model: ReachModel, seed: int = 0) -> ReachTask:
     return ReachTask(state, tuple(state.scene.requested_objects))
 
 
-def test_an_empty_plan_delivers_nothing(model):
-    """Without a plan, the items stay out of reach on the far furniture, and the
-    state stays fixed."""
+def test_no_action_changes_nothing(model):
+    """NO_ACTION leaves the state, which has nothing delivered yet."""
     task = _task(model)
     state = task.initial_state
-    assert model.horizon == 1 and not state.executed
+    assert model.horizon == 40 and state.num_actions == 0
     assert model.get_terminal_cost(task, state, THETA) == 2.0
-    rng = np.random.default_rng(0)
-    after = model.sample_next_state(state, (), THETA, rng)
-    assert after.executed and after.num_unreached == 2
-    assert [(name, reached) for name, _, reached in after.deliveries] == [
-        ("req0", False),
-        ("req1", False),
-    ]
-    assert not model.check_goal(task, after, THETA)
-    assert model.get_cost(task, state, (), after, THETA) == 0.0
-    assert model.sample_next_state(after, (), THETA, rng) is after
+    after = model.sample_next_state(state, NO_ACTION, THETA, np.random.default_rng(0))
+    assert after is state and not model.check_goal(task, after, THETA)
+    assert model.get_cost(task, state, NO_ACTION, after, THETA) == 0.0
 
 
-def test_a_plan_delivers_the_items(model, tmp_path, monkeypatch):
-    """A plan found with the true reach delivers both items within it."""
+def test_actions_deliver_the_items(model, tmp_path, monkeypatch):
+    """A plan found with the true reach, executed one action at a time, delivers
+    both items within reach; a fresh simulator continues a state with a held
+    item."""
     monkeypatch.chdir(tmp_path)
     task = _task(model)
     planner_sim = ObjectCentricBedsideStocking3DEnv(2, 0, allow_state_access=True)
@@ -53,15 +47,23 @@ def test_a_plan_delivers_the_items(model, tmp_path, monkeypatch):
     )
     planner_sim.close()
     assert plan is not None
-    after = model.sample_next_state(
-        task.initial_state, tuple(plan), THETA, np.random.default_rng(0)
-    )
-    assert [(name, reached) for name, _, reached in after.deliveries] == [
-        ("req0", True),
-        ("req1", True),
-    ]
-    assert model.check_goal(task, after, THETA)
-    assert model.get_terminal_cost(task, after, THETA) == 0.0
+    rng = np.random.default_rng(0)
+    state, deliveries = task.initial_state, []
+    first_pick = next(i for i, (name, _) in enumerate(plan) if name == "pick")
+    for i, action in enumerate(plan):
+        if i == first_pick + 1:
+            # Continue in a fresh simulator while holding the item.
+            fresh = ReachModel(num_requested=2, num_clutter=0)
+            state = fresh.sample_next_state(state, action, THETA, rng)
+            fresh.close()
+        else:
+            state = model.sample_next_state(state, action, THETA, rng)
+        if state.delivery is not None:
+            deliveries.append((state.delivery[0], state.delivery[2]))
+    assert state.num_actions == len(plan)
+    assert sorted(deliveries) == [("req0", True), ("req1", True)]
+    assert model.check_goal(task, state, THETA)
+    assert model.get_terminal_cost(task, state, THETA) == 0.0
 
 
 def test_queries_run_in_their_own_simulator(model):
