@@ -110,3 +110,79 @@ The robots that learn rank PDDLStream's placements for each requested item with 
 
 The human reach environment evaluates 2 tasks per cycle and dreams 4 times per sleep, planning 1 training scene per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
 
+
+## Della
+
+[Della](https://researchcomputing.princeton.edu/systems/della) is Princeton's research cluster. With `hydra/launcher=della`, each job of a Hydra multirun runs as a Slurm job on one CPU of an AMD Genoa node. All jobs run on the same node type, so their planning times are comparable.
+
+### First-time setup
+
+Every Della login needs Duo. To approve Duo once per connection instead of once per `ssh` or `rsync`, add these lines to `~/.ssh/config` on your laptop, replacing `<netid>` with your NetID:
+
+```
+Host della
+  User <netid>
+  HostName della.princeton.edu
+  ProxyJump tigressgateway
+  ControlMaster auto
+  ControlPersist yes
+  ControlPath ~/.ssh/sockets/%p-%h-%r
+  ServerAliveInterval 300
+
+Host tigressgateway
+  User <netid>
+  HostName tigressgateway.princeton.edu
+  ControlMaster auto
+  ControlPersist yes
+  ControlPath ~/.ssh/sockets/%p-%h-%r
+  ServerAliveInterval 300
+```
+
+Then run `mkdir -p ~/.ssh/sockets && chmod 700 ~/.ssh/sockets` and `ssh della`. The first connection asks for your NetID password and Duo, once for `tigressgateway` and once for Della. Later connections reuse it until your network drops or you run `ssh -O stop della`. Because the connection goes through `tigressgateway`, it works off campus without the VPN.
+
+On Della, work in the lab's scratch space, `/scratch/gpfs/TSILVER/<netid>`, which is not backed up. Compute nodes have no internet access, so install everything from the login node:
+
+```
+mkdir -p /scratch/gpfs/TSILVER/$USER/.cache/uv
+echo "export UV_CACHE_DIR=/scratch/gpfs/TSILVER/$USER/.cache/uv" >> ~/.bashrc
+source ~/.bashrc
+curl -LsSf https://astral.sh/uv/install.sh | sh
+cd /scratch/gpfs/TSILVER/$USER
+git clone https://github.com/Princeton-Robot-Planning-and-Learning/able.git
+cd able
+uv sync --all-extras
+```
+
+The uv cache goes on scratch because `/home` allows only 2 million files. The install takes about 2 minutes, including building Fast Downward.
+
+The limb and friction environments need IKFast, which pybullet_helpers compiles the first time they plan. Compute nodes lack the static LAPACK library it links against, so compile it once on the login node, which takes about 3 minutes. The compile script expects Ubuntu's library paths and a static BLAS library, so point it at Della's libraries and at a symlink to Della's shared BLAS library:
+
+```
+mkdir -p /scratch/gpfs/TSILVER/$USER/ikfast-libs
+ln -sf /usr/lib64/libblas.so.3 /scratch/gpfs/TSILVER/$USER/ikfast-libs/libblas.a
+LAPACK_DIR=/usr/lib64 LIBGFORTRAN_DIR=/usr/lib64 BLAS_DIR=/scratch/gpfs/TSILVER/$USER/ikfast-libs \
+  .venv/bin/python -c "from pybullet_helpers.ikfast.load import install_ikfast_if_required; from pybullet_helpers.robots.kinova import KinovaGen3RobotiqGripperPyBulletRobot as R; install_ikfast_if_required(R.ikfast_info())"
+```
+
+### Running experiments
+
+Add `hydra/launcher=della` to any multirun. The comparison scripts pass it through to Hydra:
+
+```
+cd /scratch/gpfs/TSILVER/$USER/able
+tmux new -s able
+source .venv/bin/activate
+./experiments/run_friction_comparison.sh hydra/launcher=della
+```
+
+The script submits one job per seed and approach, waits for them to finish, and then plots. Waiting takes no compute, but the script has to stay running, which is why it runs in `tmux`. Detach with `Ctrl-b d`, and reattach later with `tmux attach -t able`. A tmux session lives on one login node, so note which one `hostname` prints. If `tmux attach` later finds no session, you are on a different login node, and `ssh della9` (or whichever node you noted) reaches the right one after another password and Duo prompt.
+
+`squeue -u $USER` lists your jobs, and `jobstats <job id>` reports a finished job's CPU and memory use. Each job's Slurm logs are in the sweep directory's `.submitit/` folder.
+
+Jobs request 24 hours, 1 CPU, and 8 GB by default, which puts them in Della's short QOS: up to 500 jobs and 1000 CPUs at once per user. For longer runs, raise `hydra.launcher.timeout_min`; up to 4320 minutes goes to the medium QOS (400 CPUs per user) and up to 8640 minutes to vlong (325 CPUs per user). `hydra.launcher.mem_gb` sets the memory.
+
+To copy results to your laptop:
+
+```
+rsync -av della:/scratch/gpfs/TSILVER/<netid>/able/logs/ logs/
+```
