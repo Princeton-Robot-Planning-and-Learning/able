@@ -13,8 +13,10 @@ from analysis_utils import combine_results_csvs, summarize_over_seeds
 from matplotlib import pyplot as plt
 
 APPROACH_TO_DISPLAY_NAME = {
+    "belief_coverage": "Belief coverage",
     "current_belief": "Current belief only",
     "dreaming": "Dreaming",
+    "next_call": "Next call",
     "prior_only": "Prior only (first sleep)",
     "scratch": "Plan from scratch",
 }

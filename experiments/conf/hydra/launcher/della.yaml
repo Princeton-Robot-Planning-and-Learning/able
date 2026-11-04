@@ -1,0 +1,16 @@
+# Runs each job of a Hydra multirun as a Slurm job on Princeton's Della cluster.
+defaults:
+  - submitit_slurm
+
+# Jobs of at most 24 hours go to Della's short QOS, which allows 500 jobs and 1000
+# CPUs per user.
+timeout_min: 1440
+cpus_per_task: 1
+mem_gb: 8
+array_parallelism: 500
+# Della's CPU partition mixes AMD Genoa and Intel Cascade Lake nodes. Running every
+# job on one node type keeps planning times comparable.
+constraint: genoa
+setup:
+  # Without these, numpy and torch may start a thread per core of a shared node.
+  - export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK

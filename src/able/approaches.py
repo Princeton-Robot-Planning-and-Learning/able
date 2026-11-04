@@ -6,6 +6,7 @@ sees what the robot imagines while it sleeps.
 """
 
 import dataclasses
+from typing import Callable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -14,6 +15,7 @@ from able.belief_updaters.friction import FrictionBeliefUpdater
 from able.belief_updaters.human_reach import ReachBeliefUpdater
 from able.belief_updaters.joint_limits import JointLimitBeliefUpdater
 from able.belief_updaters.range_of_motion import RangeOfMotionBeliefUpdater
+from able.beliefs.base import Belief
 from able.beliefs.interval import IntervalBelief
 from able.envs.base import FiniteTaskDistribution
 from able.envs.friction.model import FrictionModel, FrictionState, FrictionTask
@@ -33,8 +35,10 @@ from able.info_gatherers.push_to_limit import PushToLimitGatherer
 from able.info_gatherers.reach_query import ReachQueryGatherer
 from able.learners.base import NullLearner
 from able.learners.belief_sources import (
+    BeliefCoverageSource,
     CurrentBeliefSource,
     ImaginedNextBeliefSource,
+    NextCallSource,
     PriorSource,
 )
 from able.learners.model_learner import ModelLearner
@@ -169,6 +173,43 @@ def make_prior_only_robot(
     )
 
 
+def _make_arm_dreaming_parts(
+    domain: ArmDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    max_warm_starts_per_key: int,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None,
+) -> tuple[
+    FiniteTaskDistribution[ArmTask],
+    RandomShootingPlanner,
+    JointLimitBeliefUpdater,
+    NullInformationGatherer,
+    ImaginedNextBeliefSource,
+]:
+    """The task distribution, caching planner, belief updater, and gatherer of
+    an arm robot that dreams, and the belief source that dreams with them."""
+    env_model = domain.env_model
+    task_distribution = domain.task_distribution
+    assert isinstance(env_model, TwoLinkArmModel)
+    assert isinstance(task_distribution, FiniteTaskDistribution)
+    planner = _make_caching_planner(env_model, max_warm_starts_per_key)
+    belief_updater = JointLimitBeliefUpdater()
+    info_gatherer: NullInformationGatherer = NullInformationGatherer()
+    dreamer: ImaginedNextBeliefSource = ImaginedNextBeliefSource(
+        env_model,
+        task_distribution,
+        planner,
+        belief_updater,
+        info_gatherer,
+        gathering_budget=gathering_budget,
+        execution_budget=execution_budget,
+        planning_budget=planning_budget,
+        recorder=recorder,
+    )
+    return task_distribution, planner, belief_updater, info_gatherer, dreamer
+
+
 def make_dreaming_robot(
     domain: ArmDomain,
     gathering_budget: Budget,
@@ -183,28 +224,128 @@ def make_dreaming_robot(
     they should match the cycle budgets for information gathering, task
     execution, and planning.
     """
-    env_model = domain.env_model
-    task_distribution = domain.task_distribution
-    assert isinstance(env_model, TwoLinkArmModel)
-    assert isinstance(task_distribution, FiniteTaskDistribution)
-    planner = _make_caching_planner(env_model, max_warm_starts_per_key)
-    belief_updater = JointLimitBeliefUpdater()
-    info_gatherer: NullInformationGatherer = NullInformationGatherer()
-    belief_source: ImaginedNextBeliefSource = ImaginedNextBeliefSource(
-        env_model,
-        task_distribution,
-        planner,
-        belief_updater,
-        info_gatherer,
-        gathering_budget=gathering_budget,
-        execution_budget=execution_budget,
-        planning_budget=planning_budget,
-        recorder=recorder,
+    task_distribution, planner, belief_updater, info_gatherer, dreamer = (
+        _make_arm_dreaming_parts(
+            domain,
+            gathering_budget,
+            execution_budget,
+            planning_budget,
+            max_warm_starts_per_key,
+            recorder,
+        )
     )
-    learner = ModelLearner(planner, task_distribution, belief_source, planning_budget)
     return Robot(
         planner=planner,
-        learner=learner,
+        learner=ModelLearner(planner, task_distribution, dreamer, planning_budget),
+        belief_updater=belief_updater,
+        info_gatherer=info_gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
+def get_cache_key_features(
+    resolution: float,
+) -> Callable[[Belief[ArmArray]], ArmArray]:
+    """A function from an interval belief to its part of the plan cache's keys
+    at the resolution, as features.
+
+    Plans for the same task under beliefs with the same features share a key, so
+    they are cached together.
+    """
+
+    def get_features(belief: Belief[ArmArray]) -> ArmArray:
+        assert isinstance(belief, IntervalBelief), "Cache keys need IntervalBelief"
+        return np.array(belief.get_discretized_key(resolution), dtype=np.float64)
+
+    return get_features
+
+
+def make_belief_coverage_robot(
+    domain: ArmDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    num_candidates: int = 4,
+    max_warm_starts_per_key: int = 4,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+) -> ArmRobot:
+    """A robot that plans with random shooting and, while it sleeps, caches
+    plans for dreamed beliefs unlike those it has already trained under.
+
+    Each training belief is the farthest of num_candidates dreams. The distance
+    between two beliefs is the largest difference between their parts of the
+    plan cache's keys, so a dream that shares a key with a trained belief is at
+    distance zero. The budgets should match the cycle budgets for information
+    gathering, task execution, and planning.
+    """
+    task_distribution, planner, belief_updater, info_gatherer, dreamer = (
+        _make_arm_dreaming_parts(
+            domain,
+            gathering_budget,
+            execution_budget,
+            planning_budget,
+            max_warm_starts_per_key,
+            recorder,
+        )
+    )
+    cache = planner.get_default_params().model
+    assert isinstance(cache, ExactMatchCache)
+    belief_source: BeliefCoverageSource = BeliefCoverageSource(
+        dreamer, get_cache_key_features(cache.key_resolution), num_candidates
+    )
+    return Robot(
+        planner=planner,
+        learner=ModelLearner(
+            planner, task_distribution, belief_source, planning_budget
+        ),
+        belief_updater=belief_updater,
+        info_gatherer=info_gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
+def make_next_call_robot(
+    domain: ArmDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    num_candidates: int = 256,
+    max_warm_starts_per_key: int = 4,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+) -> ArmRobot:
+    """A robot that plans with random shooting and, while it sleeps, caches
+    plans where they are expected to save the most planning time at evaluation.
+
+    Each sleep dreams num_candidates beliefs and groups them by their parts of the
+    plan cache's keys, since beliefs with the same part share cached plans. Each
+    training belief comes from the group with the largest product of its fraction
+    of the dreams and the estimated saving of caching more plans for it. The
+    budgets should match the cycle budgets for information gathering, task
+    execution, and planning.
+    """
+    task_distribution, planner, belief_updater, info_gatherer, dreamer = (
+        _make_arm_dreaming_parts(
+            domain,
+            gathering_budget,
+            execution_budget,
+            planning_budget,
+            max_warm_starts_per_key,
+            recorder,
+        )
+    )
+    cache = planner.get_default_params().model
+    assert isinstance(cache, ExactMatchCache)
+    get_features = get_cache_key_features(cache.key_resolution)
+
+    def get_region(belief: Belief[ArmArray]) -> tuple[float, ...]:
+        return tuple(get_features(belief))
+
+    belief_source: NextCallSource = NextCallSource(dreamer, get_region, num_candidates)
+    return Robot(
+        planner=planner,
+        learner=ModelLearner(
+            planner, task_distribution, belief_source, planning_budget
+        ),
         belief_updater=belief_updater,
         info_gatherer=info_gatherer,
         initial_belief=domain.initial_belief,

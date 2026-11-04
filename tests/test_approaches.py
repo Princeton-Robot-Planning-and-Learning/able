@@ -5,6 +5,8 @@ import dataclasses
 import numpy as np
 
 from able.approaches import (
+    get_cache_key_features,
+    make_belief_coverage_robot,
     make_current_belief_robot,
     make_dreaming_robot,
     make_friction_current_belief_robot,
@@ -19,9 +21,11 @@ from able.approaches import (
     make_limb_dreaming_robot,
     make_limb_prior_only_robot,
     make_limb_scratch_robot,
+    make_next_call_robot,
     make_prior_only_robot,
     make_scratch_robot,
 )
+from able.belief_updaters.joint_limits import JointLimitBeliefUpdater
 from able.beliefs.interval import IntervalBelief
 from able.cycle import CycleBudgets, run_cycles
 from able.envs.base import FiniteTaskDistribution
@@ -30,10 +34,16 @@ from able.envs.human_reach.tasks import make_domain as make_reach_domain
 from able.envs.limb.model import LimbTask
 from able.envs.limb.tasks import LimbTaskDistribution
 from able.envs.limb.tasks import make_domain as make_limb_domain
-from able.envs.two_link_arm import make_domain
+from able.envs.two_link_arm import TwoLinkArmModel, make_domain
+from able.info_gatherers.base import NullInformationGatherer
+from able.learners.belief_sources import ImaginedNextBeliefSource
 from able.models.exact_match_cache import ExactMatchCache
 from able.models.neural import MLPRegressor
-from able.planners.random_shooting import RandomShootingParams, get_plan_features
+from able.planners.random_shooting import (
+    RandomShootingParams,
+    RandomShootingPlanner,
+    get_plan_features,
+)
 from able.robot import Robot
 from able.structs import Budget
 
@@ -77,6 +87,13 @@ def _has_cached_plans(params: RandomShootingParams) -> bool:
     return bool(params.model.entries)
 
 
+def _get_cached_beliefs(params: RandomShootingParams) -> set[tuple[int, ...]]:
+    """The distinct belief parts of the keys of cached plans."""
+    assert isinstance(params.model, ExactMatchCache)
+    # Each key starts with the goal's two coordinates.
+    return {key[2:] for key in params.model.entries}
+
+
 def test_make_scratch_robot():
     """Tests that the scratch robot plans and never changes its parameters."""
     domain = make_domain(seed=0)
@@ -115,6 +132,92 @@ def test_make_prior_only_robot():
     assert _has_cached_plans(params)
     robot.sleep(Budget(max_iterations=1), rng)
     assert robot.planner_params is params
+
+
+def test_cache_key_features():
+    """Tests that a belief's features are its part of the plan cache's key."""
+    domain = make_domain(seed=0)
+    task = domain.task_distribution.sample(np.random.default_rng(0))
+    belief = IntervalBelief([[-1.3, -0.2], [0.4, 1.7], [-2.6, -1.1], [0.2, 1.4]])
+    cache = ExactMatchCache()
+    features = get_cache_key_features(cache.key_resolution)(belief)
+    key = cache.get_key(get_plan_features(task, belief))
+    assert tuple(features) == key[len(task.goal) :]
+
+
+def test_belief_coverage_spreads_training():
+    """Tests that the belief-coverage robot caches plans under a different
+    belief key for every training belief, and dreaming repeats some keys."""
+    num_training_beliefs = 8
+    counts: dict[str, list[int]] = {"dreaming": [], "belief_coverage": []}
+    for seed in range(3):
+        domain = make_domain(seed)
+        budgets = _budgets(num_dreams=0)
+        robots = {
+            "dreaming": _make_dreaming_robot(domain),
+            "belief_coverage": make_belief_coverage_robot(
+                domain,
+                budgets.information_gathering,
+                budgets.execution,
+                budgets.planning,
+            ),
+        }
+        for name, robot in robots.items():
+            sleep_budget = Budget(max_iterations=num_training_beliefs)
+            robot.sleep(sleep_budget, np.random.default_rng(seed))
+            counts[name].append(len(_get_cached_beliefs(robot.planner_params)))
+    assert counts["belief_coverage"] == [num_training_beliefs] * 3
+    assert sum(counts["dreaming"]) < sum(counts["belief_coverage"])
+
+
+def test_next_call_covers_more_probable_beliefs():
+    """Tests that the next-call robot's first sleep caches plans under belief keys
+    that hold more of the probability of the belief at evaluation than dreaming's.
+
+    Eight training beliefs cover few of the keys that dreams from the prior
+    reach, so choosing the probable ones matters. The probability of each key is
+    estimated from separate dreams.
+    """
+    budgets = _budgets(num_dreams=0)
+    get_key = get_cache_key_features(ExactMatchCache().key_resolution)
+    covered = {"dreaming": 0.0, "next_call": 0.0}
+    for seed in range(3):
+        domain = make_domain(seed)
+        env_model = domain.env_model
+        assert isinstance(env_model, TwoLinkArmModel)
+        planner = RandomShootingPlanner(env_model)
+        dreamer: ImaginedNextBeliefSource = ImaginedNextBeliefSource(
+            env_model,
+            domain.task_distribution,
+            planner,
+            JointLimitBeliefUpdater(),
+            NullInformationGatherer(),
+            budgets.information_gathering,
+            budgets.execution,
+            budgets.planning,
+        )
+        rng = np.random.default_rng(seed + 100)
+        params = planner.get_default_params()
+        prior = domain.initial_belief
+        dreamed_keys = [
+            tuple(get_key(dreamer.get_training_belief(i, prior, params, rng)))
+            for i in range(1, 101)
+        ]
+        robots = {
+            "dreaming": _make_dreaming_robot(domain),
+            "next_call": make_next_call_robot(
+                domain,
+                budgets.information_gathering,
+                budgets.execution,
+                budgets.planning,
+                num_candidates=128,
+            ),
+        }
+        for name, robot in robots.items():
+            robot.sleep(Budget(max_iterations=8), np.random.default_rng(seed))
+            cached = _get_cached_beliefs(robot.planner_params)
+            covered[name] += float(np.mean([key in cached for key in dreamed_keys]))
+    assert covered["next_call"] > covered["dreaming"] + 0.1
 
 
 def test_known_limits_always_hit():
