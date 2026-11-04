@@ -16,6 +16,7 @@ APPROACH_TO_DISPLAY_NAME = {
     "belief_coverage": "Belief coverage",
     "current_belief": "Current belief only",
     "dreaming": "Dreaming",
+    "next_call": "Next call",
     "prior_only": "Prior only (first sleep)",
     "scratch": "Plan from scratch",
 }

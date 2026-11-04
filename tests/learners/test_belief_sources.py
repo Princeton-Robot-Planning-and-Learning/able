@@ -15,6 +15,7 @@ from able.learners.belief_sources import (
     BeliefSource,
     CurrentBeliefSource,
     ImaginedNextBeliefSource,
+    NextCallSource,
     PriorSource,
 )
 from able.planners.random_shooting import RandomShootingPlanner
@@ -156,3 +157,49 @@ def test_belief_coverage_with_one_candidate_is_dreaming():
             iteration, belief, params, np.random.default_rng(iteration)
         )
         assert chosen == dream
+
+
+def _get_value(belief: Belief[Any]) -> float:
+    assert isinstance(belief, IntervalBelief)
+    return float(belief.intervals[0, 0])
+
+
+def test_next_call_source():
+    """Tests that each iteration trains in the region with the largest product of
+    probability and estimated saving, and that the saving is measured from the
+    training times."""
+    # Regions 0, 1, and 2 hold half, a third, and a sixth of the first sleep's
+    # candidates, and region 3 holds every candidate of the second sleep.
+    candidates = [_point(v) for v in (0, 1, 0, 2, 1, 0)] + [_point(3)] * 6
+    candidate_source = _ScriptedSource(candidates)
+    source = NextCallSource(candidate_source, _get_value, num_candidates=6)
+    # In every region, training takes 10 s with no earlier updates, 4 s after
+    # one update, and 3 s after more.
+    profile = [10.0, 4.0, 3.0]
+    num_updates: dict[float, int] = {}
+    belief = _point(0)
+    rng = np.random.default_rng(0)
+
+    def train(iteration: int) -> float:
+        training_belief = source.get_training_belief(iteration, belief, None, rng)
+        region = _get_value(training_belief)
+        n = num_updates.get(region, 0)
+        source.observe_training_time(training_belief, profile[min(n, 2)])
+        num_updates[region] = n + 1
+        return region
+
+    # With nothing measured, the most probable region comes first, and region 0
+    # keeps its lead until its updates measure the first two savings, 6 s and 1
+    # s. After that, a first update to a region is worth 6 s times the region's
+    # probability, and a later update 1 s or less.
+    regions = [train(i) for i in range(1, 9)]
+    assert regions == [0, 0, 0, 1, 2, 0, 1, 2]
+    assert candidate_source.iterations == [1, 2, 3, 4, 5, 6]
+    assert source.estimate_saving(0) == 6.0
+    assert source.estimate_saving(1) == 1.0
+    # An update after three is assumed to save as much as the third, which saved
+    # nothing.
+    assert source.estimate_saving(4) == 0.0
+    # The next sleep draws new candidates and trains in the new region.
+    assert train(1) == 3
+    assert candidate_source.iterations[6:] == [1, 2, 3, 4, 5, 6]

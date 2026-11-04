@@ -11,6 +11,6 @@ SWEEP_DIR="logs/comparison/$(date +%Y-%m-%d_%H-%M-%S)"
 # Hydra varies the last override fastest, so the approaches run back to back for
 # each seed and see similar machine load.
 python experiments/run_single_experiment.py -m \
-    seed="$SEEDS" approach=scratch,prior_only,current_belief,dreaming,belief_coverage \
+    seed="$SEEDS" approach=scratch,prior_only,current_belief,dreaming,belief_coverage,next_call \
     hydra.sweep.dir="$SWEEP_DIR" "$@"
 python experiments/analysis/plot_cycle_results.py --results_dir "$SWEEP_DIR"

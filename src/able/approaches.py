@@ -38,6 +38,7 @@ from able.learners.belief_sources import (
     BeliefCoverageSource,
     CurrentBeliefSource,
     ImaginedNextBeliefSource,
+    NextCallSource,
     PriorSource,
 )
 from able.learners.model_learner import ModelLearner
@@ -292,6 +293,54 @@ def make_belief_coverage_robot(
     belief_source: BeliefCoverageSource = BeliefCoverageSource(
         dreamer, get_cache_key_features(cache.key_resolution), num_candidates
     )
+    return Robot(
+        planner=planner,
+        learner=ModelLearner(
+            planner, task_distribution, belief_source, planning_budget
+        ),
+        belief_updater=belief_updater,
+        info_gatherer=info_gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
+def make_next_call_robot(
+    domain: ArmDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    num_candidates: int = 256,
+    max_warm_starts_per_key: int = 4,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+) -> ArmRobot:
+    """A robot that plans with random shooting and, while it sleeps, caches
+    plans where they are expected to save the most planning time at evaluation.
+
+    Each sleep dreams num_candidates beliefs and groups them by their parts of the
+    plan cache's keys, since beliefs with the same part share cached plans. Each
+    training belief comes from the group with the largest product of its fraction
+    of the dreams and the estimated saving of caching more plans for it. The
+    budgets should match the cycle budgets for information gathering, task
+    execution, and planning.
+    """
+    task_distribution, planner, belief_updater, info_gatherer, dreamer = (
+        _make_arm_dreaming_parts(
+            domain,
+            gathering_budget,
+            execution_budget,
+            planning_budget,
+            max_warm_starts_per_key,
+            recorder,
+        )
+    )
+    cache = planner.get_default_params().model
+    assert isinstance(cache, ExactMatchCache)
+    get_features = get_cache_key_features(cache.key_resolution)
+
+    def get_region(belief: Belief[ArmArray]) -> tuple[float, ...]:
+        return tuple(get_features(belief))
+
+    belief_source: NextCallSource = NextCallSource(dreamer, get_region, num_candidates)
     return Robot(
         planner=planner,
         learner=ModelLearner(
