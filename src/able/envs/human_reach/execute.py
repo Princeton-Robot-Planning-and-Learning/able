@@ -1,6 +1,8 @@
 """Executing a human reach plan in the simulator: arm paths refined with BiRRT
 and a straight-line descent, and dense base paths."""
 
+from typing import Any
+
 import numpy as np
 from kinder.envs.kinematic3d.utils import (
     Kinematic3DRobotActionSpace,
@@ -209,27 +211,40 @@ class Driver:
                 return
 
 
+def execute_action(
+    sim: ObjectCentricBedsideStocking3DEnv,
+    action: tuple[str, tuple[Any, ...]],
+    seed: int = 0,
+    start: bool = False,
+) -> None:
+    """Execute one move_base, pick, or place action, refining arm paths with
+    BiRRT. At the start of a plan, the arm first moves to its carry conf."""
+    drive = Driver(sim, seed)
+    if start:
+        drive.arm(CARRY_JOINTS)
+    name, args = action
+    if name == "move_base":
+        drive.base(args[1].pose)
+    elif name in ("pick", "place"):
+        traj = args[4]
+        # pylint: disable-next=protected-access
+        target = sim._object_name_to_pybullet_id(args[0])
+        _, hover, grasp = traj.joint_plan
+        approach = _arm_path(sim, hover, {target}, seed)
+        for q in approach[1:] + _descent(sim, hover, grasp, target, seed):
+            drive.joints(q)
+        drive.gripper(close=name == "pick")
+        drive.joints(hover)
+        drive.arm(traj.joint_plan[0])
+    else:
+        raise ValueError(f"Unknown action: {name}")
+
+
 def execute_plan(
     sim: ObjectCentricBedsideStocking3DEnv, plan: list, seed: int = 0
 ) -> bool:
-    """Execute a move_base/pick/place plan, refining arm paths with BiRRT, and
-    return whether the goal was reached."""
-    drive = Driver(sim, seed)
-    drive.arm(CARRY_JOINTS)
-    for name, args in plan:
-        if name == "move_base":
-            drive.base(args[1].pose)
-        elif name in ("pick", "place"):
-            traj = args[4]
-            # pylint: disable-next=protected-access
-            target = sim._object_name_to_pybullet_id(args[0])
-            _, hover, grasp = traj.joint_plan
-            approach = _arm_path(sim, hover, {target}, seed)
-            for q in approach[1:] + _descent(sim, hover, grasp, target, seed):
-                drive.joints(q)
-            drive.gripper(close=name == "pick")
-            drive.joints(hover)
-            drive.arm(traj.joint_plan[0])
-        else:
-            raise ValueError(f"Unknown action: {name}")
+    """Execute a move_base/pick/place plan and return whether the goal was
+    reached."""
+    for i, action in enumerate(plan):
+        execute_action(sim, action, seed, start=i == 0)
     return sim.goal_reached()
