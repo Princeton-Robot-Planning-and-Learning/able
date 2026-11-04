@@ -22,7 +22,7 @@ class HumanReachRenderer(Renderer[ReachState, ReachTask, NDArray[np.float64]]):
     """Draws the scene next to the belief over the person's reach.
 
     The left panel is the simulator's camera view of the current state, and says
-    which requested items the person reached after the plan. The right panel shows
+    which item the last action placed and how many requested items are in reach. The right panel shows
     the particles of each reach semi-axis, their mean, and ticks at the true reach
     (and the sampled reach in dreams). The renderer restores the state in a
     simulator of its own. Images are width x height pixels; both should be
@@ -119,9 +119,12 @@ class HumanReachRenderer(Renderer[ReachState, ReachTask, NDArray[np.float64]]):
 
 
 def _describe(state: ReachState) -> str:
-    if not state.executed:
-        return "Before the plan"
-    reached = [name for name, _, ok in state.deliveries if ok]
     total = len(state.scene.requested_objects)
-    outcome = "goal reached" if state.goal_reached else "goal not reached"
-    return f"After the plan: {len(reached)} of {total} items within reach, {outcome}"
+    lines = [f"Action {state.num_actions}"]
+    if state.delivery is not None:
+        name, _, reached = state.delivery
+        lines.append(f"placed {name} {'in' if reached else 'out of'} reach")
+    lines.append(f"{total - state.num_unreached} of {total} items within reach")
+    if state.goal_reached:
+        lines.append("goal reached")
+    return ", ".join(lines)
