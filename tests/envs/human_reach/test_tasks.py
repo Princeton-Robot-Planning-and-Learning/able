@@ -34,7 +34,8 @@ def test_make_domain():
     assert np.all((low <= belief.particles) & (belief.particles <= high))
     rng = np.random.default_rng(0)
     first, second = distribution.sample(rng), distribution.sample(rng)
-    assert first.goal == ("req0", "req1") and not first.initial_state.executed
+    assert first.goal == ("req0", "req1") and first.initial_state.num_actions == 0
+    assert model.horizon == 40
     poses = [
         [t.initial_state.scene.get_object_pose(c).position for c in ("clutter0",)]
         for t in (first, second)
