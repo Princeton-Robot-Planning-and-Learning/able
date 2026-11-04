@@ -1,0 +1,10 @@
+_target_: able.approaches.make_belief_coverage_robot
+# Dreams imagine the same information gathering, task execution, and planning
+# that the robot does between sleeping and evaluation.
+gathering_budget: ${budgets.information_gathering}
+execution_budget: ${budgets.execution}
+planning_budget: ${budgets.planning}
+# Each training belief is the farthest of this many dreams, so a sleep dreams
+# this many times as often as the dreaming robot's.
+num_candidates: 4
+max_warm_starts_per_key: 4

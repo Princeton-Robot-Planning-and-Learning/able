@@ -5,6 +5,8 @@ import dataclasses
 import numpy as np
 
 from able.approaches import (
+    get_cache_key_features,
+    make_belief_coverage_robot,
     make_current_belief_robot,
     make_dreaming_robot,
     make_friction_current_belief_robot,
@@ -77,6 +79,13 @@ def _has_cached_plans(params: RandomShootingParams) -> bool:
     return bool(params.model.entries)
 
 
+def _count_cached_beliefs(params: RandomShootingParams) -> int:
+    """The number of distinct belief parts among the keys of cached plans."""
+    assert isinstance(params.model, ExactMatchCache)
+    # Each key starts with the goal's two coordinates.
+    return len({key[2:] for key in params.model.entries})
+
+
 def test_make_scratch_robot():
     """Tests that the scratch robot plans and never changes its parameters."""
     domain = make_domain(seed=0)
@@ -115,6 +124,42 @@ def test_make_prior_only_robot():
     assert _has_cached_plans(params)
     robot.sleep(Budget(max_iterations=1), rng)
     assert robot.planner_params is params
+
+
+def test_cache_key_features():
+    """Tests that a belief's features are its part of the plan cache's key."""
+    domain = make_domain(seed=0)
+    task = domain.task_distribution.sample(np.random.default_rng(0))
+    belief = IntervalBelief([[-1.3, -0.2], [0.4, 1.7], [-2.6, -1.1], [0.2, 1.4]])
+    cache = ExactMatchCache()
+    features = get_cache_key_features(cache.key_resolution)(belief)
+    key = cache.get_key(get_plan_features(task, belief))
+    assert tuple(features) == key[len(task.goal) :]
+
+
+def test_belief_coverage_spreads_training():
+    """Tests that the belief-coverage robot caches plans under a different
+    belief key for every training belief, and dreaming repeats some keys."""
+    num_training_beliefs = 8
+    counts: dict[str, list[int]] = {"dreaming": [], "belief_coverage": []}
+    for seed in range(3):
+        domain = make_domain(seed)
+        budgets = _budgets(num_dreams=0)
+        robots = {
+            "dreaming": _make_dreaming_robot(domain),
+            "belief_coverage": make_belief_coverage_robot(
+                domain,
+                budgets.information_gathering,
+                budgets.execution,
+                budgets.planning,
+            ),
+        }
+        for name, robot in robots.items():
+            sleep_budget = Budget(max_iterations=num_training_beliefs)
+            robot.sleep(sleep_budget, np.random.default_rng(seed))
+            counts[name].append(_count_cached_beliefs(robot.planner_params))
+    assert counts["belief_coverage"] == [num_training_beliefs] * 3
+    assert sum(counts["dreaming"]) < sum(counts["belief_coverage"])
 
 
 def test_known_limits_always_hit():
