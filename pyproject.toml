@@ -38,6 +38,10 @@ human_reach = [
     "pddlstream @ git+https://github.com/Princeton-Robot-Planning-and-Learning/pddlstream.git@5919a844b8c947acdb49bedb6e8b2b93e6a70c0c",
     "pybullet_helpers>=0.1.0",
 ]
+# Runs experiments as Slurm jobs (hydra/launcher=della).
+slurm = [
+    "hydra-submitit-launcher",
+]
 develop = [
     "black",
     "docformatter",

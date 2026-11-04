@@ -8,6 +8,7 @@ from types import ModuleType
 
 import numpy as np
 import pandas as pd
+from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 
 from able.envs.base import FiniteTaskDistribution, TaskDistribution
@@ -58,6 +59,22 @@ def test_get_eval_tasks_infinite() -> None:
     ]
     # The cycles draw from np.random.default_rng(seed), which is a different stream.
     assert goals != list(np.random.default_rng(0).uniform(size=6))
+
+
+def test_della_launcher() -> None:
+    """Tests that the Della launcher config runs jobs through Slurm on one node type."""
+    with initialize_config_dir(
+        config_dir=str(SCRIPT.parent / "conf"), version_base=None
+    ):
+        cfg = compose(
+            config_name="config",
+            overrides=["hydra/launcher=della"],
+            return_hydra_config=True,
+        )
+    launcher = cfg.hydra.launcher
+    assert launcher["_target_"].endswith("SlurmLauncher")
+    assert launcher.constraint == "genoa"
+    assert launcher.cpus_per_task == 1
 
 
 def test_run_single_experiment(tmp_path: Path) -> None:
