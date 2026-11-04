@@ -55,8 +55,8 @@ def make_domain(
     true_theta: ArrayLike | None = None,
 ) -> ReachDomain:
     """A human reach domain with episodes of horizon actions, and a person whose
-    reach is drawn uniformly from the config's box unless given. The robot's initial belief is particles from the
-    same box."""
+    reach is drawn uniformly from the config's box unless given. The robot's
+    initial belief is particles from the same box."""
     rng = np.random.default_rng(seed)
     low, high = np.array(config.reach_theta_lb), np.array(config.reach_theta_ub)
     theta = rng.uniform(low, high) if true_theta is None else true_theta
