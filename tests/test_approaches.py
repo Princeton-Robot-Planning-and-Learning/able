@@ -11,6 +11,9 @@ from able.approaches import (
     make_friction_dreaming_robot,
     make_friction_prior_only_robot,
     make_friction_scratch_robot,
+    make_human_reach_current_belief_robot,
+    make_human_reach_dreaming_robot,
+    make_human_reach_prior_only_robot,
     make_human_reach_scratch_robot,
     make_limb_current_belief_robot,
     make_limb_dreaming_robot,
@@ -304,3 +307,34 @@ def test_make_human_reach_scratch_robot():
     assert robot.belief is domain.initial_belief
     robot.sleep(Budget(max_iterations=1), np.random.default_rng(0))
     assert robot.planner_params is params
+
+
+def test_make_human_reach_learning_robots():
+    """Tests that the human reach robots that learn rank placements with the given
+    model, sleep, and that prior-only learns in its first sleep only."""
+    domain = make_reach_domain(seed=0, num_requested=1, num_clutter=0)
+    model = MLPRegressor(num_steps=5)
+    # Every bedside pose is usable, so planning is quick.
+    options = {"model": model, "max_time": 30.0, "delta": 1.0}
+    budgets = _budgets(num_dreams=0)
+    robots = [
+        make_human_reach_current_belief_robot(domain, Budget(), **options),
+        make_human_reach_prior_only_robot(domain, Budget(), **options),
+        make_human_reach_dreaming_robot(
+            domain,
+            budgets.information_gathering,
+            budgets.execution,
+            Budget(),
+            **options,
+        ),
+    ]
+    rng = np.random.default_rng(0)
+    for robot in robots[:2]:
+        assert robot.planner_params.model is model
+        robot.sleep(Budget(max_iterations=1), rng)
+        assert robot.planner_params.model is not model
+    prior_only = robots[1]
+    params = prior_only.planner_params
+    prior_only.sleep(Budget(max_iterations=1), rng)
+    assert prior_only.planner_params is params
+    assert robots[2].planner_params.model is model
