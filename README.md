@@ -6,7 +6,7 @@ Work in progress.
 
 ## Experiments
 
-We use [hydra](https://hydra.cc/) for experiments, with configurations in [experiments/conf](experiments/conf/). To compare four approaches on the two-link arm over five seeds and plot offline evaluation per cycle:
+We use [hydra](https://hydra.cc/) for experiments, with configurations in [experiments/conf](experiments/conf/). To compare five approaches on the two-link arm over five seeds and plot offline evaluation per cycle:
 
 ```
 ./experiments/run_comparison.sh
@@ -17,6 +17,7 @@ The approaches all plan with random shooting and differ in what they learn while
 - `prior_only` caches plans for every task under the prior in its first sleep and never learns again.
 - `current_belief` caches plans for every task under its current belief, so it never anticipates belief updates.
 - `dreaming` imagines the belief updates it will make before it is evaluated and caches plans for the imagined beliefs.
+- `belief_coverage` dreams like `dreaming`, but each training belief is the farthest of four dreams from the beliefs it has already cached plans for. The distance compares the beliefs' parts of the cache key, so it spreads training over beliefs that need different plans. This adapts a belief-expansion heuristic from point-based POMDP planning ([Pineau, Gordon, and Thrun, 2006](https://jair.org/index.php/jair/article/view/10473)).
 
 The results and the plot (`cycle_results.png`) go to `logs/comparison/<date>_<time>/`. Extra arguments are passed to hydra, for example `./experiments/run_comparison.sh num_cycles=10`, and `SEEDS=0,1` changes the seeds.
 

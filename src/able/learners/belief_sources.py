@@ -2,9 +2,10 @@
 
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Generic
+from typing import Any, Callable, Generic
 
 import numpy as np
+from numpy.typing import NDArray
 
 from able.belief_updaters.base import BeliefUpdater
 from able.beliefs.base import Belief
@@ -177,3 +178,61 @@ class ImaginedNextBeliefSource(BeliefSource[HiddenParamsType, PlannerParamsType]
                 "imagined success" if success else "imagined failure"
             )
         return belief
+
+
+class BeliefCoverageSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
+    """Trains under the candidate belief farthest from the beliefs it has
+    already chosen.
+
+    This adapts a belief-expansion heuristic from point-based POMDP planning,
+    stochastic simulation with exploratory action, which adds the reachable
+    belief farthest from the current set of belief points (Pineau, Gordon, and
+    Thrun, JAIR 2006). Each iteration draws num_candidates beliefs from the
+    candidate source and returns the one whose nearest previously chosen belief
+    is farthest. Chosen beliefs count in every later sleep, as the training data
+    does.
+
+    The distance between two beliefs is the largest absolute difference between
+    their features. Beliefs that call for the same training should have the same
+    features, so that a candidate like a chosen belief is at distance zero. Ties
+    go to the earliest candidate, so with one candidate the source returns the
+    candidate source's belief.
+
+    The candidate source is usually an ImaginedNextBeliefSource, so the
+    candidates are dreams. It sees num_candidates iterations per iteration of
+    this source, numbered consecutively from 1 in each sleep.
+    """
+
+    def __init__(
+        self,
+        candidate_source: BeliefSource[HiddenParamsType, PlannerParamsType],
+        get_features: Callable[[Belief[HiddenParamsType]], NDArray[np.float64]],
+        num_candidates: int,
+    ) -> None:
+        assert num_candidates > 0, "Need at least one candidate"
+        self._candidate_source = candidate_source
+        self._get_features = get_features
+        self._num_candidates = num_candidates
+        self._chosen_features: list[NDArray[np.float64]] = []
+
+    def get_training_belief(
+        self,
+        iteration: int,
+        belief: Belief[HiddenParamsType],
+        params: PlannerParamsType,
+        rng: np.random.Generator,
+    ) -> Belief[HiddenParamsType]:
+        first = (iteration - 1) * self._num_candidates + 1
+        candidates = [
+            self._candidate_source.get_training_belief(i, belief, params, rng)
+            for i in range(first, first + self._num_candidates)
+        ]
+        features = np.array([self._get_features(c) for c in candidates])
+        best = 0
+        if self._chosen_features:
+            chosen = np.array(self._chosen_features)
+            # The distance from each candidate (row) to each chosen belief (column).
+            distances = np.max(np.abs(features[:, None] - chosen[None]), axis=2)
+            best = int(np.argmax(np.min(distances, axis=1)))
+        self._chosen_features.append(features[best])
+        return candidates[best]
