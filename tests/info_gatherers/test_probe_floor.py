@@ -4,12 +4,12 @@ import numpy as np
 
 from able.belief_updaters.friction import FrictionBeliefUpdater
 from able.beliefs.particles import ParticleBelief
-from able.envs.friction.levels import level_world
+from able.envs.friction.layout import make_world
 from able.envs.friction.tasks import make_domain
 from able.info_gatherers.probe_floor import ProbeFloorGatherer
 from able.structs import Budget
 
-WORLD = level_world("L2")
+WORLD = make_world()
 
 
 def _prior(domain) -> ParticleBelief:

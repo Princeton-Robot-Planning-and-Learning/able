@@ -44,5 +44,5 @@ def test_seeds_and_given_frictions():
     """Seeds draw different people, and given frictions override the prior."""
     frictions = [_get_parts(make_domain(seed=s))[1].hidden_params for s in range(3)]
     assert not np.allclose(frictions[0], frictions[1])
-    domain = make_domain(seed=0, level="L1", true_frictions=[0.1, 0.05, 0.03])
+    domain = make_domain(seed=0, num_holes=0, true_frictions=[0.1, 0.05, 0.03])
     assert np.allclose(_get_parts(domain)[1].hidden_params, [0.1, 0.05, 0.03])

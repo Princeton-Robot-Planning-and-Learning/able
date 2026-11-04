@@ -53,18 +53,20 @@ def make_prior_belief(
 def make_domain(
     seed: int,
     sim: str = "2d",
-    level: str = "L2",
+    num_holes: int = 2,
+    goal_radius: float = 0.3,
     horizon: int = 15,
     num_particles: int = 500,
     prior: FrictionPrior = DEFAULT_FRICTION_PRIOR,
     rewards: PuckRewards = PuckRewards(),
     true_frictions: ArrayLike | None = None,
 ) -> FrictionDomain:
-    """A friction domain on the level, with floor frictions drawn from the prior
-    unless given. The robot's initial belief is particles from the prior."""
+    """A friction domain on the maze with num_holes holes and the goal radius, with
+    floor frictions drawn from the prior unless given. The robot's initial belief
+    is particles from the prior."""
     rng = np.random.default_rng(seed)
     frictions = prior.sample(rng) if true_frictions is None else true_frictions
-    model = FrictionModel(sim, level, horizon, rewards)
+    model = FrictionModel(sim, num_holes, goal_radius, horizon, rewards)
     return Domain(
         env_model=model,
         task_distribution=FrictionTaskDistribution(model),

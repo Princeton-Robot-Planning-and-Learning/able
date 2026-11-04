@@ -4,8 +4,9 @@ env:
     _target_: able.envs.friction.tasks.make_domain
     # The simulator: 2d (PyMunk) or 3d (PyBullet, TidyBot).
     sim: 2d
-    # One of L1-L4, which set the holes and the goal radius.
-    level: L2
+    # Holes in the maze, added in a fixed order (0 to 9), and the goal's radius (m).
+    num_holes: 4
+    goal_radius: 0.3
     # Pushes per episode.
     horizon: 15
     num_particles: 500

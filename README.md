@@ -60,7 +60,7 @@ python experiments/run_single_experiment.py env=limb approach=limb_scratch
 
 As on the arm, the robot asks no queries by default (`budgets.information_gathering.max_iterations=0`): one settled query nearly pins that motion's range, so every approach would learn the range at once.
 
-`env.domain.variant` chooses the scene and limb, for example `env.domain.variant=bed-right-leg`. Planning a task takes a few minutes with the default 32 MPC rollouts per step.
+`env.domain.variant` chooses the scene and limb, for example `env.domain.variant=bed-right-leg`. `env.domain.min_separation` and `env.domain.max_separation` bound the joint-space distance between a task's start and goal, 0.5 to 0.8 rad in the experiments. Planning a task takes a few minutes with the default 32 MPC rollouts per step.
 
 The robots that learn seed MPC with a flow-matching model of the next controls, trained while they sleep on plans for sampled tasks. As on the arm, they differ only in the beliefs they train under: `limb_current_belief`, `limb_prior_only`, and `limb_dreaming`. To compare them with `limb_scratch` over five seeds:
 
@@ -80,7 +80,7 @@ A robot pushes a puck through a maze to a goal, over three floors (blue, tan, an
 python experiments/run_single_experiment.py env=friction approach=friction_scratch
 ```
 
-`env.domain.level` chooses how hard the maze is, from `L1` (no holes, a large goal) to `L4` (four holes, a small goal). `env.domain.sim=3d` runs the pushes in PyBullet with a TidyBot holding a paddle instead of in 2D, with the same physics. Planning a push takes several seconds with the default 1000 simulations, and a task takes up to 15 pushes. As on the arm and the limb, the robot asks no queries by default; a query probes the floor the belief is least sure of.
+`env.domain.num_holes` (0 to 9) and `env.domain.goal_radius` choose how hard the maze is, 4 and 0.3 m in the experiments. `env.domain.sim=3d` runs the pushes in PyBullet with a TidyBot holding a paddle instead of in 2D, with the same physics. Planning a push takes several seconds with the default 1000 simulations, and a task takes up to 15 pushes. As on the arm and the limb, the robot asks no queries by default; a query probes the floor the belief is least sure of.
 
 The robots that learn guide POMCPOW with a flow-matching model of good pushes, used for half of its proposals. While they sleep they roll out sampled tasks under a training belief and learn the well-visited pushes of the rollouts that reach the goal. As on the arm and the limb, they differ only in the beliefs they train under: `friction_current_belief`, `friction_prior_only`, and `friction_dreaming`. To compare them with `friction_scratch` over five seeds:
 
@@ -100,7 +100,7 @@ A robot moves requested items from far furniture to the bedside of a person sitt
 python experiments/run_single_experiment.py env=human_reach approach=human_reach_scratch
 ```
 
-`env.domain.num_requested` and `env.domain.num_clutter` set the scene, 2 and 4 by default. Under the prior, only 3 bedside spots are reachable with 90% probability, so scenes with more requested items often have no plan until the belief narrows. PDDLStream plans for up to 5 minutes (`approach.max_time`), and planning a scene takes from seconds to minutes. As in the other environments, the robot asks no queries by default; a query presents the gripper at points along a direction from the person's shoulder.
+`env.domain.num_requested` and `env.domain.num_clutter` set the scene, 2 and 5 in the experiments. Under the prior, only 3 bedside spots are reachable with 90% probability, so scenes with more requested items often have no plan until the belief narrows. PDDLStream plans for up to 5 minutes (`approach.max_time`), and planning a scene takes from seconds to minutes. As in the other environments, the robot asks no queries by default; a query presents the gripper at points along a direction from the person's shoulder.
 
 The robots that learn rank PDDLStream's placements for each requested item with a flow-matching model of where plans put it, trained while they sleep on plans for sampled scenes. As in the other environments, they differ only in the beliefs they train under: `human_reach_current_belief`, `human_reach_prior_only`, and `human_reach_dreaming`. To compare them with `human_reach_scratch` over five seeds:
 
