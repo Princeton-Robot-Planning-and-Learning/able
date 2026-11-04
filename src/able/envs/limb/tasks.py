@@ -349,13 +349,16 @@ def make_domain(
     seed: int,
     variant: str = "human-left-arm",
     horizon: int = 300,
+    min_separation: float = TaskBox.min_separation,
+    max_separation: float = TaskBox.max_separation,
     prior: RangeOfMotionPrior = RangeOfMotionPrior(),
     true_theta: NDArray[np.float64] | None = None,
     settings: LimbSimSettings = LimbSimSettings(),
 ) -> LimbDomain:
     """A limb domain for the variant, with a person drawn from the prior unless
-    true_theta is given. Tasks lie within the person's range, and the robot's
-    initial belief is the prior."""
+    true_theta is given. Tasks lie within the person's range, with start and goal
+    min_separation to max_separation apart, and the robot's initial belief is the
+    prior."""
     limb_variant: LimbVariant = get_variant(variant)
     num_motions = len(limb_variant.active_motions)
     rng = np.random.default_rng(seed)
@@ -365,7 +368,10 @@ def make_domain(
     return Domain(
         env_model=model,
         task_distribution=LimbTaskDistribution(
-            model, load_fixed_setup(variant), np.asarray(true_theta)
+            model,
+            load_fixed_setup(variant),
+            np.asarray(true_theta),
+            TaskBox(min_separation=min_separation, max_separation=max_separation),
         ),
         initial_belief=RangeOfMotionBelief.from_prior(
             prior.mean, prior.stddev, prior.low, prior.high, num_motions

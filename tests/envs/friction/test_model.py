@@ -20,7 +20,7 @@ FRICTIONS = np.array([0.03, 0.07, 0.15])
 
 @pytest.fixture(name="model", scope="module")
 def _model():
-    model = FrictionModel(level="L2")
+    model = FrictionModel()
     yield model
     model.close()
 
@@ -100,7 +100,7 @@ def test_an_infeasible_push_costs_a_push(model):
 
 def test_probes_run_in_their_own_simulator():
     """A query never builds or touches the episode's simulator."""
-    model = FrictionModel(level="L2")
+    model = FrictionModel()
     query = FrictionQuery(0, (0.95, 2.85), math.radians(20), 0.8)
     record = model.sample_response(query, FRICTIONS, np.random.default_rng(0))
     assert record.feasible and record.puck == query.puck

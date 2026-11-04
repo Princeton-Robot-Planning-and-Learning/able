@@ -7,14 +7,14 @@ import pytest
 
 from able.belief_updaters.friction import FrictionBeliefUpdater, push_log_likelihood
 from able.beliefs.particles import ParticleBelief
-from able.envs.friction.levels import level_world
+from able.envs.friction.layout import make_world
 from able.envs.friction.model import FrictionState
 from able.envs.friction.query import ProbeSimulator, PushRecord, probe_queries
 from able.envs.friction.tasks import make_prior_belief
 from able.envs.friction.world import DEFAULT_FRICTION_PRIOR, GRAVITY, Push
 from able.structs import QueryResponse
 
-WORLD = level_world("L2")
+WORLD = make_world()
 
 
 def _prior(num_particles: int = 100, seed: int = 0) -> ParticleBelief:
@@ -107,7 +107,7 @@ def test_three_probes_narrow_each_floor():
     """One probe per floor narrows every coefficient toward the truth."""
     rng = np.random.default_rng(1)
     frictions = np.array([0.15, 0.03, 0.08])
-    simulator = ProbeSimulator("2d", "L2")
+    simulator = ProbeSimulator("2d")
     data = [
         QueryResponse(query, simulator.ask(frictions, query, rng))
         for query in probe_queries(WORLD, DEFAULT_FRICTION_PRIOR.bounds[0])

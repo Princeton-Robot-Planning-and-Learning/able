@@ -5,7 +5,7 @@ response is the push's measurements. Probe poses are searched per map: a puck st
 and heading whose straight run (3-sigma heading cone, clear of walls, holes by 0.1 m
 and other floors) fits the paddle's acceleration plus the slowest-friction slide at a
 3-sigma fast strike. Where no run fits, the longest one is used at a lower speed.
-On threeroutes L2 (lowest friction 0.024):
+On threeroutes with the map's two holes (lowest friction 0.024):
 
 - blue: puck (0.95, 2.85), heading 20 deg, 0.80 m/s
 - tan: puck (3.45, 1.65), heading 30 deg, 0.70 m/s (longest run 1.76 m)
@@ -20,7 +20,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from able.envs.friction.levels import level_world, make_level_env
+from able.envs.friction.layout import make_sim, make_world
 from able.envs.friction.world import GRAVITY, PuckMap, PuckPhysics, PuckWorld, Push
 
 _SIGMAS = 3.0  # strike noise a probe's run must cover
@@ -174,17 +174,18 @@ class ProbeSimulator:
     """Runs probes in a simulator of its own, built lazily, so a probe never
     disturbs an episode."""
 
-    def __init__(self, sim: str = "2d", level: str = "L2") -> None:
+    def __init__(
+        self, sim: str = "2d", num_holes: int = 2, goal_radius: float = 0.3
+    ) -> None:
         self._sim = sim
-        self._level = level
-        self.world = level_world(level)
+        self.world = make_world(num_holes, goal_radius)
         self._env: Any = None
 
     @property
     def env(self) -> Any:
         """The probe simulator."""
         if self._env is None:
-            self._env = make_level_env(self._sim, self._level)
+            self._env = make_sim(self._sim, self.world)
         return self._env
 
     def ask(

@@ -4,7 +4,7 @@ import math
 
 import numpy as np
 
-from able.envs.friction.levels import make_level_env
+from able.envs.friction.layout import make_sim, make_world
 from able.envs.friction.model import FrictionModel
 from able.envs.friction.query import FrictionQuery
 from able.envs.friction.sim3d import (
@@ -59,7 +59,7 @@ def test_robot_follows_and_render():
 def test_paddle_clears_the_arm_and_base():
     """Held for a strike at any stance, or carried for driving, the paddle touches
     no part of the robot except the gripper holding it."""
-    env = make_level_env("3d", "L2")
+    env = make_sim("3d", make_world())
     env.reset(seed=0)
     base = env.robot.get_base()
     heading = np.array([math.cos(base.rot), math.sin(base.rot)])
@@ -74,7 +74,7 @@ def test_paddle_clears_the_arm_and_base():
 
 def test_model_and_probes_in_3d():
     """The environment model pushes and probes in 3D as in 2D."""
-    model = FrictionModel(sim="3d", level="L2")
+    model = FrictionModel(sim="3d")
     rng = np.random.default_rng(0)
     frictions = np.array(FRICTIONS)
     state = model.get_initial_state()

@@ -4,7 +4,7 @@ env:
     _target_: able.envs.human_reach.tasks.make_domain
     # Requested items to deliver, and clutter on the bedside.
     num_requested: 2
-    num_clutter: 4
+    num_clutter: 5
     # Actions per episode: each is one move_base, pick, or place.
     horizon: 40
     num_particles: 2000

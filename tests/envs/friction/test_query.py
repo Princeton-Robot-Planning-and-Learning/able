@@ -14,7 +14,7 @@ from able.envs.friction.world import DEFAULT_FRICTION_PRIOR, Push
 def test_probe_poses_fit_their_floor():
     """Each floor's probe, at either extreme friction, stops on that floor and clear
     of holes."""
-    simulator = ProbeSimulator("2d", "L2")
+    simulator = ProbeSimulator("2d")
     world = simulator.world
     low, high = DEFAULT_FRICTION_PRIOR.bounds
     queries = probe_queries(world, low)

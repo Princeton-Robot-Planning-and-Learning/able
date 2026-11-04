@@ -6,6 +6,10 @@ env:
     variant: human-left-arm
     # Control steps per episode; each lasts 12 simulator steps.
     horizon: 300
+    # Joint-space distance between start and goal (rad). Planning from scratch
+    # under the prior takes 50-250 s per task in this band.
+    min_separation: 0.5
+    max_separation: 0.8
   # Instantiated with the domain's environment model, only when recording videos.
   renderer:
     _target_: able.rendering.limb.LimbRenderer

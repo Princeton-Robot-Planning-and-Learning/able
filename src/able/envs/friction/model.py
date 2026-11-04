@@ -14,7 +14,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from able.envs.base import EnvironmentModel
-from able.envs.friction.levels import level_world, make_level_env
+from able.envs.friction.layout import make_sim, make_world
 from able.envs.friction.query import (
     FrictionQuery,
     ProbeSimulator,
@@ -110,17 +110,17 @@ class FrictionModel(
     def __init__(
         self,
         sim: str = "2d",
-        level: str = "L2",
+        num_holes: int = 2,
+        goal_radius: float = 0.3,
         horizon: int = 15,
         rewards: PuckRewards = PuckRewards(),
     ) -> None:
         self.sim_name = sim
-        self.level = level
         self.rewards = rewards
-        self.world = level_world(level)
+        self.world = make_world(num_holes, goal_radius)
         self._horizon = horizon
         self._sim: Any = None
-        self._probes = ProbeSimulator(sim, level)
+        self._probes = ProbeSimulator(sim, num_holes, goal_radius)
 
     @property
     def horizon(self) -> int:
@@ -130,7 +130,7 @@ class FrictionModel(
     def sim(self) -> Any:
         """The simulator, built on first use."""
         if self._sim is None:
-            self._sim = make_level_env(self.sim_name, self.level)
+            self._sim = make_sim(self.sim_name, self.world)
         return self._sim
 
     def close(self) -> None:

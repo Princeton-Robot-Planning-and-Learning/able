@@ -4,7 +4,7 @@ import math
 
 import numpy as np
 
-from able.envs.friction.levels import make_level_env
+from able.envs.friction.layout import make_sim, make_world
 from able.envs.friction.sim2d import (
     DynPuckPushing2DEnvConfig,
     ObjectCentricDynPuckPushing2DEnv,
@@ -32,7 +32,7 @@ def _env_with_puck_at(puck_xy, frictions=FRICTIONS):
 def test_actions_and_steps():
     """Actions are (angle, speed, stance), and two numbers let the robot pick the
     stance."""
-    env = make_level_env("2d", "L2")
+    env = make_sim("2d", make_world())
     env.reset(seed=0)
     assert env.action_space.shape == (3,)
     _, reward, terminated, truncated, info = env.step(np.array([math.pi / 2, 0.5]))
@@ -100,7 +100,7 @@ def test_infeasible_push_leaves_the_puck():
 
 def test_reset_to_a_puck_and_robot_pose():
     """Reset can place the puck and the robot, as probes and the model need."""
-    env = make_level_env("2d", "L1")
+    env = make_sim("2d", make_world(num_holes=0))
     puck, robot = (2.0, 3.2), (1.2, 3.2, 0.0)
     state, _ = env.reset(
         seed=0, options={"frictions": FRICTIONS, "puck": puck, "robot": robot}
