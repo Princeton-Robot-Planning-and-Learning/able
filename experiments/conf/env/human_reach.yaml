@@ -5,6 +5,8 @@ env:
     # Requested items to deliver, and clutter on the bedside.
     num_requested: 2
     num_clutter: 4
+    # Actions per episode: each is one move_base, pick, or place.
+    horizon: 40
     num_particles: 2000
   # Instantiated with the domain's environment model, only when recording videos.
   renderer:

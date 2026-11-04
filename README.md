@@ -92,7 +92,7 @@ The friction environment evaluates 2 tasks per cycle and dreams 4 times per slee
 
 The human reach environment needs the `human_reach` extra (`pip install -e ".[human_reach]"`), which builds PDDLStream's Fast Downward (it needs cmake and a C++ compiler).
 
-A robot moves requested items from far furniture to the bedside of a person sitting up in bed, so that the person can reach them. The person's reach is an ellipsoid at their right shoulder whose semi-axes are unknown. The robot plans the whole task with PDDLStream, placing each requested item where at least 90% of its belief's particles reach it, and executes the plan in one step. To run the robot that plans from scratch:
+A robot moves requested items from far furniture to the bedside of a person sitting up in bed, so that the person can reach them. The person's reach is an ellipsoid at their right shoulder whose semi-axes are unknown. The robot plans the whole task with PDDLStream, placing each requested item where at least 90% of its belief's particles reach it, and executes the plan one action (move, pick, or place) per step. To run the robot that plans from scratch:
 
 ```
 python experiments/run_single_experiment.py env=human_reach approach=human_reach_scratch

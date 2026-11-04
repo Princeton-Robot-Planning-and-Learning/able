@@ -20,7 +20,7 @@ from able.envs.friction.model import FrictionModel, FrictionState, FrictionTask
 from able.envs.friction.query import FrictionQuery, PushRecord
 from able.envs.friction.tasks import FrictionDomain
 from able.envs.friction.world import Push
-from able.envs.human_reach.model import ReachModel, ReachPlan, ReachState, ReachTask
+from able.envs.human_reach.model import ReachAction, ReachModel, ReachState, ReachTask
 from able.envs.human_reach.query import ReachQuery, ReachResponse
 from able.envs.human_reach.tasks import ReachDomain
 from able.envs.limb.model import LimbModel, LimbState, LimbTask
@@ -71,7 +71,7 @@ FrictionRobot = Robot[
 ]
 ReachRobot = Robot[
     ReachState,
-    ReachPlan,
+    ReachAction,
     ReachTask,
     ArmArray,
     PDDLStreamParams,
