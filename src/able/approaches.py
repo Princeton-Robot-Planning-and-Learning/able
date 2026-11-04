@@ -6,7 +6,7 @@ sees what the robot imagines while it sleeps.
 """
 
 import dataclasses
-from typing import Callable
+from typing import Any, Callable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -34,6 +34,7 @@ from able.info_gatherers.probe_floor import ProbeFloorGatherer
 from able.info_gatherers.push_to_limit import PushToLimitGatherer
 from able.info_gatherers.reach_query import ReachQueryGatherer
 from able.learners.base import NullLearner
+from able.learners.belief_features import make_moment_features
 from able.learners.belief_sources import (
     BeliefCoverageSource,
     CurrentBeliefSource,
@@ -303,6 +304,40 @@ def make_belief_coverage_robot(
     )
 
 
+def _make_dreamer(
+    domain: Any,
+    env_model: Any,
+    planner: Any,
+    belief_updater: Any,
+    gatherer: Any,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    recorder: CycleRecorder[Any, Any, ArmArray] | None,
+) -> ImaginedNextBeliefSource:
+    """A dreamer that imagines the robot's gathering and execution until its next
+    evaluation, with the robot's own parts."""
+    return ImaginedNextBeliefSource(
+        env_model,
+        domain.task_distribution,
+        planner,
+        belief_updater,
+        gatherer,
+        gathering_budget=gathering_budget,
+        execution_budget=execution_budget,
+        planning_budget=planning_budget,
+        recorder=recorder,
+    )
+
+
+def _make_coverage_source(
+    dreamer: ImaginedNextBeliefSource, prior: Belief[ArmArray], num_candidates: int
+) -> BeliefCoverageSource:
+    """Each training belief is the farthest of num_candidates dreams, in each
+    parameter's mean and standard deviation in units of the prior's."""
+    return BeliefCoverageSource(dreamer, make_moment_features(prior), num_candidates)
+
+
 def _make_limb_parts(
     domain: LimbDomain,
     num_rollouts: int,
@@ -452,6 +487,52 @@ def make_limb_dreaming_robot(
             planner,
             domain.task_distribution,
             belief_source,
+            planning_budget,
+            refit="per_sleep",
+            num_training_tasks=num_training_tasks,
+        ),
+        belief_updater=belief_updater,
+        info_gatherer=gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
+def make_limb_belief_coverage_robot(
+    domain: LimbDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_candidates: int = 4,
+    num_training_tasks: int = 1,
+    num_rollouts: int = 32,
+    num_particles: int = 32,
+    recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
+) -> LimbRobot:
+    """A limb robot whose model learns, while it sleeps, under dreamed beliefs
+    unlike those it has already trained under: each training belief is the
+    farthest of num_candidates dreams. The model is refit once per sleep, as for
+    dreaming."""
+    env_model, planner, belief_updater, gatherer = _make_limb_parts(
+        domain, num_rollouts, num_particles, model
+    )
+    dreamer = _make_dreamer(
+        domain,
+        env_model,
+        planner,
+        belief_updater,
+        gatherer,
+        gathering_budget,
+        execution_budget,
+        planning_budget,
+        recorder,
+    )
+    return Robot(
+        planner=planner,
+        learner=ModelLearner(
+            planner,
+            domain.task_distribution,
+            _make_coverage_source(dreamer, domain.initial_belief, num_candidates),
             planning_budget,
             refit="per_sleep",
             num_training_tasks=num_training_tasks,
@@ -622,6 +703,53 @@ def make_friction_dreaming_robot(
     )
 
 
+def make_friction_belief_coverage_robot(
+    domain: FrictionDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_candidates: int = 4,
+    num_training_tasks: int = 1,
+    num_sims: int = 1000,
+    max_depth: int = 8,
+    recorder: CycleRecorder[FrictionState, FrictionTask, ArmArray] | None = None,
+) -> FrictionRobot:
+    """A friction robot whose model learns, while it sleeps, under dreamed beliefs
+    unlike those it has already trained under: each training belief is the
+    farthest of num_candidates dreams. The model is refit once per sleep, as for
+    dreaming."""
+    env_model, planner, belief_updater, gatherer = _make_friction_parts(
+        domain, num_sims, max_depth, model
+    )
+    dreamer = _make_dreamer(
+        domain,
+        env_model,
+        planner,
+        belief_updater,
+        gatherer,
+        gathering_budget,
+        execution_budget,
+        planning_budget,
+        recorder,
+    )
+    return Robot(
+        planner=planner,
+        learner=RolloutModelLearner(
+            planner,
+            domain.task_distribution,
+            _make_coverage_source(dreamer, domain.initial_belief, num_candidates),
+            planning_budget,
+            env_model,
+            refit="per_sleep",
+            num_training_tasks=num_training_tasks,
+        ),
+        belief_updater=belief_updater,
+        info_gatherer=gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
 def _make_reach_parts(
     domain: ReachDomain,
     max_time: float,
@@ -774,6 +902,53 @@ def make_human_reach_dreaming_robot(
             planner,
             domain.task_distribution,
             belief_source,
+            planning_budget,
+            refit="per_sleep",
+            num_training_tasks=num_training_tasks,
+        ),
+        belief_updater=belief_updater,
+        info_gatherer=gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
+def make_human_reach_belief_coverage_robot(
+    domain: ReachDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_candidates: int = 4,
+    num_training_tasks: int = 1,
+    max_time: float = 300.0,
+    num_particles: int = 256,
+    delta: float = 0.1,
+    recorder: CycleRecorder[ReachState, ReachTask, ArmArray] | None = None,
+) -> ReachRobot:
+    """A human reach robot whose model learns, while it sleeps, under dreamed beliefs
+    unlike those it has already trained under: each training belief is the
+    farthest of num_candidates dreams. The model is refit once per sleep, as for
+    dreaming."""
+    env_model, planner, belief_updater, gatherer = _make_reach_parts(
+        domain, max_time, num_particles, delta, model
+    )
+    dreamer = _make_dreamer(
+        domain,
+        env_model,
+        planner,
+        belief_updater,
+        gatherer,
+        gathering_budget,
+        execution_budget,
+        planning_budget,
+        recorder,
+    )
+    return Robot(
+        planner=planner,
+        learner=ModelLearner(
+            planner,
+            domain.task_distribution,
+            _make_coverage_source(dreamer, domain.initial_belief, num_candidates),
             planning_budget,
             refit="per_sleep",
             num_training_tasks=num_training_tasks,
