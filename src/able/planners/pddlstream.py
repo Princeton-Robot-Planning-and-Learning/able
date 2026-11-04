@@ -1,23 +1,36 @@
 """Solving PDDLStream problems, with each stream evaluation counted, and the
-PDDLStream problem for the human reach environment."""
+PDDLStream problem and planner for the human reach environment."""
 
+import contextlib
+import io
 import os
 import shutil
 import sys
 import tempfile
 from collections import Counter
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
 import numpy as np
+from numpy.typing import NDArray
 from pddlstream.algorithms.meta import solve
 from pddlstream.language.constants import AND, PDDLProblem, print_solution
 from pddlstream.language.generator import from_gen_fn, from_test
 from pddlstream.utils import read
 from pybullet_helpers.geometry import get_pose
 
+from able.beliefs.base import Belief
+from able.beliefs.particles import ParticleBelief
+from able.envs.human_reach.model import (
+    NO_ACTION,
+    ReachAction,
+    ReachModel,
+    ReachState,
+    ReachTask,
+)
 from able.envs.human_reach.scene import (
     BedsideStocking3DObjectCentricState,
     ObjectCentricBedsideStocking3DEnv,
@@ -35,6 +48,9 @@ from able.envs.human_reach.streams import (
     test_clear,
     test_usable,
 )
+from able.planners.base import Planner
+from able.policies.base import OpenLoopPolicy
+from able.structs import Budget, PlanningFailure
 
 
 @contextmanager
@@ -89,7 +105,8 @@ def solve_problem(
     """The plan (list of actions) or None."""
     # pddlstream walks its binding tree recursively; long plans exceed the default limit.
     sys.setrecursionlimit(max(sys.getrecursionlimit(), 20000))
-    with private_cwd():
+    output = contextlib.nullcontext() if verbose else redirect_stdout(io.StringIO())
+    with private_cwd(), output:
         solution = solve(
             problem,
             algorithm=algorithm,
@@ -204,3 +221,104 @@ def plan_bedside(
     return solve_problem(
         problem, max_time, algorithm, search_sample_ratio, max_complexity, verbose
     )
+
+
+@dataclass(frozen=True)
+class PDDLStreamParams:
+    """Parameters of the human reach PDDLStream planner.
+
+    A requested item's pose is usable if at least 1 - delta of num_particles belief
+    particles reach it. Planning stops after max_time seconds.
+    """
+
+    max_time: float = 300.0
+    num_particles: int = 256
+    delta: float = 0.1
+    algorithm: str = "adaptive"
+
+
+class ReachPDDLStreamPlanner(
+    Planner[ReachState, ReachAction, ReachTask, NDArray[np.float64], PDDLStreamParams]
+):
+    """Plans the whole human reach task with PDDLStream, in a simulator of its own.
+
+    The policy executes the plan's actions, then NO_ACTION until the horizon; a
+    plan longer than the horizon fails. The planning budget's wall time, if set,
+    caps max_time. The statistics are the number of stream evaluations and the
+    plan's length. The default parameters, if given, replace PDDLStreamParams().
+    """
+
+    def __init__(
+        self, model: ReachModel, default_params: PDDLStreamParams | None = None
+    ) -> None:
+        self._model = model
+        self._default_params = (
+            PDDLStreamParams() if default_params is None else default_params
+        )
+        self._sim: ObjectCentricBedsideStocking3DEnv | None = None
+
+    @property
+    def sim(self) -> ObjectCentricBedsideStocking3DEnv:
+        """The planner's simulator, built on first use."""
+        if self._sim is None:
+            model = self._model
+            self._sim = ObjectCentricBedsideStocking3DEnv(
+                model.num_requested,
+                model.num_clutter,
+                config=model.config,
+                allow_state_access=True,
+            )
+        return self._sim
+
+    def close(self) -> None:
+        """Close the planner's simulator."""
+        if self._sim is not None:
+            self._sim.close()
+            self._sim = None
+
+    def get_default_params(self) -> PDDLStreamParams:
+        return self._default_params
+
+    def plan(
+        self,
+        task: ReachTask,
+        belief: Belief[NDArray[np.float64]],
+        params: PDDLStreamParams,
+        budget: Budget,
+        rng: np.random.Generator,
+    ) -> OpenLoopPolicy[ReachState, ReachAction]:
+        """Plan under num_particles of the belief's particles.
+
+        Raises PlanningFailure if PDDLStream finds no plan in time.
+        """
+        assert isinstance(belief, ParticleBelief), "Need a ParticleBelief"
+        particles = belief.particles
+        if len(particles) > params.num_particles:
+            keep = rng.choice(len(particles), params.num_particles, replace=False)
+            particles = particles[keep]
+        max_time = params.max_time
+        if budget.max_wall_time is not None:
+            max_time = min(max_time, budget.max_wall_time)
+        sim, scene = self.sim, task.initial_state.scene
+        sim.reset(options={"init_state": scene})
+        ctx = build_stream_context(
+            sim,
+            scene,
+            theta_particles=particles,
+            delta=params.delta,
+            seed=int(rng.integers(2**31 - 1)),
+        )
+        plan = solve_problem(
+            create_problem(sim, scene, ctx=ctx), max_time, params.algorithm
+        )
+        if plan is None:
+            raise PlanningFailure("PDDLStream found no plan")
+        horizon = self._model.horizon
+        if len(plan) > horizon:
+            raise PlanningFailure("The plan is longer than the horizon")
+        stats = {
+            "stream_calls": float(sum(ctx.calls.values())),
+            "plan_length": len(plan),
+        }
+        actions = [tuple(action) for action in plan]
+        return OpenLoopPolicy(actions + [NO_ACTION] * (horizon - len(plan)), stats)
