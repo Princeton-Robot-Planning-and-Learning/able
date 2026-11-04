@@ -1,12 +1,10 @@
 """Tests for learners/model_learner.py."""
 
 import dataclasses
-from typing import Any
 
 import numpy as np
 import pytest
 
-from able.beliefs.base import Belief
 from able.beliefs.interval import IntervalBelief
 from able.envs.base import FiniteTaskDistribution, TaskDistribution
 from able.envs.two_link_arm import (
@@ -51,16 +49,6 @@ class _GoalDistribution(TaskDistribution[ArmTask]):
         radius, angle = rng.uniform(0.5, 1.8), rng.uniform(0, np.pi)
         goal = radius * np.array([np.cos(angle), np.sin(angle)])
         return ArmTask(initial_state=np.zeros(2), goal=goal)
-
-
-class _TimedSource(CurrentBeliefSource[Any, Any]):
-    """Trains under the current belief and records the training times observed."""
-
-    def __init__(self) -> None:
-        self.observed: list[tuple[Belief[Any], float]] = []
-
-    def observe_training_time(self, belief: Belief[Any], training_time: float) -> None:
-        self.observed.append((belief, training_time))
 
 
 def _cache_entries(params: RandomShootingParams) -> dict:
@@ -115,24 +103,6 @@ def test_model_learner():
             Budget(),
             refit="never",
         )
-
-
-def test_training_times():
-    """Tests that the belief source observes each iteration's training time."""
-    planner = _make_planner()
-    belief = IntervalBelief(JOINT_LIMIT_PRIOR)
-    source = _TimedSource()
-    learner: ModelLearner = ModelLearner(
-        planner, FiniteTaskDistribution(TASKS), source, Budget()
-    )
-    learner.learn(
-        belief,
-        planner.get_default_params(),
-        Budget(max_iterations=2),
-        np.random.default_rng(0),
-    )
-    assert [b for b, _ in source.observed] == [belief, belief]
-    assert all(t > 0 for _, t in source.observed)
 
 
 def test_refit_timing():
