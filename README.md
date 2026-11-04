@@ -175,7 +175,7 @@ source .venv/bin/activate
 ./experiments/run_friction_comparison.sh hydra/launcher=della
 ```
 
-The script submits one job per seed and approach, waits for them to finish, and then plots. Waiting takes no compute, but the script has to stay running, which is why it runs in `tmux`. Detach with `Ctrl-b d`, and reattach later with `tmux attach -t able`. A tmux session lives on one login node, so note which one `hostname` prints.
+The script submits one job per seed and approach, waits for them to finish, and then plots. Waiting takes no compute, but the script has to stay running, which is why it runs in `tmux`. Detach with `Ctrl-b d`, and reattach later with `tmux attach -t able`. A tmux session lives on one login node, so note which one `hostname` prints. If `tmux attach` later finds no session, you are on a different login node, and `ssh della9` (or whichever node you noted) reaches the right one after another password and Duo prompt.
 
 `squeue -u $USER` lists your jobs, and `jobstats <job id>` reports a finished job's CPU and memory use. Each job's Slurm logs are in the sweep directory's `.submitit/` folder.
 
