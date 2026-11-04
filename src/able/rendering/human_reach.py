@@ -22,11 +22,11 @@ class HumanReachRenderer(Renderer[ReachState, ReachTask, NDArray[np.float64]]):
     """Draws the scene next to the belief over the person's reach.
 
     The left panel is the simulator's camera view of the current state, and says
-    which item the last action placed and how many requested items are in reach. The right panel shows
-    the particles of each reach semi-axis, their mean, and ticks at the true reach
-    (and the sampled reach in dreams). The renderer restores the state in a
-    simulator of its own. Images are width x height pixels; both should be
-    multiples of 16 for video encoding.
+    which item the last action placed and how many requested items are in reach.
+    The right panel shows the particles of each reach semi-axis, their mean, and
+    ticks at the true reach (and the sampled reach in dreams). The renderer
+    restores the state in a simulator of its own. Images are width x height
+    pixels; both should be multiples of 16 for video encoding.
     """
 
     def __init__(
