@@ -1,5 +1,4 @@
-_target_: able.approaches.make_limb_current_belief_robot
-planning_budget: ${budgets.planning}
+_target_: able.approaches.make_limb_dreaming_robot
 # Training tasks planned under each training belief.
 num_training_tasks: 1
 # MPC candidates per step, and belief samples for the believed range of motion.

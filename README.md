@@ -19,7 +19,11 @@ The approaches all plan with random shooting and differ in what they learn while
 - `dreaming` imagines the belief updates it will make before it is evaluated and caches plans for the imagined beliefs.
 - `belief_coverage` dreams like `dreaming`, but each training belief is the farthest of four dreams from the beliefs it has already cached plans for. The distance compares the beliefs' parts of the cache key, so it spreads training over beliefs that need different plans. This adapts a belief-expansion heuristic from point-based POMDP planning ([Pineau, Gordon, and Thrun, 2006](https://jair.org/index.php/jair/article/view/10473)).
 
-The results and the plot (`cycle_results.png`) go to `logs/comparison/<date>_<time>/`. Extra arguments are passed to hydra, for example `./experiments/run_comparison.sh num_cycles=10`, and `SEEDS=0,1` changes the seeds.
+In the limb, friction, and human reach environments there is no plan cache, so `belief_coverage` compares beliefs by each hidden parameter's mean and standard deviation, in units of the prior's standard deviation, and takes the farthest of 4 dreams. Like the other approaches, it refits the model once per sleep.
+
+The same script compares the approaches in the other environments, for example `./experiments/run_comparison.sh env=limb`. Approach names are the same in every environment: `approach=<name>` uses the shared budgets in `experiments/conf/approach/<name>.yaml` and the environment's factory in `experiments/conf/env_approach/<env>/<name>.yaml`.
+
+The results, the plot (`cycle_results.png`) and a Markdown table of planning time, success rate and sleep time (`summary_table.md`) go to `logs/comparison/<env>/<date>_<time>/`. Extra arguments are passed to hydra, for example `./experiments/run_comparison.sh num_cycles=10`. `SEEDS=0,1` changes the seeds and `APPROACHES=scratch,dreaming` the approaches. With `record_videos=true` (and, for example, `video_cycles=[0,19]`), the script also combines each run's stage videos into one video per run.
 
 To run one approach with one seed:
 
@@ -54,17 +58,17 @@ The limb environment needs the `limb` extra (`pip install -e ".[limb]"`). IKFast
 The robot holds a person's limb and moves it to a goal configuration with MPC, without passing the person's unknown range of motion. To run the robot that plans from scratch:
 
 ```
-python experiments/run_single_experiment.py env=limb approach=limb_scratch
+python experiments/run_single_experiment.py env=limb approach=scratch
 ```
 
 As on the arm, the robot asks no queries by default (`budgets.information_gathering.max_iterations=0`): one settled query nearly pins that motion's range, so every approach would learn the range at once.
 
 `env.domain.variant` chooses the scene and limb, for example `env.domain.variant=bed-right-leg`. `env.domain.min_separation` and `env.domain.max_separation` bound the joint-space distance between a task's start and goal, 0.5 to 0.8 rad in the experiments. Planning a task takes a few minutes with the default 32 MPC rollouts per step.
 
-The robots that learn seed MPC with a flow-matching model of the next controls, trained while they sleep on plans for sampled tasks. As on the arm, they differ only in the beliefs they train under: `limb_current_belief`, `limb_prior_only`, and `limb_dreaming`. To compare them with `limb_scratch` over five seeds:
+The robots that learn seed MPC with a flow-matching model of the next controls, trained while they sleep on plans for sampled tasks. As on the arm, they differ only in the beliefs they train under: `current_belief`, `prior_only`, `dreaming`, and `belief_coverage`. To compare them with `scratch` over five seeds:
 
 ```
-./experiments/run_limb_comparison.sh
+./experiments/run_comparison.sh env=limb
 ```
 
 The limb environment evaluates 2 tasks per cycle and dreams 4 times per sleep, planning 1 training task per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
@@ -76,15 +80,15 @@ The friction environment needs the `friction` extra (`pip install -e ".[friction
 A robot pushes a puck through a maze to a goal, over three floors (blue, tan, and green) whose friction coefficients are unknown. Each action is one push, planned with POMCPOW from a particle belief over the frictions. The puck fails the task if it passes over a hole. To run the robot that plans from scratch:
 
 ```
-python experiments/run_single_experiment.py env=friction approach=friction_scratch
+python experiments/run_single_experiment.py env=friction approach=scratch
 ```
 
 `env.domain.num_holes` (0 to 9) and `env.domain.goal_radius` choose how hard the maze is, 4 and 0.3 m in the experiments. `env.domain.sim=3d` runs the pushes in PyBullet with a TidyBot holding a paddle instead of in 2D, with the same physics. Planning a push takes several seconds with the default 1000 simulations, and a task takes up to 15 pushes. As on the arm and the limb, the robot asks no queries by default; a query probes the floor the belief is least sure of.
 
-The robots that learn guide POMCPOW with a flow-matching model of good pushes, used for half of its proposals. While they sleep they roll out sampled tasks under a training belief and learn the well-visited pushes of the rollouts that reach the goal. As on the arm and the limb, they differ only in the beliefs they train under: `friction_current_belief`, `friction_prior_only`, and `friction_dreaming`. To compare them with `friction_scratch` over five seeds:
+The robots that learn guide POMCPOW with a flow-matching model of good pushes, used for half of its proposals. While they sleep they roll out sampled tasks under a training belief and learn the well-visited pushes of the rollouts that reach the goal. As on the arm and the limb, they differ only in the beliefs they train under: `current_belief`, `prior_only`, `dreaming`, and `belief_coverage`. To compare them with `scratch` over five seeds:
 
 ```
-./experiments/run_friction_comparison.sh
+./experiments/run_comparison.sh env=friction
 ```
 
 The friction environment evaluates 2 tasks per cycle and dreams 4 times per sleep, rolling out 1 training task per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
@@ -96,15 +100,15 @@ The human reach environment needs the `human_reach` extra (`pip install -e ".[hu
 A robot moves requested items from far furniture to the bedside of a person sitting up in bed, so that the person can reach them. The person's reach is an ellipsoid at their right shoulder whose semi-axes are unknown. The robot plans the whole task with PDDLStream, placing each requested item where at least 90% of its belief's particles reach it, and executes the plan one action (move, pick, or place) per step. To run the robot that plans from scratch:
 
 ```
-python experiments/run_single_experiment.py env=human_reach approach=human_reach_scratch
+python experiments/run_single_experiment.py env=human_reach approach=scratch
 ```
 
 `env.domain.num_requested` and `env.domain.num_clutter` set the scene, 2 and 5 in the experiments. Under the prior, only 3 bedside spots are reachable with 90% probability, so scenes with more requested items often have no plan until the belief narrows. PDDLStream plans for up to 5 minutes (`approach.max_time`), and planning a scene takes from seconds to minutes. As in the other environments, the robot asks no queries by default; a query presents the gripper at points along a direction from the person's shoulder.
 
-The robots that learn rank PDDLStream's placements for each requested item with a flow-matching model of where plans put it, trained while they sleep on plans for sampled scenes. As in the other environments, they differ only in the beliefs they train under: `human_reach_current_belief`, `human_reach_prior_only`, and `human_reach_dreaming`. To compare them with `human_reach_scratch` over five seeds:
+The robots that learn rank PDDLStream's placements for each requested item with a flow-matching model of where plans put it, trained while they sleep on plans for sampled scenes. As in the other environments, they differ only in the beliefs they train under: `current_belief`, `prior_only`, `dreaming`, and `belief_coverage`. To compare them with `scratch` over five seeds:
 
 ```
-./experiments/run_human_reach_comparison.sh
+./experiments/run_comparison.sh env=human_reach
 ```
 
 The human reach environment evaluates 2 tasks per cycle and dreams 4 times per sleep, planning 1 training scene per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
@@ -165,13 +169,13 @@ LAPACK_DIR=/usr/lib64 LIBGFORTRAN_DIR=/usr/lib64 BLAS_DIR=/scratch/gpfs/TSILVER/
 
 ### Running experiments
 
-Add `hydra/launcher=della` to any multirun. The comparison scripts pass it through to Hydra:
+Add `hydra/launcher=della` to any multirun. The comparison script passes it through to Hydra:
 
 ```
 cd /scratch/gpfs/TSILVER/$USER/able
 tmux new -s able
 source .venv/bin/activate
-./experiments/run_friction_comparison.sh hydra/launcher=della
+./experiments/run_comparison.sh env=friction hydra/launcher=della
 ```
 
 The script submits one job per seed and approach, waits for them to finish, and then plots. Waiting takes no compute, but the script has to stay running, which is why it runs in `tmux`. Detach with `Ctrl-b d`, and reattach later with `tmux attach -t able`. A tmux session lives on one login node, so note which one `hostname` prints. If `tmux attach` later finds no session, you are on a different login node, and `ssh della9` (or whichever node you noted) reaches the right one after another password and Duo prompt.

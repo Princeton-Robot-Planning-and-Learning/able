@@ -1,5 +1,4 @@
 _target_: able.approaches.make_human_reach_prior_only_robot
-planning_budget: ${budgets.planning}
 # Training scenes planned under each training belief.
 num_training_tasks: 1
 # PDDLStream's time limit per plan (s), the belief particles it plans under, and

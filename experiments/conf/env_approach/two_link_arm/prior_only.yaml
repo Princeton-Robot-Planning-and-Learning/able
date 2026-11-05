@@ -1,0 +1,2 @@
+_target_: able.approaches.make_prior_only_robot
+max_warm_starts_per_key: 4

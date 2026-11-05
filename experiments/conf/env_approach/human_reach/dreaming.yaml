@@ -1,9 +1,4 @@
 _target_: able.approaches.make_human_reach_dreaming_robot
-# Dreams imagine the same information gathering, task execution, and planning
-# that the robot does between sleeping and evaluation.
-gathering_budget: ${budgets.information_gathering}
-execution_budget: ${budgets.execution}
-planning_budget: ${budgets.planning}
 # Training scenes planned under each training belief.
 num_training_tasks: 1
 # PDDLStream's time limit per plan (s), the belief particles it plans under, and

@@ -47,3 +47,5 @@ defaults:
   - _self_
   - approach: dreaming
   - env: two_link_arm
+  # The approach's factory for the environment, from env_approach/<env>/<approach>.yaml.
+  - env_approach@approach: ${env}/${approach}
