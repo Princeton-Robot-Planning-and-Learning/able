@@ -1,6 +1,7 @@
 """Tests for approaches.py."""
 
 import dataclasses
+from unittest import mock
 
 import numpy as np
 
@@ -9,14 +10,17 @@ from able.approaches import (
     make_belief_coverage_robot,
     make_current_belief_robot,
     make_dreaming_robot,
+    make_friction_belief_coverage_robot,
     make_friction_current_belief_robot,
     make_friction_dreaming_robot,
     make_friction_prior_only_robot,
     make_friction_scratch_robot,
+    make_human_reach_belief_coverage_robot,
     make_human_reach_current_belief_robot,
     make_human_reach_dreaming_robot,
     make_human_reach_prior_only_robot,
     make_human_reach_scratch_robot,
+    make_limb_belief_coverage_robot,
     make_limb_current_belief_robot,
     make_limb_dreaming_robot,
     make_limb_prior_only_robot,
@@ -383,3 +387,56 @@ def test_make_human_reach_learning_robots():
     prior_only.sleep(Budget(max_iterations=1), rng)
     assert prior_only.planner_params is params
     assert robots[2].planner_params.model is model
+
+
+def _make_coverage_robot(make_coverage, domain, planning, options):
+    """The env's belief-coverage robot, with two candidates."""
+    budgets = _budgets(num_dreams=0)
+    args = (domain, budgets.information_gathering, budgets.execution, planning)
+    return make_coverage(*args, num_candidates=2, **options)
+
+
+def test_make_limb_belief_coverage_robot():
+    """Tests that the limb belief-coverage robot sleeps with the given model."""
+    domain = make_limb_domain(seed=0)
+    distribution = domain.task_distribution
+    assert isinstance(distribution, LimbTaskDistribution)
+    domain = dataclasses.replace(
+        domain, task_distribution=FiniteTaskDistribution([_draw_once(distribution)])
+    )
+    model = MLPRegressor(num_steps=5)
+    options = {"model": model, "num_rollouts": 4, "num_particles": 4}
+    robot = _make_coverage_robot(
+        make_limb_belief_coverage_robot, domain, Budget(max_iterations=0), options
+    )
+    assert robot.planner_params.model is model
+    robot.sleep(Budget(max_iterations=2), np.random.default_rng(0))
+
+
+def test_make_friction_belief_coverage_robot():
+    """Tests that the friction belief-coverage robot sleeps with the given
+    planner settings."""
+    domain = make_friction_domain(seed=0, horizon=1, num_particles=10)
+    model = MLPRegressor(num_steps=5)
+    options = {"model": model, "num_sims": 10, "max_depth": 2}
+    robot = _make_coverage_robot(
+        make_friction_belief_coverage_robot, domain, Budget(), options
+    )
+    assert robot.planner_params.config.num_sims == 10
+    robot.sleep(Budget(max_iterations=2), np.random.default_rng(0))
+
+
+def test_make_human_reach_belief_coverage_robot():
+    """Tests that the human reach belief-coverage robot refits the model once per
+    sleep."""
+    domain = make_reach_domain(seed=0, num_requested=1, num_clutter=0)
+    model = MLPRegressor(num_steps=5)
+    options = {"model": model, "max_time": 30.0, "delta": 1.0}
+    robot = _make_coverage_robot(
+        make_human_reach_belief_coverage_robot, domain, Budget(), options
+    )
+    with mock.patch.object(
+        MLPRegressor, "fit", autospec=True, side_effect=lambda m, d: m
+    ) as fit:
+        robot.sleep(Budget(max_iterations=2), np.random.default_rng(0))
+    assert fit.call_count == 1
