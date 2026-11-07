@@ -4,8 +4,10 @@ See the README for examples.
 """
 
 import logging
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import hydra
 import numpy as np
@@ -24,6 +26,7 @@ _EVAL_TASK_STREAM = 1
 
 @hydra.main(version_base=None, config_name="config", config_path="conf/")
 def _main(cfg: DictConfig) -> None:
+    start_time = time.perf_counter()
     logging.info(
         f"Running seed={cfg.seed}, env={cfg.env_name}, approach={cfg.approach_name}"
     )
@@ -45,7 +48,13 @@ def _main(cfg: DictConfig) -> None:
     assert isinstance(budgets, CycleBudgets)
 
     # The same evaluation tasks are used in every cycle.
-    results = run_cycles(
+    writer = CycleResultsWriter(
+        cfg.num_cycles,
+        Path(cfg.eval_results_file),
+        Path(cfg.cycle_results_file),
+        start_time,
+    )
+    run_cycles(
         robot,
         domain.real_env,
         task_distribution,
@@ -54,19 +63,99 @@ def _main(cfg: DictConfig) -> None:
         budgets,
         np.random.default_rng(cfg.seed),
         recorder,
+        on_cycle_end=writer,
+    )
+    logging.info(
+        f"Finished in {format_duration(time.perf_counter() - start_time)}. Wrote "
+        f"{cfg.eval_results_file} and {cfg.cycle_results_file}"
     )
 
-    eval_df = pd.DataFrame(_get_eval_rows(results))
-    for cycle, cycle_df in eval_df.groupby("cycle"):
-        logging.info(
-            f"Cycle {cycle}: success rate {cycle_df.success.mean():.2f}, "
-            f"mean planning time {cycle_df.planning_wall_time.mean():.4f}s"
+
+class CycleResultsWriter:
+    """After each cycle, rewrites both results files with every cycle so far and
+    logs the cycle's progress line.
+
+    A run that dies therefore keeps its finished cycles, and a sweep can be
+    plotted while it runs. Each file is written to a temporary file first and then
+    renamed, so a run killed while writing never leaves a partial file. The start
+    time is the run's, from time.perf_counter().
+    """
+
+    def __init__(
+        self,
+        num_cycles: int,
+        eval_results_file: Path,
+        cycle_results_file: Path,
+        start_time: float,
+    ) -> None:
+        self._num_cycles = num_cycles
+        self._eval_results_file = eval_results_file
+        self._cycle_results_file = cycle_results_file
+        self._start_time = start_time
+        self._results: list[CycleResult] = []
+
+    def __call__(self, result: CycleResult) -> None:
+        self._results.append(result)
+        _write_csv(pd.DataFrame(_get_eval_rows(self._results)), self._eval_results_file)
+        _write_csv(
+            pd.DataFrame(_get_cycle_rows(self._results)), self._cycle_results_file
         )
-    eval_df.to_csv(cfg.eval_results_file, index=False)
-    logging.info(f"Wrote evaluation results to {cfg.eval_results_file}")
-    cycle_df = pd.DataFrame(_get_cycle_rows(results))
-    cycle_df.to_csv(cfg.cycle_results_file, index=False)
-    logging.info(f"Wrote cycle results to {cfg.cycle_results_file}")
+        elapsed = time.perf_counter() - self._start_time
+        logging.info(
+            format_progress(self._results, self._num_cycles, elapsed, datetime.now())
+        )
+
+
+def format_progress(
+    results: Sequence[CycleResult], num_cycles: int, elapsed: float, now: datetime
+) -> str:
+    """One line on the latest cycle: its evaluation, the wall time of each stage,
+    the run's elapsed time, and when the run should finish at the mean cycle time
+    so far."""
+    result = results[-1]
+    parts = [f"Cycle {result.cycle} done ({len(results)}/{num_cycles})"]
+    if result.evaluations:
+        success_rate = np.mean([e.success for e in result.evaluations])
+        planning_time = np.mean([e.planning_wall_time for e in result.evaluations])
+        parts.append(
+            f"success rate {success_rate:.2f}, "
+            f"mean planning time {planning_time:.4g} s"
+        )
+    stages = [
+        ("sleep", result.sleep_wall_time),
+        ("gathering", result.gathering_wall_time),
+        ("execution", result.execution_wall_time),
+        ("evaluation", result.evaluation_wall_time),
+        ("cycle", result.cycle_wall_time),
+    ]
+    parts.append(", ".join(f"{name} {format_duration(t)}" for name, t in stages))
+    num_left = num_cycles - len(results)
+    if num_left > 0:
+        mean_cycle_time = np.mean([r.cycle_wall_time for r in results])
+        left = float(mean_cycle_time * num_left)
+        finish = (now + timedelta(seconds=left)).strftime("%Y-%m-%d %H:%M")
+        parts.append(
+            f"elapsed {format_duration(elapsed)}, "
+            f"about {format_duration(left)} left (finishes around {finish})"
+        )
+    else:
+        parts.append(f"elapsed {format_duration(elapsed)}")
+    return " | ".join(parts)
+
+
+def format_duration(seconds: float) -> str:
+    """Seconds under a minute, such as 4.2s, and H:MM:SS above."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, secs = divmod(round(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}"
+
+
+def _write_csv(df: pd.DataFrame, path: Path) -> None:
+    temp_path = path.with_name(path.name + ".tmp")
+    df.to_csv(temp_path, index=False)
+    temp_path.replace(path)
 
 
 def get_eval_tasks(
@@ -119,12 +208,16 @@ def _get_eval_rows(results: list[CycleResult]) -> list[dict[str, Any]]:
 
 
 def _get_cycle_rows(results: list[CycleResult]) -> list[dict[str, Any]]:
-    """One row per cycle, with the time spent sleeping and what the robot did between
-    sleeping and evaluation."""
+    """One row per cycle, with the wall time of each stage and of the whole cycle,
+    and what the robot did between sleeping and evaluation."""
     return [
         {
             "cycle": result.cycle,
             "sleep_wall_time": result.sleep_wall_time,
+            "gathering_wall_time": result.gathering_wall_time,
+            "execution_wall_time": result.execution_wall_time,
+            "evaluation_wall_time": result.evaluation_wall_time,
+            "cycle_wall_time": result.cycle_wall_time,
             "num_queries": len(result.gathered_data),
             "num_executed_tasks": len(result.executions),
         }

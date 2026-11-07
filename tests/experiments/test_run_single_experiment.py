@@ -1,21 +1,35 @@
 """Tests for experiments/run_single_experiment.py."""
 
+import dataclasses
 import importlib.util
 import subprocess
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 from types import ModuleType
+from typing import Callable
 
 import numpy as np
 import pandas as pd
+import pytest
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 
+from able.approaches import make_scratch_robot
+from able.cycle import CycleBudgets, CycleResult, run_cycles
 from able.envs.base import FiniteTaskDistribution, TaskDistribution
-from able.structs import Task
+from able.envs.two_link_arm import make_domain
+from able.structs import Budget, Task
 
 SCRIPT = (
     Path(__file__).resolve().parents[2] / "experiments" / "run_single_experiment.py"
+)
+STAGE_TIME_COLUMNS = (
+    "sleep_wall_time",
+    "gathering_wall_time",
+    "execution_wall_time",
+    "evaluation_wall_time",
 )
 
 
@@ -110,7 +124,111 @@ def test_run_single_experiment(tmp_path: Path) -> None:
         cycle_df = pd.read_csv(run_dir / "cycle_results.csv")
         assert list(cycle_df.cycle) == [0, 1]
         assert list(cycle_df.num_executed_tasks) == [1, 1]
-        assert (cycle_df.sleep_wall_time >= 0).all()
+        for column in STAGE_TIME_COLUMNS:
+            assert (cycle_df[column] >= 0).all()
+        stage_total = cycle_df[list(STAGE_TIME_COLUMNS)].sum(axis=1)
+        assert (cycle_df.cycle_wall_time >= stage_total).all()
+
+        # One progress line per cycle, and no temporary files left behind.
+        log = (run_dir / "run_single_experiment.log").read_text()
+        assert "Cycle 0 done (1/2)" in log
+        assert "Cycle 1 done (2/2)" in log
+        assert not list(run_dir.glob("*.tmp"))
+
+
+def _run_arm_cycles(
+    num_cycles: int, on_cycle_end: Callable[[CycleResult], None] | None = None
+) -> list[CycleResult]:
+    """Run the scratch robot on a two-link arm with two goals."""
+    domain = make_domain(seed=0, num_goals=2)
+    task_distribution = domain.task_distribution
+    eval_tasks = _load_script().get_eval_tasks(task_distribution, 2, seed=0)
+    budgets = CycleBudgets(
+        sleep=Budget(max_iterations=1),
+        information_gathering=Budget(max_iterations=0),
+        execution=Budget(max_iterations=1),
+        planning=Budget(),
+    )
+    return run_cycles(
+        make_scratch_robot(domain),
+        domain.real_env,
+        task_distribution,
+        eval_tasks,
+        num_cycles,
+        budgets,
+        np.random.default_rng(0),
+        on_cycle_end=on_cycle_end,
+    )
+
+
+def test_writer_keeps_finished_cycles(tmp_path: Path) -> None:
+    """Tests that a run that dies partway keeps the results of its finished
+    cycles."""
+    writer = _load_script().CycleResultsWriter(
+        3,
+        tmp_path / "eval_results.csv",
+        tmp_path / "cycle_results.csv",
+        time.perf_counter(),
+    )
+
+    def on_cycle_end(result: CycleResult) -> None:
+        writer(result)
+        if result.cycle == 1:
+            raise RuntimeError("Hit the Slurm time limit")
+
+    with pytest.raises(RuntimeError):
+        _run_arm_cycles(3, on_cycle_end)
+    assert list(pd.read_csv(tmp_path / "cycle_results.csv").cycle) == [0, 1]
+    assert list(pd.read_csv(tmp_path / "eval_results.csv").cycle) == [0, 0, 1, 1]
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "cycle_results.csv",
+        "eval_results.csv",
+    ]
+
+
+def test_format_progress() -> None:
+    """Tests the progress line, with a finish estimate until the last cycle."""
+    format_progress = _load_script().format_progress
+    results = [
+        dataclasses.replace(
+            result,
+            sleep_wall_time=962.26,
+            gathering_wall_time=0.0,
+            execution_wall_time=210.4,
+            evaluation_wall_time=450.0,
+            cycle_wall_time=1623.0,
+            evaluations=[
+                dataclasses.replace(
+                    result.evaluations[0], success=True, planning_wall_time=200.0
+                ),
+                dataclasses.replace(
+                    result.evaluations[1], success=False, planning_wall_time=100.0
+                ),
+            ],
+        )
+        for result in _run_arm_cycles(2)
+    ]
+    now = datetime(2026, 11, 4, 20, 0)
+    stages = (
+        "success rate 0.50, mean planning time 150 s | sleep 0:16:02, "
+        "gathering 0.0s, execution 0:03:30, evaluation 0:07:30, cycle 0:27:03"
+    )
+    # Nineteen cycles of 1623 s are left.
+    assert format_progress(results[:1], 20, 1700.0, now) == (
+        f"Cycle 0 done (1/20) | {stages} | elapsed 0:28:20, "
+        "about 8:33:57 left (finishes around 2026-11-05 04:33)"
+    )
+    assert format_progress(results, 2, 3400.0, now) == (
+        f"Cycle 1 done (2/2) | {stages} | elapsed 0:56:40"
+    )
+
+
+def test_format_duration() -> None:
+    """Tests seconds under a minute and hours, minutes, and seconds above."""
+    format_duration = _load_script().format_duration
+    assert format_duration(4.24) == "4.2s"
+    assert format_duration(3725.4) == "1:02:05"
+    assert format_duration(90000) == "25:00:00"
 
 
 def test_record_videos(tmp_path: Path) -> None:
