@@ -31,7 +31,7 @@ To run one approach with one seed:
 python experiments/run_single_experiment.py approach=dreaming seed=0
 ```
 
-Each run writes its resolved `config.yaml`, `eval_results.csv` (one row per evaluation task per cycle), and `cycle_results.csv` (one row per cycle, including sleep time). To plot any set of runs:
+Each run writes its resolved `config.yaml`, `eval_results.csv` (one row per evaluation task per cycle), and `cycle_results.csv` (one row per cycle, with the wall time of each stage and of the whole cycle). Both results files are rewritten after every cycle, so a run that stops early keeps its finished cycles, and a sweep can be plotted while it runs. After each cycle, the run's log (`run_single_experiment.log`) gets one line with the cycle's success rate, mean planning time, stage times, the run's elapsed time, and an estimate of when it will finish. To plot any set of runs:
 
 ```
 python experiments/analysis/plot_cycle_results.py --results_dir <directory containing the runs>
@@ -180,7 +180,13 @@ source .venv/bin/activate
 
 The script submits one job per seed and approach, waits for them to finish, and then plots. Waiting takes no compute, but the script has to stay running, which is why it runs in `tmux`. Detach with `Ctrl-b d`, and reattach later with `tmux attach -t able`. A tmux session lives on one login node, so note which one `hostname` prints. If `tmux attach` later finds no session, you are on a different login node, and `ssh della9` (or whichever node you noted) reaches the right one after another password and Duo prompt.
 
-`squeue -u $USER` lists your jobs, and `jobstats <job id>` reports a finished job's CPU and memory use. Each job's Slurm logs are in the sweep directory's `.submitit/` folder.
+`squeue -u $USER` lists your jobs, and `jobstats <job id>` reports a finished job's CPU and memory use. Each job's Slurm logs are in the sweep directory's `.submitit/` folder. To see how far every job of a sweep has gotten and when it should finish, print the last line of each job's log:
+
+```
+tail -n 1 logs/comparison/<env>/<sweep>/*/run_single_experiment.log
+```
+
+The first line of each log names the job's seed and approach.
 
 Jobs request 24 hours, 1 CPU, and 8 GB by default, which puts them in Della's short QOS: up to 500 jobs and 1000 CPUs at once per user. For longer runs, raise `hydra.launcher.timeout_min`; up to 4320 minutes goes to the medium QOS (400 CPUs per user) and up to 8640 minutes to vlong (325 CPUs per user). `hydra.launcher.mem_gb` sets the memory.
 

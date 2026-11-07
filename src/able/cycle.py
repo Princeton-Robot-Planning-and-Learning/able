@@ -53,11 +53,18 @@ class CycleResult(
     """Everything recorded in one cycle.
 
     The belief is the one after information gathering and task execution, which
-    is also the belief the robot was evaluated under.
+    is also the belief the robot was evaluated under. The stage wall times cover
+    sleeping, asking queries and updating the belief with the responses, executing
+    tasks, and evaluating. The cycle's wall time covers the whole cycle, including
+    the recorder's work between stages, so it is at least their sum.
     """
 
     cycle: int
     sleep_wall_time: float
+    gathering_wall_time: float
+    execution_wall_time: float
+    evaluation_wall_time: float
+    cycle_wall_time: float
     gathered_data: list[QueryResponse[QueryType, ResponseType]]
     executions: list[EpisodeResult[StateType, ActType, TaskType]]
     belief: Belief[HiddenParamsType]
@@ -245,6 +252,22 @@ def run_cycles(
     budgets: CycleBudgets,
     rng: np.random.Generator,
     recorder: CycleRecorder[StateType, TaskType, HiddenParamsType] | None = None,
+    on_cycle_end: (
+        Callable[
+            [
+                CycleResult[
+                    StateType,
+                    ActType,
+                    TaskType,
+                    HiddenParamsType,
+                    QueryType,
+                    ResponseType,
+                ]
+            ],
+            None,
+        ]
+        | None
+    ) = None,
 ) -> list[
     CycleResult[StateType, ActType, TaskType, HiddenParamsType, QueryType, ResponseType]
 ]:
@@ -258,6 +281,8 @@ def run_cycles(
     Sleep, information gathering, task sampling, execution, and evaluation each
     draw from their own random stream. Robots that plan differently therefore
     execute the same sequence of tasks. The recorder, if given, sees every stage.
+    on_cycle_end, if given, gets each cycle's result as soon as the cycle ends,
+    for example to report progress or save results before the run finishes.
     """
     assert (
         budgets.execution.max_iterations is not None
@@ -267,6 +292,7 @@ def run_cycles(
     sleep_rng, gather_rng, task_rng, execution_rng, eval_rng = rng.spawn(5)
     results = []
     for cycle in range(num_cycles):
+        cycle_start_time = time.perf_counter()
         recorder.start_stage(cycle, Stage.SLEEP)
         start_time = time.perf_counter()
         robot.sleep(budgets.sleep, sleep_rng)
@@ -274,8 +300,10 @@ def run_cycles(
         recorder.end_stage()
 
         recorder.start_stage(cycle, Stage.QUERIES)
+        start_time = time.perf_counter()
         data = robot.gather_information(env, budgets.information_gathering, gather_rng)
         robot.update_belief_from_queries(data)
+        gathering_wall_time = time.perf_counter() - start_time
         recorder.record_queries(data, robot.belief)
         recorder.end_stage()
 
@@ -292,24 +320,32 @@ def run_cycles(
                     robot, task, env, budgets.planning, execution_rng, recorder, label
                 )
             )
+        execution_wall_time = time.perf_counter() - start_time
         recorder.end_stage()
 
         recorder.start_stage(cycle, Stage.EVALUATION)
         evaluations = []
+        start_time = time.perf_counter()
         for i, task in enumerate(eval_tasks):
             label = f"Evaluation task {i + 1} of {len(eval_tasks)}"
             evaluations.append(
                 evaluate(robot, task, env, budgets.planning, eval_rng, recorder, label)
             )
+        evaluation_wall_time = time.perf_counter() - start_time
         recorder.end_stage()
-        results.append(
-            CycleResult(
-                cycle=cycle,
-                sleep_wall_time=sleep_wall_time,
-                gathered_data=data,
-                executions=executions,
-                belief=robot.belief,
-                evaluations=evaluations,
-            )
+        result = CycleResult(
+            cycle=cycle,
+            sleep_wall_time=sleep_wall_time,
+            gathering_wall_time=gathering_wall_time,
+            execution_wall_time=execution_wall_time,
+            evaluation_wall_time=evaluation_wall_time,
+            cycle_wall_time=time.perf_counter() - cycle_start_time,
+            gathered_data=data,
+            executions=executions,
+            belief=robot.belief,
+            evaluations=evaluations,
         )
+        results.append(result)
+        if on_cycle_end is not None:
+            on_cycle_end(result)
     return results

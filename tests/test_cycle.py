@@ -35,6 +35,24 @@ class _OneBatchLearner(Learner[np.ndarray, RandomShootingParams]):
         return dataclasses.replace(params, max_batches=1)
 
 
+class _CountingLearner(Learner[np.ndarray, RandomShootingParams]):
+    """Counts its sleeps and leaves the parameters unchanged."""
+
+    def __init__(self) -> None:
+        self.num_sleeps = 0
+
+    def learn(
+        self,
+        belief: Belief[np.ndarray],
+        params: RandomShootingParams,
+        budget: Budget,
+        rng: np.random.Generator,
+    ) -> RandomShootingParams:
+        """Count the sleep and return the parameters."""
+        self.num_sleeps += 1
+        return params
+
+
 def _make_robot(domain, learner=None):
     return Robot(
         planner=RandomShootingPlanner(TwoLinkArmModel()),
@@ -149,6 +167,44 @@ def test_run_cycles():
             budgets=_budgets(num_executions=None),
             rng=rng,
         )
+
+
+def test_run_cycles_reports_each_cycle():
+    """Tests that each cycle's result, with its stage times, is reported as soon as
+    the cycle ends."""
+    domain = make_domain(seed=0, true_limits=TRUE_LIMITS)
+    learner = _CountingLearner()
+    robot = _make_robot(domain, learner)
+    eval_tasks = [domain.task_distribution.sample(np.random.default_rng(0))] * 2
+    reported = []
+
+    def on_cycle_end(result):
+        # The next cycle has not slept yet.
+        assert learner.num_sleeps == result.cycle + 1
+        reported.append(result)
+
+    results = run_cycles(
+        robot,
+        domain.real_env,
+        domain.task_distribution,
+        eval_tasks,
+        num_cycles=3,
+        budgets=_budgets(num_executions=2),
+        rng=np.random.default_rng(0),
+        on_cycle_end=on_cycle_end,
+    )
+    assert reported == results
+    for result in results:
+        stage_times = [
+            result.sleep_wall_time,
+            result.gathering_wall_time,
+            result.execution_wall_time,
+            result.evaluation_wall_time,
+        ]
+        assert all(t >= 0 for t in stage_times)
+        assert result.execution_wall_time > 0
+        assert result.evaluation_wall_time > 0
+        assert result.cycle_wall_time >= sum(stage_times)
 
 
 def test_executed_tasks_do_not_depend_on_planning():
