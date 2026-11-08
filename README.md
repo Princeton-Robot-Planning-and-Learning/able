@@ -105,7 +105,7 @@ A robot moves requested items from far furniture to the bedside of a person sitt
 python experiments/run_single_experiment.py env=human_reach approach=scratch
 ```
 
-`env.domain.num_requested` and `env.domain.num_clutter` set the scene, 2 and 5 in the experiments. Under the prior, only 3 bedside spots are reachable with 90% probability, so scenes with more requested items often have no plan until the belief narrows. PDDLStream plans for up to 10 minutes per task (`approach.max_time` and `budgets.planning.max_wall_time`, so a retry without the model shares that time), and planning a scene takes from seconds to minutes. A task that runs out of time counts as a timeout. A solve that grows the process's memory by more than 4 GB (`approach.max_memory_gb`) fails instead of letting the run be killed: harder scenes, such as 3 requested items, can grow PDDLStream past 9 GB in a few minutes. As in the other environments, the robot asks no queries by default; a query presents the gripper at points along a direction from the person's shoulder.
+`env.domain.num_requested` and `env.domain.num_clutter` set the scene, 2 and 5 in the experiments, with a horizon of 60 actions. A pose is usable if 98% of the belief's particles reach it (`approach.delta=0.02`). Under the prior, only 2 or 3 of the 21 bedside spots are, so clutter often has to be moved off them first, and scenes with more requested items often have no plan until the belief narrows. From scratch under the prior, a scene takes about 190 s on average, and 12% time out. PDDLStream plans for up to 10 minutes per task (`approach.max_time` and `budgets.planning.max_wall_time`, so a retry without the model shares that time), and planning a scene takes from seconds to minutes. A task that runs out of time counts as a timeout. A solve that grows the process's memory by more than 4 GB (`approach.max_memory_gb`) fails instead of letting the run be killed: harder scenes, such as 3 requested items, can grow PDDLStream past 9 GB in a few minutes. As in the other environments, the robot asks no queries by default; a query presents the gripper at points along a direction from the person's shoulder.
 
 The robots that learn rank PDDLStream's placements for each item, requested or clutter, with a flow-matching model of where plans put it, trained while they sleep on plans for sampled scenes. As in the other environments, they differ only in the beliefs they train under: `current_belief`, `prior_only`, `dreaming`, and `belief_coverage`. To compare them with `scratch` over ten seeds:
 
@@ -192,7 +192,15 @@ tail -n 1 logs/comparison/<env>/<sweep>/*/run_single_experiment.log
 
 The first line of each log names the job's seed and approach.
 
-Jobs request 24 hours, `num_workers` CPUs (1 by default), and 8 GB per CPU, which puts them in Della's short QOS: up to 500 jobs and 1000 CPUs at once per user. For longer runs, raise `hydra.launcher.timeout_min`; up to 4320 minutes goes to the medium QOS (400 CPUs per user) and up to 8640 minutes to vlong (325 CPUs per user). `hydra.launcher.mem_per_cpu` sets the memory per CPU.
+Jobs request 24 hours, `num_workers` CPUs (1 by default), and 8 GB per CPU, which puts them in Della's short QOS: up to 500 jobs and 1000 CPUs at once per user.
+
+Shorter time limits get jobs out of the queue sooner, but a limit of an hour or less puts them in Della's test QOS, which runs only 2 jobs per user at once. To choose limits, run a short sweep (for example `num_cycles=2` with one seed), then estimate each approach's full run from its cycle times:
+
+```
+python experiments/analysis/estimate_run_times.py --results_dir <sweep> --num_cycles 20
+```
+
+It prints the slowest run's estimate per approach and a limit 1.3 times as long, never below 61 minutes. One sweep has one limit, so approaches with very different times can run as separate sweeps (`APPROACHES=...`) with `hydra.launcher.timeout_min=<limit>`. For longer runs, raise `hydra.launcher.timeout_min`; up to 4320 minutes goes to the medium QOS (400 CPUs per user) and up to 8640 minutes to vlong (325 CPUs per user). `hydra.launcher.mem_per_cpu` sets the memory per CPU.
 
 To copy results to your laptop:
 
