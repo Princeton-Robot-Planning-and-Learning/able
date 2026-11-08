@@ -1,12 +1,12 @@
 _target_: able.approaches.make_limb_current_belief_robot
 # Training tasks planned under each training belief.
-num_training_tasks: 1
+num_training_tasks: 2
 # MPC candidates per step, and belief samples for the believed range of motion.
 num_rollouts: 32
 num_particles: 32
 # A step the model proposes is taken if it costs at most 1 + seed_tolerance times
 # the best directed candidate.
-seed_tolerance: 0.0
+seed_tolerance: 0.05
 # The model that seeds MPC, refit once per sleep.
 model:
   _target_: able.models.flow_matching.FlowMatchingModel
