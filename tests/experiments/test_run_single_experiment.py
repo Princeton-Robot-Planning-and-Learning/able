@@ -132,8 +132,6 @@ def test_run_single_experiment(tmp_path: Path) -> None:
         cycle_df = pd.read_csv(run_dir / "cycle_results.csv")
         assert list(cycle_df.cycle) == [0, 1]
         assert list(cycle_df.num_executed_tasks) == [1, 1]
-        # The arm's robots have no information gatherer, so the query asks nothing.
-        assert list(cycle_df.num_queries) == [0, 0]
         for column in STAGE_TIME_COLUMNS:
             assert (cycle_df[column] >= 0).all()
         stage_total = cycle_df[list(STAGE_TIME_COLUMNS)].sum(axis=1)

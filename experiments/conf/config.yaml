@@ -16,11 +16,10 @@ budgets:
   sleep:
     _target_: able.structs.Budget
     max_iterations: 64
-  # One iteration is one query. Dreams imagine the same queries. Robots without
-  # an information gatherer (the two-link arm's) ask nothing.
+  # One iteration is one query.
   information_gathering:
     _target_: able.structs.Budget
-    max_iterations: 1
+    max_iterations: 0
   # One iteration is one executed task.
   execution:
     _target_: able.structs.Budget
