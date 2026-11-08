@@ -238,8 +238,8 @@ class PDDLStreamParams:
 
     A requested item's pose is usable if at least 1 - delta of num_particles belief
     particles reach it. Planning stops after max_time seconds. The model proposes
-    num_draws placements per requested item from get_place_features(), which rank
-    the candidate slots; an untrained model proposes nothing.
+    num_draws placements per item, requested or clutter, from get_place_features(),
+    which rank its candidate slots; an untrained model proposes nothing.
     """
 
     max_time: float = 300.0
@@ -261,10 +261,12 @@ def get_place_features(
     belief: ParticleBelief,
     item: str,
 ) -> NDArray[np.float64]:
-    """The model's input for a requested item: the item (one-hot), which bedside
-    slots the clutter occupies, and the belief's mean and standard deviation."""
+    """The model's input for an item: which requested item it is (one-hot, all
+    zeros for clutter), which bedside slots the clutter occupies, and the belief's
+    mean and standard deviation."""
     onehot = np.zeros(MAX_REQUESTED)
-    onehot[int(item.removeprefix("req"))] = 1.0
+    if item in scene.requested_objects:
+        onehot[int(item.removeprefix("req"))] = 1.0
     slots = get_bedside_slots(config)
     occupied = np.zeros(len(slots))
     clutter = [scene.get_object_pose(c).position[:2] for c in scene.clutter_objects]
@@ -288,8 +290,8 @@ def get_final_placements(
 
 @dataclass(frozen=True)
 class PlaceProposal:
-    """Model draws of each requested item's placement, which rank the candidate
-    slots."""
+    """Model draws of each item's placement, requested or clutter, which rank its
+    candidate slots."""
 
     samples: dict[str, NDArray[np.float64]]  # item -> (k, 3)
 
@@ -317,9 +319,9 @@ class ReachPDDLStreamPlanner(
 
     The policy executes the plan's actions, then NO_ACTION until the horizon; a
     plan longer than the horizon fails. The model in the parameters ranks where
-    each requested item is placed first; if planning with it fails, the planner
-    plans again without it. The planning budget's wall time, if set, caps all
-    planning. The statistics are the number of stream evaluations, the plan's
+    each item, requested or clutter, is placed first; if planning with it fails,
+    the planner plans again without it. The planning budget's wall time, if set,
+    caps all planning. The statistics are the number of stream evaluations, the plan's
     length, whether the model guided the plan, and whether it fell back. The
     default parameters, if given, replace PDDLStreamParams().
     """
@@ -369,13 +371,14 @@ class ReachPDDLStreamPlanner(
         belief: Belief[NDArray[np.float64]],
         policy: Policy[ReachState, ReachAction],
     ) -> Dataset:
-        """One row per requested item the plan places: its features under the
-        belief, and where the plan places it last."""
+        """One row per item the plan places, requested or clutter: its features
+        under the belief, and where the plan places it last."""
         assert isinstance(belief, ParticleBelief), "Need a ParticleBelief"
         assert isinstance(policy, OpenLoopPolicy), "Need a plan from plan()"
         final = get_final_placements(policy.actions)
         scene, config = task.initial_state.scene, self._model.config
-        items = [o for o in scene.requested_objects if o in final]
+        objects = [*scene.requested_objects, *scene.clutter_objects]
+        items = [o for o in objects if o in final]
         if not items:
             x_dim = MAX_REQUESTED + len(get_bedside_slots(config)) + 6
             return Dataset.empty(x_dim, 3)
@@ -434,11 +437,11 @@ class ReachPDDLStreamPlanner(
         params: PDDLStreamParams,
         rng: np.random.Generator,
     ) -> PlaceProposal | None:
-        """The model's placements for each requested item, or None if it proposes
-        nothing."""
+        """The model's placements for each item, requested or clutter, or None if
+        it proposes nothing."""
         scene, config = task.initial_state.scene, self._model.config
         samples = {}
-        for item in scene.requested_objects:
+        for item in [*scene.requested_objects, *scene.clutter_objects]:
             x = get_place_features(scene, config, belief, item)
             draws = params.model.sample(x, params.num_draws, rng)
             if len(draws):

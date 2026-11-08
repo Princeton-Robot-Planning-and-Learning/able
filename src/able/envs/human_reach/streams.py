@@ -85,7 +85,7 @@ class BedsideStreamContext:
     all_surfaces: list[str]
     slots: dict[str, NDArray] = field(default_factory=dict)
     requested_slots: list[tuple[str, NDArray]] = field(default_factory=list)
-    proposal: Any = None  # psi hook: `.order(o, points, rng)` ranks requested_slots
+    proposal: Any = None  # psi hook: `.order(o, points, rng)` ranks placements
     calls: Counter = field(default_factory=Counter)  # stream evaluations by name
 
     def slot_points(self, o: str) -> NDArray[np.float64]:
@@ -102,6 +102,18 @@ class BedsideStreamContext:
         if self.proposal is None:
             return self.rng.permutation(len(self.requested_slots))
         return np.asarray(self.proposal.order(o, self.slot_points(o), self.rng))
+
+    def clutter_order(
+        self, o: str, candidates: list[tuple[str, NDArray]]
+    ) -> NDArray[np.int64]:
+        """Order in which clutter `o` tries the candidate slots, given as (surface,
+        xy): psi's ranking of their resting positions, else random."""
+        if self.proposal is None:
+            return self.rng.permutation(len(candidates))
+        points = np.array(
+            [self.sim.resting_pose(o, tuple(xy), s).position for s, xy in candidates]
+        )
+        return np.asarray(self.proposal.order(o, points, self.rng))
 
 
 def _wrap(a: float) -> float:
@@ -208,7 +220,7 @@ def sample_place_pose(ctx: BedsideStreamContext, o: str) -> Iterator[tuple[Place
                 yield (Placement(o, ctx.sim.resting_pose(o, tuple(xy), s), s),)
     surfaces = ctx.all_surfaces
     cands = [(s, xy) for s in surfaces for xy in ctx.slots[s][:, :2]]
-    for k in ctx.rng.permutation(len(cands)):
+    for k in ctx.clutter_order(o, cands):
         s, xy = cands[k]
         xy = xy + ctx.rng.uniform(-POSE_JITTER, POSE_JITTER, size=2)
         yield (Placement(o, ctx.sim.resting_pose(o, tuple(xy), s), s),)
