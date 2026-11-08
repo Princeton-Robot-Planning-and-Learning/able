@@ -23,7 +23,7 @@ In the limb, friction, and human reach environments there is no plan cache, so `
 
 The same script compares the approaches in the other environments, for example `./experiments/run_comparison.sh env=limb`. Approach names are the same in every environment: `approach=<name>` uses the shared budgets in `experiments/conf/approach/<name>.yaml` and the environment's factory in `experiments/conf/env_approach/<env>/<name>.yaml`.
 
-The results, the plot (`cycle_results.png`) and a Markdown table of planning time, success rate, timeouts and sleep time (`summary_table.md`) go to `logs/comparison/<env>/<date>_<time>/`. Extra arguments are passed to hydra, for example `./experiments/run_comparison.sh num_cycles=10`. `SEEDS=0,1` changes the seeds and `APPROACHES=scratch,dreaming` the approaches. With `record_videos=true` (and, for example, `video_cycles=[0,19]`), the script also combines each run's stage videos into one video per run.
+The results, the plot (`cycle_results.png`) and a Markdown table of planning time, success rate, timeouts and sleep time (`summary_table.md`) go to `logs/comparison/<env>/<date>_<time>/`. Extra arguments are passed to hydra, for example `./experiments/run_comparison.sh num_cycles=10`. `SEEDS=0,1` changes the seeds and `APPROACHES=scratch,dreaming` the approaches. `WORKERS=4` gives each run 4 worker processes (`num_workers`), which evaluate tasks at once and, for robots that refit once per sleep with a fixed number of iterations, make the sleep's dreams and training plans at once. Each evaluation task and each dream then gets its own random generator, so results match a run without workers in distribution but not draw for draw. A run that records videos uses no workers, since the videos follow every episode. With `record_videos=true` (and, for example, `video_cycles=[0,19]`), the script also combines each run's stage videos into one video per run.
 
 To run one approach with one seed:
 
@@ -180,6 +180,8 @@ source .venv/bin/activate
 ./experiments/run_comparison.sh env=friction hydra/launcher=della
 ```
 
+With `WORKERS=6` (or `num_workers=6`), each job requests 6 CPUs for its 6 worker processes. A cycle of belief coverage in the friction environment took 2.5 times less wall time with 4 workers than with none, and planning time per task barely changed.
+
 The script submits one job per seed and approach, waits for them to finish, and then plots. Waiting takes no compute, but the script has to stay running, which is why it runs in `tmux`. Detach with `Ctrl-b d`, and reattach later with `tmux attach -t able`. A tmux session lives on one login node, so note which one `hostname` prints. If `tmux attach` later finds no session, you are on a different login node, and `ssh della9` (or whichever node you noted) reaches the right one after another password and Duo prompt.
 
 `squeue -u $USER` lists your jobs, and `jobstats <job id>` reports a finished job's CPU and memory use. Each job's Slurm logs are in the sweep directory's `.submitit/` folder. To see how far every job of a sweep has gotten and when it should finish, print the last line of each job's log:
@@ -190,7 +192,7 @@ tail -n 1 logs/comparison/<env>/<sweep>/*/run_single_experiment.log
 
 The first line of each log names the job's seed and approach.
 
-Jobs request 24 hours, 1 CPU, and 8 GB by default, which puts them in Della's short QOS: up to 500 jobs and 1000 CPUs at once per user. For longer runs, raise `hydra.launcher.timeout_min`; up to 4320 minutes goes to the medium QOS (400 CPUs per user) and up to 8640 minutes to vlong (325 CPUs per user). `hydra.launcher.mem_gb` sets the memory.
+Jobs request 24 hours, `num_workers` CPUs (1 by default), and 8 GB per CPU, which puts them in Della's short QOS: up to 500 jobs and 1000 CPUs at once per user. For longer runs, raise `hydra.launcher.timeout_min`; up to 4320 minutes goes to the medium QOS (400 CPUs per user) and up to 8640 minutes to vlong (325 CPUs per user). `hydra.launcher.mem_per_cpu` sets the memory per CPU.
 
 To copy results to your laptop:
 

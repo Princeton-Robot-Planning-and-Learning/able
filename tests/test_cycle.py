@@ -12,6 +12,7 @@ from able.cycle import CycleBudgets, evaluate, execute, run_cycles
 from able.envs.two_link_arm import JOINT_LIMIT_PRIOR, TwoLinkArmModel, make_domain
 from able.info_gatherers.base import NullInformationGatherer
 from able.learners.base import Learner, NullLearner
+from able.parallel import WorkerPool
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
 from able.recording.base import Stage
 from able.robot import Robot
@@ -30,6 +31,7 @@ class _OneBatchLearner(Learner[np.ndarray, RandomShootingParams]):
         params: RandomShootingParams,
         budget: Budget,
         rng: np.random.Generator,
+        pool: WorkerPool | None = None,
     ) -> RandomShootingParams:
         """Return parameters with one batch."""
         return dataclasses.replace(params, max_batches=1)
@@ -47,6 +49,7 @@ class _CountingLearner(Learner[np.ndarray, RandomShootingParams]):
         params: RandomShootingParams,
         budget: Budget,
         rng: np.random.Generator,
+        pool: WorkerPool | None = None,
     ) -> RandomShootingParams:
         """Count the sleep and return the parameters."""
         self.num_sleeps += 1

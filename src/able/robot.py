@@ -9,6 +9,7 @@ from able.beliefs.base import Belief
 from able.envs.base import Environment
 from able.info_gatherers.base import InformationGatherer
 from able.learners.base import Learner
+from able.parallel import WorkerPool
 from able.planners.base import Planner
 from able.policies.base import Policy
 from able.structs import (
@@ -71,10 +72,25 @@ class Robot(
         """The robot's current planner parameters."""
         return self._planner_params
 
-    def sleep(self, budget: Budget, rng: np.random.Generator) -> None:
-        """Run the learner to update the planner parameters."""
+    @property
+    def planner(
+        self,
+    ) -> Planner[StateType, ActType, TaskType, HiddenParamsType, PlannerParamsType]:
+        """The robot's planner, for worker processes that plan as the robot does."""
+        return self._planner
+
+    @property
+    def learner(self) -> Learner[HiddenParamsType, PlannerParamsType]:
+        """The robot's learner, for worker processes that train as the robot does."""
+        return self._learner
+
+    def sleep(
+        self, budget: Budget, rng: np.random.Generator, pool: WorkerPool | None = None
+    ) -> None:
+        """Run the learner to update the planner parameters, with the pool's workers
+        if given."""
         self._planner_params = self._learner.learn(
-            self._belief, self._planner_params, budget, rng
+            self._belief, self._planner_params, budget, rng, pool
         )
 
     def plan(

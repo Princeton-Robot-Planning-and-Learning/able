@@ -2,7 +2,7 @@
 
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Generic
+from typing import Any, Callable, Generic, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
@@ -35,6 +35,37 @@ class BeliefSource(ABC, Generic[HiddenParamsType, PlannerParamsType]):
     ) -> Belief[HiddenParamsType]:
         """The belief to train under in an iteration, numbered from 1, given the
         robot's current belief and planner parameters."""
+
+    # A learner that runs a sleep's iterations in parallel splits each one in two:
+    # num_draws independent draws, which workers make at once, then choose(), which
+    # this process calls once per iteration, in order. get_training_belief() must
+    # return what choose() returns for its iteration's draws.
+
+    @property
+    def num_draws(self) -> int:
+        """The draws each training belief is chosen from."""
+        return 1
+
+    def draw(
+        self,
+        index: int,
+        belief: Belief[HiddenParamsType],
+        params: PlannerParamsType,
+        rng: np.random.Generator,
+    ) -> Belief[HiddenParamsType]:
+        """One draw, numbered from 1 in each sleep. It depends only on its
+        arguments, so a sleep's draws can be made in any order or at once. By
+        default the draw is the training belief."""
+        return self.get_training_belief(index, belief, params, rng)
+
+    def choose(
+        self, iteration: int, draws: Sequence[Belief[HiddenParamsType]]
+    ) -> Belief[HiddenParamsType]:
+        """The training belief for an iteration, from its num_draws draws in
+        order. By default the only draw."""
+        del iteration  # unused because there is one draw
+        assert len(draws) == 1, "Need exactly one draw"
+        return draws[0]
 
 
 class CurrentBeliefSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
@@ -224,9 +255,34 @@ class BeliefCoverageSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     ) -> Belief[HiddenParamsType]:
         first = (iteration - 1) * self._num_candidates + 1
         candidates = [
-            self._candidate_source.get_training_belief(i, belief, params, rng)
+            self.draw(i, belief, params, rng)
             for i in range(first, first + self._num_candidates)
         ]
+        return self.choose(iteration, candidates)
+
+    @property
+    def num_draws(self) -> int:
+        """The candidates each training belief is chosen from."""
+        return self._num_candidates
+
+    def draw(
+        self,
+        index: int,
+        belief: Belief[HiddenParamsType],
+        params: PlannerParamsType,
+        rng: np.random.Generator,
+    ) -> Belief[HiddenParamsType]:
+        """One candidate from the candidate source."""
+        return self._candidate_source.get_training_belief(index, belief, params, rng)
+
+    def choose(
+        self, iteration: int, draws: Sequence[Belief[HiddenParamsType]]
+    ) -> Belief[HiddenParamsType]:
+        """The candidate farthest from the beliefs chosen so far, which then counts
+        as chosen."""
+        del iteration  # unused because the chosen beliefs carry the history
+        candidates = list(draws)
+        assert len(candidates) == self._num_candidates, "Need every candidate"
         features = np.array([self._get_features(c) for c in candidates])
         best = 0
         if self._chosen_features:
