@@ -271,9 +271,7 @@ def test_memory_limit(tmp_path, monkeypatch):
             pddlstream_planner.count_evaluation(calls, "s")
         with pytest.raises(pddlstream_planner.OutOfMemory):
             for _ in range(20 * pddlstream_planner.MEMORY_CHECK_EVERY):
-                pddlstream_planner.count_evaluation(
-                    calls, "s"
-                )  # pylint: disable=protected-access
+                pddlstream_planner.count_evaluation(calls, "s")
     # No limit: streams never check.
     pddlstream_planner.count_evaluation(calls, "s")
     domain = make_domain(seed=0, num_requested=2, num_clutter=0, true_theta=THETA)
