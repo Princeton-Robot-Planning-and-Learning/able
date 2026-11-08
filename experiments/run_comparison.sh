@@ -13,7 +13,7 @@
 # With record_videos=true, each run's stage videos are also combined into one video.
 set -e
 cd "$(dirname "$0")/.."
-SEEDS="${SEEDS:-0,1,2,3,4}"
+SEEDS="${SEEDS:-0,1,2,3,4,5,6,7,8,9}"
 APPROACHES="${APPROACHES:-scratch,prior_only,current_belief,dreaming,belief_coverage}"
 WORKERS="${WORKERS:-1}"
 ENV=two_link_arm

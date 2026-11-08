@@ -13,9 +13,10 @@ env:
   # Instantiated with the domain's environment model, only when recording videos.
   renderer:
     _target_: able.rendering.friction.FrictionRenderer
-# Planning a friction task takes about a minute, so evaluate fewer tasks and dream
-# less than on the arm.
-num_eval_tasks: 2
+# Planning a friction task takes about a minute, so dream less than on the arm. 8
+# evaluation tasks per cycle keep the per-cycle success rate steady; with
+# num_workers, they run at once.
+num_eval_tasks: 8
 budgets:
   sleep:
     max_iterations: 4

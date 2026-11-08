@@ -58,6 +58,15 @@ TIMEOUT_CAPTION = (
     "shown on the right."
 )
 
+# The planner's work per evaluation task, from its statistics, which do not depend
+# on the machine: (label, numerator column, denominator column or None).
+ENV_TO_PLANNER_WORK = {
+    "two_link_arm": ("Samples per task", "num_samples", None),
+    "limb": ("MPC rollouts per task", "num_rollouts", None),
+    "friction": ("Simulations per push", "num_sims", "num_searches"),
+    "human_reach": ("Stream calls per task", "stream_calls", None),
+}
+
 # The table's windows of cycles: (name, first cycle, last cycle or None for the end).
 TABLE_WINDOWS = [
     ("cycle 0", 0, 0),
@@ -219,8 +228,9 @@ def _over_seeds(df: pd.DataFrame, metric: str, first: int, last: int | None) -> 
 
 def _make_table(eval_df: pd.DataFrame, cycle_df: pd.DataFrame) -> str:
     """A Markdown table per environment of planning time, success rate, timeout
-    rate (when the runs record timeouts), and sleep time. Planning time leaves out
-    timed-out tasks. ± is one standard error over seeds."""
+    rate (when the runs record timeouts), the planner's work (when the runs record
+    it), and sleep time. Planning time leaves out timed-out tasks. ± is one
+    standard error over seeds."""
     sections = []
     for env in sorted(eval_df["env"].unique()):
         env_df = eval_df[eval_df["env"] == env]
@@ -245,6 +255,15 @@ def _make_table(eval_df: pd.DataFrame, cycle_df: pd.DataFrame) -> str:
         rows.append(("Success rate, all cycles", "success", 0, None))
         if _has_timeouts(env_df):
             rows.append(("Timeout rate, all cycles", "timed_out", 0, None))
+        work = _get_planner_work(env, env_df)
+        if work is not None:
+            work_label, work_values = work
+            env_df = env_df.assign(planner_work=work_values)
+            rows += [
+                (f"{work_label}, {name}", "planner_work", first, last)
+                for name, first, last in TABLE_WINDOWS
+                if name in ("cycle 0", "last 5 cycles")
+            ]
         for label, metric, first, last in rows:
             cells = [
                 _over_seeds(env_df[env_df["approach"] == a], metric, first, last)
@@ -262,6 +281,26 @@ def _make_table(eval_df: pd.DataFrame, cycle_df: pd.DataFrame) -> str:
         sections.append("\n".join(lines))
     footer = "± is one standard error over seeds."
     return "\n\n".join(sections) + "\n\n" + footer + "\n"
+
+
+def _get_planner_work(env: str, df: pd.DataFrame) -> tuple[str, pd.Series] | None:
+    """The environment's planner work per evaluation task and its label, or None
+    if the runs do not record it. Tasks whose planning failed before any work
+    count as missing."""
+    if env not in ENV_TO_PLANNER_WORK:
+        return None
+    label, numerator, denominator = ENV_TO_PLANNER_WORK[env]
+    if numerator not in df.columns or (
+        denominator is not None and denominator not in df.columns
+    ):
+        return None
+    values = df[numerator].to_numpy(dtype=np.float64)
+    if denominator is not None:
+        counts = df[denominator].to_numpy(dtype=np.float64)
+        values = np.divide(
+            values, counts, out=np.full_like(values, np.nan), where=counts > 0
+        )
+    return label, pd.Series(values, index=df.index)
 
 
 def _print_final_cycle(df: pd.DataFrame) -> None:
