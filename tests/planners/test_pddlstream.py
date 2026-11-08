@@ -144,8 +144,9 @@ def _placement(item: str, xyz) -> Placement:
 
 
 def test_features_and_labels():
-    """A row per requested item the plan places: its one-hot, the clutter's slots
-    and the belief, labeled with its final placement."""
+    """A row per item the plan places, requested items first: its one-hot (all
+    zeros for clutter), the clutter's slots and the belief, labeled with its final
+    placement."""
     domain = make_domain(seed=0, num_requested=2, num_clutter=2)
     model = domain.env_model
     assert isinstance(model, ReachModel)
@@ -167,8 +168,11 @@ def test_features_and_labels():
     )
     planner = ReachPDDLStreamPlanner(model)
     rows = planner.get_plan_examples(task, belief, OpenLoopPolicy(list(plan)))
-    assert rows.x.shape == (2, len(x)) and rows.y.shape == (2, 3)
+    assert rows.x.shape == (3, len(x)) and rows.y.shape == (3, 3)
     assert np.allclose(rows.y[0], (0.8, 0.3, 0.6))  # the final placement
+    clutter = get_place_features(scene, config, belief, "clutter0")
+    assert clutter[:MAX_REQUESTED].sum() == 0
+    assert np.allclose(rows.x[2], clutter) and np.allclose(rows.y[2], (2.2, 0.0, 0.6))
     _close(model, planner)
 
 
@@ -191,6 +195,34 @@ def test_place_proposal_ranks_the_nearest_slot_first():
     order = ctx.place_order("req0")
     assert order[0] == j and sorted(order) == list(range(len(points)))
     assert sorted(ctx.place_order("req1")) == list(range(len(points)))
+    _close(model, planner)
+
+
+def test_place_proposal_ranks_clutter_candidates():
+    """Clutter tries the candidate nearest most of its draws first, and every
+    candidate in a random order without draws or a proposal."""
+    domain = make_domain(seed=0, num_requested=1, num_clutter=1)
+    model = domain.env_model
+    assert isinstance(model, ReachModel)
+    planner = ReachPDDLStreamPlanner(model)
+    scene = domain.task_distribution.sample(
+        np.random.default_rng(0)
+    ).initial_state.scene
+    ctx = build_stream_context(planner.sim, scene)
+    candidates = [(s, xy) for s in ctx.all_surfaces for xy in ctx.slots[s][:, :2]]
+    assert sorted(ctx.clutter_order("clutter0", candidates)) == list(
+        range(len(candidates))
+    )
+    j = len(candidates) // 2
+    surface, xy = candidates[j]
+    point = np.array(planner.sim.resting_pose("clutter0", tuple(xy), surface).position)
+    samples = point + np.random.default_rng(0).normal(0, 0.005, (16, 3))
+    ctx = build_stream_context(
+        planner.sim, scene, proposal=PlaceProposal({"clutter0": samples})
+    )
+    order = ctx.clutter_order("clutter0", candidates)
+    assert order[0] == j and sorted(order) == list(range(len(candidates)))
+    assert sorted(ctx.clutter_order("req0", candidates)) == list(range(len(candidates)))
     _close(model, planner)
 
 
