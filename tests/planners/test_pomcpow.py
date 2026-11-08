@@ -16,12 +16,15 @@ from able.planners.pomcpow import (
     POMCPOW,
     X_DIM,
     Y_DIM,
+    EarlyStopConfig,
     FrictionPOMCPOWPlanner,
     FrictionPOMCPOWPolicy,
     POMCPOWConfig,
     POMCPOWParams,
     ProposalConfig,
     SearchStats,
+    _ActionNode,
+    _ObservationNode,
     encode_push,
     get_push_features,
 )
@@ -115,6 +118,78 @@ def test_pomcpow_time_budget_and_dead_ends():
     stuck = POMCPOW(_GuessModel(), proposer=lambda *args: None)
     action, stats = stuck.plan([_State(0.0, 0.5)])
     assert action is None and stats.root_actions == 0
+
+
+def test_early_stop_ends_a_settled_search():
+    """A search whose best action is clear stops early, at a check, with the
+    action the full search finds."""
+    particles = [_State(0.0, 0.7)] * 20
+    config = POMCPOWConfig(num_sims=2000, max_depth=2, exploration=0.5)
+    rule = EarlyStopConfig(min_sims=100, check_every=25, epsilon=0.05)
+    action, stats = POMCPOW(_GuessModel(), replace(config, early_stop=rule)).plan(
+        particles
+    )
+    assert 100 <= stats.num_sims < 2000 and stats.num_sims % 25 == 0
+    assert action is not None and abs(action - 0.7) < 0.1
+
+
+def _solver_with_root(num_sims: int, rule: EarlyStopConfig, nodes) -> POMCPOW:
+    solver = POMCPOW(_GuessModel(), POMCPOWConfig(num_sims=num_sims, early_stop=rule))
+    solver.root = _ObservationNode(actions=dict(enumerate(nodes)))
+    return solver
+
+
+def test_early_stop_rules():
+    """The search stops once no action can overtake the most visited one in
+    visits, or once its lower bound clears every other upper bound minus
+    epsilon."""
+    every_check = {"min_sims": 1, "check_every": 1}
+    # Only the visit lead: no epsilon lets the bounds settle the search.
+    lead = EarlyStopConfig(**every_check, epsilon=-1e9)
+    nodes = [_ActionNode(visits=60), _ActionNode(visits=10, value=5.0)]
+    assert _solver_with_root(120, lead, nodes).is_settled(71)  # 50 > 49 left
+    assert not _solver_with_root(120, lead, nodes).is_settled(50)  # not > 70 left
+
+    # Returns with a standard deviation of 1 over 50 visits each: a standard
+    # error of 0.14, so bounds 0.28 either side of the mean.
+    def node(value):
+        return _ActionNode(visits=50, value=value, squared_deviations=49.0)
+
+    for epsilon, best, settled in [
+        (0.0, 10.0, True),
+        (0.0, 0.5, False),
+        (1.0, 0.5, True),
+    ]:
+        rule = EarlyStopConfig(**every_check, epsilon=epsilon)
+        solver = _solver_with_root(1000, rule, [node(best), node(0.0)])
+        assert solver.is_settled(100) == settled
+    # Without a rule, or at a sim that is not a check, the search goes on.
+    solver = _solver_with_root(
+        1000, EarlyStopConfig(min_sims=1, check_every=7), [node(10.0), node(0.0)]
+    )
+    assert not solver.is_settled(100) and solver.is_settled(105)
+
+
+def test_a_trained_model_proposes_first_and_widens_slowly(setup):
+    """With model_first, a node's first push comes from the model even with mix 0,
+    and searches the model guides use the proposal's widening."""
+    domain, _, task = setup
+    planner = _RecordingPlanner(
+        domain.env_model, FrictionBeliefUpdater(domain.env_model.world)
+    )
+    push = Push(1.5708, 0.6, 0.0)
+    proposal = ProposalConfig(mix=0.0, model_first=1, action_widening=(1.0, 0.5))
+    params = planner.set_model(replace(PARAMS, proposal=proposal), _FixedModel(push))
+    policy = planner.plan(
+        task, domain.initial_belief, params, Budget(), np.random.default_rng(0)
+    )
+    assert push in [p for p, _, _ in policy.searches[0].root_values]
+    assert planner.widenings == [(1.0, 0.5)]
+    # Without a model, the search keeps the default widening.
+    planner.plan(
+        task, domain.initial_belief, PARAMS, Budget(), np.random.default_rng(0)
+    )
+    assert planner.widenings[-1] == PARAMS.config.action_widening
 
 
 def _make_planner(model: FrictionModel) -> FrictionPOMCPOWPlanner:
@@ -211,6 +286,16 @@ class _FailingWithModel(FrictionPOMCPOWPlanner):
     def search(self, state, belief, config, rng, proposer=None):
         if proposer is not None:
             return None, SearchStats()
+        return super().search(state, belief, config, rng, proposer)
+
+
+class _RecordingPlanner(FrictionPOMCPOWPlanner):
+    """Records the progressive widening of every search."""
+
+    widenings: list[tuple[float, float]] = []
+
+    def search(self, state, belief, config, rng, proposer=None):
+        self.widenings.append(config.action_widening)
         return super().search(state, belief, config, rng, proposer)
 
 
