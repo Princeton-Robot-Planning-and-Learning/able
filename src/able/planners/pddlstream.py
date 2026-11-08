@@ -306,9 +306,13 @@ class PDDLStreamParams:
 
     A requested item's pose is usable if at least 1 - delta of num_particles belief
     particles reach it. Planning stops after max_time seconds, or once a solve has
-    grown the process's resident memory by max_memory_gb, if set. The model proposes
-    num_draws placements per item, requested or clutter, from get_place_features(),
-    which rank its candidate slots; an untrained model proposes nothing.
+    grown the process's resident memory by max_memory_gb, if set. With a model,
+    the guided try gets at most guided_time_fraction of the time limit (the
+    planning budget's wall time if set, else max_time), so that a poor ranking
+    leaves the fallback without the model time to plan as scratch would. The
+    model proposes num_draws placements per item, requested or clutter, from
+    get_place_features(), which rank its candidate slots; an untrained model
+    proposes nothing.
     """
 
     max_time: float = 300.0
@@ -316,6 +320,9 @@ class PDDLStreamParams:
     delta: float = 0.1
     # The most a solve may grow this process's resident memory (GB), or None.
     max_memory_gb: float | None = None
+    # The share of the time limit the model-guided try may use; the fallback
+    # without the model gets the rest.
+    guided_time_fraction: float = 1.0
     algorithm: str = "adaptive"
     model: ConditionalModel = field(default_factory=FlowMatchingModel)
     num_draws: int = 16
@@ -542,6 +549,11 @@ class ReachPDDLStreamPlanner(
             if left <= 0:
                 return None, "time"
             max_time = min(max_time, left)
+        if proposal is not None:
+            limit = params.max_time
+            if budget.max_wall_time is not None:
+                limit = min(limit, budget.max_wall_time)
+            max_time = min(max_time, params.guided_time_fraction * limit)
         sim, scene = self.sim, task.initial_state.scene
         sim.reset(options={"init_state": scene})
         ctx = build_stream_context(

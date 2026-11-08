@@ -310,3 +310,45 @@ def test_memory_limit(tmp_path, monkeypatch):
             np.random.default_rng(0),
         )
     _close(model, planner)
+
+
+def test_the_guided_try_leaves_the_fallback_time(tmp_path, monkeypatch):
+    """A try the model guides gets guided_time_fraction of the time limit, and the
+    fallback without the model gets what is left."""
+    monkeypatch.chdir(tmp_path)
+    limits: list[float] = []
+
+    def solve_problem(problem, max_time, algorithm):
+        del problem, algorithm
+        limits.append(max_time)
+        # The guided try finds nothing; the fallback finds an empty plan.
+        return None if len(limits) % 2 == 1 else []
+
+    monkeypatch.setattr(pddlstream_planner, "solve_problem", solve_problem)
+    domain = make_domain(seed=0, num_requested=2, num_clutter=0, true_theta=THETA)
+    model = domain.env_model
+    assert isinstance(model, ReachModel)
+    planner = _make_planner(model)
+    task = domain.task_distribution.sample(np.random.default_rng(0))
+    slot = build_stream_context(planner.sim, task.initial_state.scene).slot_points(
+        "req0"
+    )[0]
+    defaults = replace(planner.get_default_params(), max_time=600.0)
+    params = planner.set_model(
+        replace(defaults, guided_time_fraction=0.5), _FixedModel(slot)
+    )
+    belief, rng = _point_belief(THETA), np.random.default_rng(0)
+    policy = planner.plan(task, belief, params, Budget(max_wall_time=600.0), rng)
+    assert policy.get_planning_stats()["fell_back"] == 1.0
+    assert limits[0] == pytest.approx(300.0)
+    assert 590.0 < limits[1] <= 600.0  # what is left of the 600 s budget
+    # Without a planning budget, the fallback gets all of max_time.
+    limits.clear()
+    planner.plan(task, belief, params, Budget(), rng)
+    assert limits == [pytest.approx(300.0), 600.0]
+    # A fraction of 1 gives the guided try the whole limit, as before.
+    limits.clear()
+    whole = replace(params, guided_time_fraction=1.0)
+    planner.plan(task, belief, whole, Budget(max_wall_time=600.0), rng)
+    assert limits[0] > 590.0
+    _close(model, planner)
