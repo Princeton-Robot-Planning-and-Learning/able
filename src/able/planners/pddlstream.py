@@ -2,7 +2,9 @@
 PDDLStream problem and planner for the human reach environment."""
 
 import contextlib
+import ctypes
 import dataclasses
+import gc
 import io
 import os
 import shutil
@@ -107,6 +109,21 @@ def memory_limit(max_growth: int | None) -> Iterator[None]:
         yield
     finally:
         _MEMORY_LIMIT = previous
+
+
+def release_memory() -> None:
+    """Return freed memory to the operating system.
+
+    glibc keeps the heap pages that a large solve freed, so without this the
+    process stays as large as its largest solve, and each memory limit starts
+    from there: across solves, a worker's memory climbs until it is killed. A
+    no-op where glibc's malloc_trim is unavailable.
+    """
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
 
 
 def count_evaluation(calls: Counter, name: str) -> None:
@@ -547,6 +564,8 @@ class ReachPDDLStreamPlanner(
         except OutOfMemory:
             stats["stream_calls"] += float(sum(ctx.calls.values()))
             return None, "memory"
+        finally:
+            release_memory()
         stats["stream_calls"] += float(sum(ctx.calls.values()))
         if plan is None and time.perf_counter() - solve_start >= max_time:
             return None, "time"
