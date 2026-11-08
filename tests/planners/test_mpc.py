@@ -26,6 +26,7 @@ from able.planners.mpc import (
     PredictiveSamplingConfig,
     RolloutProblem,
     SeedConfig,
+    _with_start_reach,
     get_control_basis,
     get_control_window,
     get_mpc_features,
@@ -309,6 +310,26 @@ def test_planning_failures(setup):
     )
     with pytest.raises(PlanningFailure, match="Diverged"):
         planner.plan(task, _prior(), short, Budget(), rng)
+
+
+def test_the_start_raises_the_believed_limits(setup):
+    """Tests that the believed limits cover the start's reach, so a start beyond
+    what the belief's samples allow does not break the believed range of motion
+    before any control."""
+    _, task, planner = setup
+    reach = np.array(task.initial_state.max_reach)
+    prior = RangeOfMotionPrior()
+    # Every sample allows about 0.72 of each motion's range, short of the start's
+    # third motion.
+    belief = RangeOfMotionBelief.from_prior(0.72, 0.005, prior.low, prior.high, 3)
+    assert reach[2] > 0.75
+    raised = _with_start_reach(belief, task.initial_state)
+    assert np.allclose(raised.floor, [prior.low, prior.low, reach[2]])
+    # Planning gets past the first step and runs out of its two-step budget.
+    with pytest.raises(PlanningFailure, match="budget"):
+        planner.plan(
+            task, belief, FAST, Budget(max_iterations=2), np.random.default_rng(0)
+        )
 
 
 class _RecordingModel(ConditionalModel):
