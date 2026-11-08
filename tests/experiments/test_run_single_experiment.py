@@ -76,7 +76,8 @@ def test_get_eval_tasks_infinite() -> None:
 
 
 def test_della_launcher() -> None:
-    """Tests that the Della launcher config runs jobs through Slurm on one node type."""
+    """Tests that the Della launcher config runs jobs through Slurm on one node type,
+    with a CPU and its memory per worker process."""
     with initialize_config_dir(
         config_dir=str(SCRIPT.parent / "conf"), version_base=None
     ):
@@ -85,10 +86,17 @@ def test_della_launcher() -> None:
             overrides=["hydra/launcher=della"],
             return_hydra_config=True,
         )
+        workers_cfg = compose(
+            config_name="config",
+            overrides=["hydra/launcher=della", "num_workers=6"],
+            return_hydra_config=True,
+        )
     launcher = cfg.hydra.launcher
     assert launcher["_target_"].endswith("SlurmLauncher")
     assert launcher.constraint == "genoa"
     assert launcher.cpus_per_task == 1
+    assert launcher.mem_per_cpu == "8G" and launcher.mem_gb is None
+    assert workers_cfg.hydra.launcher.cpus_per_task == 6
 
 
 def test_run_single_experiment(tmp_path: Path) -> None:
@@ -396,6 +404,48 @@ def test_friction_dreaming(tmp_path: Path) -> None:
     assert cfg.approach_name == "dreaming"
     assert len(pd.read_csv(tmp_path / "eval_results.csv")) == 1
     assert list(pd.read_csv(tmp_path / "cycle_results.csv").num_executed_tasks) == [1]
+
+
+def test_worker_processes(tmp_path: Path) -> None:
+    """Tests runs with worker processes: belief coverage in the friction
+    environment, whose sleeps and evaluations run in the workers, and the arm with
+    videos, which runs without them."""
+    common = ["num_workers=2", "num_cycles=2", "budgets.sleep.max_iterations=2"]
+    friction = [
+        "env=friction",
+        "approach=belief_coverage",
+        "num_eval_tasks=3",
+        "env.domain.horizon=2",
+        "env.domain.num_particles=20",
+        "approach.num_sims=20",
+        "approach.max_depth=2",
+        "approach.model.num_steps=5",
+    ]
+    arm = ["approach=dreaming", "env.domain.num_goals=2", "record_videos=true"]
+    for name, overrides in (("friction", friction), ("arm", arm)):
+        run_dir = tmp_path / name
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                *common,
+                *overrides,
+                f"hydra.run.dir={run_dir}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        eval_df = pd.read_csv(run_dir / "eval_results.csv")
+        assert list(eval_df.cycle) == (
+            [0, 0, 0, 1, 1, 1] if name == "friction" else [0, 0, 1, 1]
+        )
+        log = (run_dir / "run_single_experiment.log").read_text()
+        if name == "friction":
+            assert "Starting 2 worker processes" in log
+        else:
+            assert "running without worker processes" in log
 
 
 def test_human_reach(tmp_path: Path) -> None:

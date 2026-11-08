@@ -10,6 +10,7 @@ from able.envs.base import FiniteTaskDistribution, TaskDistribution
 from able.learners.base import Learner
 from able.learners.belief_sources import BeliefSource
 from able.models.base import Dataset
+from able.parallel import WorkerContext, WorkerPool
 from able.planners.base import TrainablePlanner
 from able.structs import (
     Budget,
@@ -42,6 +43,14 @@ class ModelLearner(
     The learner never sees the real environment: all of its data comes from
     planning. After max_sleeps sleeps, if set, the learner stops changing the
     parameters.
+
+    Given a pool, a sleep that refits once at its end and has a fixed number of
+    iterations runs in parallel: the pool's workers make every draw of the belief
+    source at once, this process chooses each iteration's training belief in
+    order, and the workers then plan every iteration's training tasks at once.
+    Each draw and each iteration's training tasks get their own random generator,
+    spawned from the sleep's, so the result does not depend on the number of
+    workers.
     """
 
     def __init__(
@@ -71,12 +80,18 @@ class ModelLearner(
         """All of the training data so far."""
         return self._dataset
 
+    @property
+    def belief_source(self) -> BeliefSource[HiddenParamsType, PlannerParamsType]:
+        """The source of the beliefs the learner trains under."""
+        return self._belief_source
+
     def learn(
         self,
         belief: Belief[HiddenParamsType],
         params: PlannerParamsType,
         budget: Budget,
         rng: np.random.Generator,
+        pool: WorkerPool | None = None,
     ) -> PlannerParamsType:
         """Train until the budget runs out and return parameters with the new
         model."""
@@ -86,6 +101,15 @@ class ModelLearner(
         if self._max_sleeps is not None and self._num_sleeps >= self._max_sleeps:
             return params
         self._num_sleeps += 1
+        if (
+            pool is not None
+            and self._refit == "per_sleep"
+            and budget.max_iterations is not None
+            and budget.max_wall_time is None
+        ):
+            return self._learn_in_parallel(
+                belief, params, budget.max_iterations, rng, pool
+            )
         start_time = time.perf_counter()
         num_iterations = 0
         while not budget.is_exhausted(time.perf_counter() - start_time, num_iterations):
@@ -93,13 +117,44 @@ class ModelLearner(
             training_belief = self._belief_source.get_training_belief(
                 num_iterations, belief, params, rng
             )
-            examples = self._plan_training_tasks(training_belief, params, rng)
+            examples = self.plan_training_tasks(training_belief, params, rng)
             self._dataset = Dataset.concatenate([self._dataset, examples])
             if self._refit == "per_iteration":
                 params = self._fit(params)
         if self._refit == "per_sleep":
             params = self._fit(params)
         return params
+
+    def _learn_in_parallel(
+        self,
+        belief: Belief[HiddenParamsType],
+        params: PlannerParamsType,
+        num_iterations: int,
+        rng: np.random.Generator,
+        pool: WorkerPool,
+    ) -> PlannerParamsType:
+        """One sleep of num_iterations iterations, with the draws and the training
+        plans made in the pool's workers."""
+        num_draws = self._belief_source.num_draws
+        draw_rngs = rng.spawn(num_iterations * num_draws)
+        draws = pool.map(
+            _draw_in_worker,
+            [(i + 1, belief, params, r) for i, r in enumerate(draw_rngs)],
+        )
+        training_beliefs = [
+            self._belief_source.choose(
+                iteration + 1,
+                draws[iteration * num_draws : (iteration + 1) * num_draws],
+            )
+            for iteration in range(num_iterations)
+        ]
+        plan_rngs = rng.spawn(num_iterations)
+        examples = pool.map(
+            _plan_training_tasks_in_worker,
+            [(b, params, r) for b, r in zip(training_beliefs, plan_rngs)],
+        )
+        self._dataset = Dataset.concatenate([self._dataset, *examples])
+        return self._fit(params)
 
     def _fit(self, params: PlannerParamsType) -> PlannerParamsType:
         if len(self._dataset) == 0:
@@ -114,7 +169,7 @@ class ModelLearner(
             self._task_distribution.sample(rng) for _ in range(self._num_training_tasks)
         ]
 
-    def _plan_training_tasks(
+    def plan_training_tasks(
         self,
         belief: Belief[HiddenParamsType],
         params: PlannerParamsType,
@@ -132,3 +187,26 @@ class ModelLearner(
                 continue
             examples.append(self._planner.get_plan_examples(task, belief, policy))
         return Dataset.concatenate(examples)
+
+
+def _draw_in_worker(
+    context: WorkerContext,
+    index: int,
+    belief: Belief[Any],
+    params: Any,
+    rng: np.random.Generator,
+) -> Belief[Any]:
+    """A worker's draw from its own copy of the learner's belief source."""
+    learner = context.learner
+    assert isinstance(learner, ModelLearner), "The worker's learner trains a model"
+    return learner.belief_source.draw(index, belief, params, rng)
+
+
+def _plan_training_tasks_in_worker(
+    context: WorkerContext, belief: Belief[Any], params: Any, rng: np.random.Generator
+) -> Dataset:
+    """A worker's training plans under one training belief, with its own copy of
+    the learner."""
+    learner = context.learner
+    assert isinstance(learner, ModelLearner), "The worker's learner trains a model"
+    return learner.plan_training_tasks(belief, params, rng)

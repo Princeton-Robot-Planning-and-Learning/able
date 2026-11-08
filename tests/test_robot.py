@@ -10,6 +10,7 @@ from able.beliefs.interval import IntervalBelief
 from able.envs.two_link_arm import JointQuery, TwoLinkArmModel, make_domain
 from able.info_gatherers.base import NullInformationGatherer
 from able.learners.base import Learner
+from able.parallel import WorkerPool
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
 from able.robot import Robot
 from able.structs import Budget, QueryResponse
@@ -24,6 +25,7 @@ class _BatchSizeLearner(Learner[np.ndarray, RandomShootingParams]):
         params: RandomShootingParams,
         budget: Budget,
         rng: np.random.Generator,
+        pool: WorkerPool | None = None,
     ) -> RandomShootingParams:
         """Return parameters with a larger batch size."""
         return dataclasses.replace(params, batch_size=params.batch_size + 1)

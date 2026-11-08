@@ -2,13 +2,15 @@
 
 import time
 from dataclasses import dataclass
-from typing import Callable, Generic, Sequence
+from typing import Any, Callable, Generic, Sequence
 
 import numpy as np
 
 from able.beliefs.base import Belief
 from able.envs.base import Environment, TaskDistribution
+from able.envs.simulated import SimulatedEnvironment
 from able.episodes import run_episode
+from able.parallel import WorkerContext, WorkerPool
 from able.policies.base import Policy
 from able.recording.base import CycleRecorder, NullRecorder, Stage
 from able.robot import Robot
@@ -108,25 +110,18 @@ class _TimedPolicy(Policy[StateType, ActType]):
 
 
 def _plan_and_run(
-    robot: Robot[
-        StateType,
-        ActType,
-        TaskType,
-        HiddenParamsType,
-        PlannerParamsType,
-        QueryType,
-        ResponseType,
-    ],
+    plan: Callable[[TaskType, Budget, np.random.Generator], Policy[StateType, ActType]],
     task: TaskType,
     env: Environment[StateType, ActType, TaskType, QueryType, ResponseType],
     planning_budget: Budget,
     rng: np.random.Generator,
     on_step: Callable[[StateType, ActType, StateType], None] | None,
 ) -> EpisodeResult[StateType, ActType, TaskType]:
-    """Plan for the task under the robot's current belief and run one episode."""
+    """Plan for the task with plan(), which plans as Robot.plan() does, and run one
+    episode."""
     start_time = time.perf_counter()
     try:
-        policy = _TimedPolicy(robot.plan(task, planning_budget, rng))
+        policy = _TimedPolicy(plan(task, planning_budget, rng))
     except PlanningFailure as failure:
         return EpisodeResult(
             task=task,
@@ -194,7 +189,7 @@ def execute(
         robot.update_belief_from_transition(state, action, next_state)
         recorder.record_step(next_state, robot.belief)
 
-    result = _plan_and_run(robot, task, env, planning_budget, rng, on_step)
+    result = _plan_and_run(robot.plan, task, env, planning_budget, rng, on_step)
     recorder.end_episode(_describe_outcome(result))
     return result
 
@@ -228,9 +223,34 @@ def evaluate(
         del state, action  # unused because the belief does not change
         recorder.record_step(next_state, robot.belief)
 
-    result = _plan_and_run(robot, task, env, planning_budget, rng, on_step)
+    result = _plan_and_run(robot.plan, task, env, planning_budget, rng, on_step)
     recorder.end_episode(_describe_outcome(result))
     return result
+
+
+def _evaluate_in_worker(
+    context: WorkerContext,
+    task: Any,
+    belief: Belief[Any],
+    params: Any,
+    planning_budget: Budget,
+    rng: np.random.Generator,
+) -> EpisodeResult[Any, Any, Any]:
+    """Evaluate one task in a worker, as evaluate() does, with the worker's planner
+    under the robot's belief and parameters.
+
+    The episode runs in a fresh copy of the real environment, the environment
+    model with the true hidden parameters, whose noise comes from rng.
+    """
+    domain = context.domain
+    real_env = domain.real_env
+    assert isinstance(real_env, SimulatedEnvironment), "Need a simulated real env"
+    env = SimulatedEnvironment(domain.env_model, real_env.hidden_params, rng)
+
+    def plan(task: Any, budget: Budget, rng: np.random.Generator) -> Policy[Any, Any]:
+        return context.planner.plan(task, belief, params, budget, rng)
+
+    return _plan_and_run(plan, task, env, planning_budget, rng, None)
 
 
 def _describe_outcome(result: EpisodeResult) -> str:
@@ -273,6 +293,7 @@ def run_cycles(
         ]
         | None
     ) = None,
+    pool: WorkerPool | None = None,
 ) -> list[
     CycleResult[StateType, ActType, TaskType, HiddenParamsType, QueryType, ResponseType]
 ]:
@@ -288,11 +309,18 @@ def run_cycles(
     execute the same sequence of tasks. The recorder, if given, sees every stage.
     on_cycle_end, if given, gets each cycle's result as soon as the cycle ends,
     for example to report progress or save results before the run finishes.
+
+    Given a pool, the robot sleeps with its workers, and the workers evaluate the
+    tasks at once. Each evaluation task then gets its own random generator, spawned
+    from the evaluation stream, and its own copy of the real environment, so
+    evaluation no longer draws noise from the real environment that task execution
+    uses. A pool cannot be used with a recorder, which sees episodes as they run.
     """
     assert (
         budgets.execution.max_iterations is not None
         or budgets.execution.max_wall_time is not None
     ), "Task execution needs a finite budget"
+    assert pool is None or recorder is None, "A pool cannot be used with a recorder"
     recorder = NullRecorder() if recorder is None else recorder
     sleep_rng, gather_rng, task_rng, execution_rng, eval_rng = rng.spawn(5)
     results = []
@@ -300,7 +328,7 @@ def run_cycles(
         cycle_start_time = time.perf_counter()
         recorder.start_stage(cycle, Stage.SLEEP)
         start_time = time.perf_counter()
-        robot.sleep(budgets.sleep, sleep_rng)
+        robot.sleep(budgets.sleep, sleep_rng, pool)
         sleep_wall_time = time.perf_counter() - start_time
         recorder.end_stage()
 
@@ -329,12 +357,25 @@ def run_cycles(
         recorder.end_stage()
 
         recorder.start_stage(cycle, Stage.EVALUATION)
-        evaluations = []
+        evaluations: list[EpisodeResult[StateType, ActType, TaskType]] = []
         start_time = time.perf_counter()
-        for i, task in enumerate(eval_tasks):
-            label = f"Evaluation task {i + 1} of {len(eval_tasks)}"
-            evaluations.append(
-                evaluate(robot, task, env, budgets.planning, eval_rng, recorder, label)
+        if pool is None:
+            for i, task in enumerate(eval_tasks):
+                label = f"Evaluation task {i + 1} of {len(eval_tasks)}"
+                evaluations.append(
+                    evaluate(
+                        robot, task, env, budgets.planning, eval_rng, recorder, label
+                    )
+                )
+        else:
+            belief, params = robot.belief, robot.planner_params
+            task_rngs = eval_rng.spawn(len(eval_tasks))
+            evaluations = pool.map(
+                _evaluate_in_worker,
+                [
+                    (task, belief, params, budgets.planning, task_rng)
+                    for task, task_rng in zip(eval_tasks, task_rngs)
+                ],
             )
         evaluation_wall_time = time.perf_counter() - start_time
         recorder.end_stage()

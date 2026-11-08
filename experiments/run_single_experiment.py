@@ -3,6 +3,7 @@
 See the README for examples.
 """
 
+import functools
 import logging
 import time
 from datetime import datetime, timedelta
@@ -17,6 +18,7 @@ from omegaconf import DictConfig, OmegaConf
 from able.cycle import CycleBudgets, CycleResult, run_cycles
 from able.envs.base import Domain, FiniteTaskDistribution, TaskDistribution
 from able.envs.simulated import SimulatedEnvironment
+from able.parallel import ProcessPool, build_context
 from able.recording.video import VideoRecorder
 from able.robot import Robot
 
@@ -54,17 +56,23 @@ def _main(cfg: DictConfig) -> None:
         Path(cfg.cycle_results_file),
         start_time,
     )
-    run_cycles(
-        robot,
-        domain.real_env,
-        task_distribution,
-        eval_tasks,
-        cfg.num_cycles,
-        budgets,
-        np.random.default_rng(cfg.seed),
-        recorder,
-        on_cycle_end=writer,
-    )
+    pool = _make_pool(cfg, resolved_cfg)
+    try:
+        run_cycles(
+            robot,
+            domain.real_env,
+            task_distribution,
+            eval_tasks,
+            cfg.num_cycles,
+            budgets,
+            np.random.default_rng(cfg.seed),
+            recorder,
+            on_cycle_end=writer,
+            pool=pool,
+        )
+    finally:
+        if pool is not None:
+            pool.close()
     logging.info(
         f"Finished in {format_duration(time.perf_counter() - start_time)}. Wrote "
         f"{cfg.eval_results_file} and {cfg.cycle_results_file}"
@@ -178,6 +186,22 @@ def get_eval_tasks(
         return list(task_distribution.get_tasks())
     rng = np.random.default_rng([seed, _EVAL_TASK_STREAM])
     return [task_distribution.sample(rng) for _ in range(num_eval_tasks)]
+
+
+def _make_pool(cfg: DictConfig, resolved_cfg: Any) -> ProcessPool | None:
+    """Worker processes for evaluation and sleep when num_workers is above 1, each
+    with its own copy of the robot built from the configuration.
+
+    Recording videos needs every episode in this process, so it runs without
+    workers.
+    """
+    if cfg.num_workers <= 1:
+        return None
+    if cfg.record_videos:
+        logging.warning("Recording videos, so running without worker processes")
+        return None
+    logging.info(f"Starting {cfg.num_workers} worker processes")
+    return ProcessPool(cfg.num_workers, functools.partial(build_context, resolved_cfg))
 
 
 def _make_video_recorder(cfg: DictConfig, domain: Domain) -> VideoRecorder:

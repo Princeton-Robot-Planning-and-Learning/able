@@ -56,7 +56,7 @@ class RolloutModelLearner(
         )
         self._env_model = env_model
 
-    def _plan_training_tasks(
+    def plan_training_tasks(
         self,
         belief: Belief[HiddenParamsType],
         params: PlannerParamsType,

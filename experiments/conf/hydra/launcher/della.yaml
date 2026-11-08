@@ -5,8 +5,10 @@ defaults:
 # Jobs of at most 24 hours go to Della's short QOS, which allows 500 jobs and 1000
 # CPUs per user.
 timeout_min: 1440
-cpus_per_task: 1
-mem_gb: 8
+# One CPU per worker process (num_workers). Memory is per CPU because each worker
+# holds its own copy of the robot and its simulators.
+cpus_per_task: ${num_workers}
+mem_per_cpu: 8G
 array_parallelism: 500
 # Della's CPU partition mixes AMD Genoa and Intel Cascade Lake nodes. Running every
 # job on one node type keeps planning times comparable.

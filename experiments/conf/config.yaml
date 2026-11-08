@@ -7,6 +7,10 @@ hydra:
 
 seed: 0
 num_cycles: 20
+# Worker processes that evaluate tasks and make a sleep's dreams and training plans
+# at once, one CPU each. 1 runs everything in this process. With
+# hydra/launcher=della, each job requests this many CPUs.
+num_workers: 1
 # Evaluation tasks sampled once per seed and used in every cycle. Finite task
 # distributions ignore this and evaluate every task.
 num_eval_tasks: 6
