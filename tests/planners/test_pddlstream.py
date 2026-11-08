@@ -25,7 +25,7 @@ from able.planners.pddlstream import (
     private_cwd,
 )
 from able.policies.base import OpenLoopPolicy
-from able.structs import Budget, PlanningFailure
+from able.structs import Budget, PlanningTimeout
 
 THETA = np.array([0.7, 0.6, 0.65])
 
@@ -72,7 +72,8 @@ def _point_belief(theta, num_particles: int = 300) -> ParticleBelief:
 
 def test_reach_planner(tmp_path, monkeypatch):
     """With a belief at the true reach, the plan delivers both items within it;
-    with a tiny reach, planning fails within the budget."""
+    with a tiny reach, PDDLStream searches until the budget's time runs out, which
+    is a timeout."""
     monkeypatch.chdir(tmp_path)
     domain = make_domain(seed=0, num_requested=2, num_clutter=0, true_theta=THETA)
     model = domain.env_model
@@ -89,12 +90,21 @@ def test_reach_planner(tmp_path, monkeypatch):
     assert stats["plan_length"] == len(plan) and stats["stream_calls"] > 0
     places = [args[0] for name, args in plan if name == "place"]
     assert {"req0", "req1"} <= set(places)
-    with pytest.raises(PlanningFailure, match="no plan"):
+    with pytest.raises(PlanningTimeout, match="no plan within its time limit"):
         planner.plan(
             task,
             _point_belief(np.array([0.1, 0.1, 0.1])),
             planner.get_default_params(),
             Budget(max_wall_time=5.0),
+            rng,
+        )
+    # A budget already spent stops before searching, also a timeout.
+    with pytest.raises(PlanningTimeout):
+        planner.plan(
+            task,
+            _point_belief(THETA),
+            planner.get_default_params(),
+            Budget(max_wall_time=0.0),
             rng,
         )
     assert not list(tmp_path.iterdir())
@@ -119,7 +129,7 @@ class _FailingWithModel(ReachPDDLStreamPlanner):
 
     def _solve(self, task, particles, params, budget, rng, proposal, stats, start_time):
         if proposal is not None:
-            return None
+            return None, False
         return super()._solve(
             task, particles, params, budget, rng, proposal, stats, start_time
         )

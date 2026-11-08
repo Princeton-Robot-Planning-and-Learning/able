@@ -15,7 +15,7 @@ from able.learners.base import Learner, NullLearner
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
 from able.recording.base import Stage
 from able.robot import Robot
-from able.structs import Budget
+from able.structs import Budget, PlanningTimeout
 from tests.recording.event_recorder import EventRecorder
 
 TRUE_LIMITS = np.array([-1.2, 1.4, -2.0, 0.9])
@@ -96,9 +96,35 @@ def test_evaluate():
 
     result = evaluate(robot, task, domain.real_env, Budget(max_iterations=0), rng)
     assert result.failure is not None
+    assert not result.timed_out
     assert not result.success
     assert result.trajectory is None
     assert result.total_cost == float("inf")
+
+
+class _TimeoutPlanner(RandomShootingPlanner):
+    """Always runs out of time."""
+
+    def plan(self, task, belief, params, budget, rng):
+        raise PlanningTimeout("Out of time")
+
+
+def test_evaluate_timeout():
+    """Tests that a failure caused by a time limit is recorded as a timeout."""
+    domain = make_domain(seed=0, true_limits=TRUE_LIMITS)
+    robot = Robot(
+        planner=_TimeoutPlanner(TwoLinkArmModel()),
+        learner=NullLearner(),
+        belief_updater=JointLimitBeliefUpdater(),
+        info_gatherer=NullInformationGatherer(),
+        initial_belief=domain.initial_belief,
+    )
+    rng = np.random.default_rng(0)
+    task = domain.task_distribution.sample(rng)
+    result = evaluate(robot, task, domain.real_env, Budget(), rng)
+    assert result.failure == "Out of time"
+    assert result.timed_out
+    assert not result.success
 
 
 def test_execute():

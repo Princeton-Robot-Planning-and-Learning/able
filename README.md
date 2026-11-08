@@ -23,7 +23,7 @@ In the limb, friction, and human reach environments there is no plan cache, so `
 
 The same script compares the approaches in the other environments, for example `./experiments/run_comparison.sh env=limb`. Approach names are the same in every environment: `approach=<name>` uses the shared budgets in `experiments/conf/approach/<name>.yaml` and the environment's factory in `experiments/conf/env_approach/<env>/<name>.yaml`.
 
-The results, the plot (`cycle_results.png`) and a Markdown table of planning time, success rate and sleep time (`summary_table.md`) go to `logs/comparison/<env>/<date>_<time>/`. Extra arguments are passed to hydra, for example `./experiments/run_comparison.sh num_cycles=10`. `SEEDS=0,1` changes the seeds and `APPROACHES=scratch,dreaming` the approaches. With `record_videos=true` (and, for example, `video_cycles=[0,19]`), the script also combines each run's stage videos into one video per run.
+The results, the plot (`cycle_results.png`) and a Markdown table of planning time, success rate, timeouts and sleep time (`summary_table.md`) go to `logs/comparison/<env>/<date>_<time>/`. Extra arguments are passed to hydra, for example `./experiments/run_comparison.sh num_cycles=10`. `SEEDS=0,1` changes the seeds and `APPROACHES=scratch,dreaming` the approaches. With `record_videos=true` (and, for example, `video_cycles=[0,19]`), the script also combines each run's stage videos into one video per run.
 
 To run one approach with one seed:
 
@@ -31,11 +31,13 @@ To run one approach with one seed:
 python experiments/run_single_experiment.py approach=dreaming seed=0
 ```
 
-Each run writes its resolved `config.yaml`, `eval_results.csv` (one row per evaluation task per cycle), and `cycle_results.csv` (one row per cycle, with the wall time of each stage and of the whole cycle). Both results files are rewritten after every cycle, so a run that stops early keeps its finished cycles, and a sweep can be plotted while it runs. After each cycle, the run's log (`run_single_experiment.log`) gets one line with the cycle's success rate, mean planning time, stage times, the run's elapsed time, and an estimate of when it will finish. To plot any set of runs:
+Each run writes its resolved `config.yaml`, `eval_results.csv` (one row per evaluation task per cycle, with why planning failed in `failure` and whether a time limit caused it in `timed_out`), and `cycle_results.csv` (one row per cycle, with the wall time of each stage and of the whole cycle). Both results files are rewritten after every cycle, so a run that stops early keeps its finished cycles, and a sweep can be plotted while it runs. After each cycle, the run's log (`run_single_experiment.log`) gets one line with the cycle's success rate, mean planning time, stage times, the run's elapsed time, and an estimate of when it will finish. To plot any set of runs:
 
 ```
 python experiments/analysis/plot_cycle_results.py --results_dir <directory containing the runs>
 ```
+
+The plot shows raw planning time and success rate per cycle. When the runs record timeouts, timed-out tasks are left out of planning time, counted as failures, and shown in a third panel of timeout rate.
 
 ### Videos
 
@@ -103,7 +105,7 @@ A robot moves requested items from far furniture to the bedside of a person sitt
 python experiments/run_single_experiment.py env=human_reach approach=scratch
 ```
 
-`env.domain.num_requested` and `env.domain.num_clutter` set the scene, 2 and 5 in the experiments. Under the prior, only 3 bedside spots are reachable with 90% probability, so scenes with more requested items often have no plan until the belief narrows. PDDLStream plans for up to 5 minutes (`approach.max_time`), and planning a scene takes from seconds to minutes. As in the other environments, the robot asks no queries by default; a query presents the gripper at points along a direction from the person's shoulder.
+`env.domain.num_requested` and `env.domain.num_clutter` set the scene, 2 and 5 in the experiments. Under the prior, only 3 bedside spots are reachable with 90% probability, so scenes with more requested items often have no plan until the belief narrows. PDDLStream plans for up to 10 minutes per task (`approach.max_time` and `budgets.planning.max_wall_time`, so a retry without the model shares that time), and planning a scene takes from seconds to minutes. A task that runs out of time counts as a timeout. As in the other environments, the robot asks no queries by default; a query presents the gripper at points along a direction from the person's shoulder.
 
 The robots that learn rank PDDLStream's placements for each requested item with a flow-matching model of where plans put it, trained while they sleep on plans for sampled scenes. As in the other environments, they differ only in the beliefs they train under: `current_belief`, `prior_only`, `dreaming`, and `belief_coverage`. To compare them with `scratch` over five seeds:
 

@@ -29,8 +29,10 @@ def _write_run(
     seed: int,
     times: list[float],
     env: str = "two_link_arm",
+    timed_out: list[bool] | None = None,
 ) -> None:
-    """Write a run with two cycles of two evaluation tasks each."""
+    """Write a run with two cycles of two evaluation tasks each, with a timed_out
+    column if given (runs from before timeouts were recorded have none)."""
     run_dir.mkdir(parents=True)
     OmegaConf.save(
         {"env_name": env, "approach_name": approach, "seed": seed},
@@ -39,14 +41,51 @@ def _write_run(
     pd.DataFrame({"cycle": [0, 1], "sleep_wall_time": [1.0, 3.0]}).to_csv(
         run_dir / "cycle_results.csv", index=False
     )
-    pd.DataFrame(
+    eval_df = pd.DataFrame(
         {
             "cycle": [0, 0, 1, 1],
             "task_id": [0, 1, 0, 1],
             "success": [True, False, True, True],
             "planning_wall_time": times,
         }
-    ).to_csv(run_dir / "eval_results.csv", index=False)
+    )
+    if timed_out is not None:
+        eval_df["timed_out"] = timed_out
+    eval_df.to_csv(run_dir / "eval_results.csv", index=False)
+
+
+def test_plot_timeouts(tmp_path: Path) -> None:
+    """Tests that timed-out tasks are left out of planning time and counted
+    separately, including when some runs predate the timed_out column."""
+    # The second task of cycle 0 failed by running out of its 600 s.
+    _write_run(
+        tmp_path / "0",
+        "scratch",
+        0,
+        [100.0, 600.0, 200.0, 300.0],
+        "human_reach",
+        timed_out=[False, True, False, False],
+    )
+    _write_run(tmp_path / "1", "dreaming", 0, [50.0, 60.0, 70.0, 80.0], "human_reach")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ANALYSIS_DIR / "plot_cycle_results.py"),
+            "--results_dir",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "cycle_results.png").stat().st_size > 0
+    table = (tmp_path / "summary_table.md").read_text(encoding="utf-8")
+    # Columns: Dreaming, Plan from scratch.
+    assert "| Planning time (s), cycle 0 | 55.00 ± 0.00 | 100.00 ± 0.00 |" in table
+    assert "| Success rate, all cycles | 0.75 ± 0.00 | 0.75 ± 0.00 |" in table
+    assert "| Timeout rate, all cycles | 0.00 ± 0.00 | 0.25 ± 0.00 |" in table
+    assert "human_reach, scratch, cycle 1: planning time 250.00 s" in result.stdout
 
 
 def test_plot_cycle_results(tmp_path: Path) -> None:

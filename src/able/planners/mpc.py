@@ -34,7 +34,7 @@ from able.models.base import ConditionalModel, Dataset
 from able.models.flow_matching import FlowMatchingModel
 from able.planners.base import TrainablePlanner
 from able.policies.base import OpenLoopPolicy, Policy
-from able.structs import Budget, PlanningFailure, StateType
+from able.structs import Budget, PlanningFailure, PlanningTimeout, StateType
 
 # How far inside the believed limits a retargeted goal goes (rad), per attempt.
 RETARGET_MARGIN = 0.05
@@ -705,6 +705,9 @@ class LimbMPCPlanner(
                 if num_stale >= config.divergence_patience:
                     raise PlanningFailure(f"Diverged at an error of {best_error:.3f}")
                 elapsed = time.perf_counter() - attempt.start_time
+                max_wall_time = attempt.budget.max_wall_time
+                if max_wall_time is not None and elapsed >= max_wall_time:
+                    raise PlanningTimeout("Ran out of planning budget time")
                 if attempt.budget.is_exhausted(elapsed, int(stats["num_mpc_steps"])):
                     raise PlanningFailure("Ran out of planning budget")
                 state = world.capture()

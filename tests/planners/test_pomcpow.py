@@ -25,7 +25,7 @@ from able.planners.pomcpow import (
     encode_push,
     get_push_features,
 )
-from able.structs import Budget, PlanningFailure, Task
+from able.structs import Budget, PlanningFailure, PlanningTimeout, Task
 
 PARAMS = POMCPOWParams(POMCPOWConfig(num_sims=40, max_depth=3))
 
@@ -176,13 +176,17 @@ def test_no_push_after_the_task_ends(setup):
 
 
 def test_budget_and_dead_ends(setup):
-    """Searches share the budget, and planning fails without a feasible push."""
+    """Searches share the budget, running out of its time is a timeout, and
+    planning fails without a feasible push."""
     domain, planner, task = setup
     policy = _plan(planner, task, domain.initial_belief, Budget(max_iterations=30))
     assert policy.get_planning_stats()["num_sims"] == 30
     trajectory = run_episode(domain.real_env, task, policy, max_steps=1)
-    with pytest.raises(PlanningFailure, match="budget"):
+    with pytest.raises(PlanningFailure, match="budget") as failure:
         policy.get_action(trajectory.states[-1])
+    assert not isinstance(failure.value, PlanningTimeout)
+    with pytest.raises(PlanningTimeout, match="time"):
+        _plan(planner, task, domain.initial_belief, Budget(max_wall_time=0.0))
     slot = replace(task.initial_state, puck=(2.6, 2.2), true_puck=(2.6, 2.2))
     with pytest.raises(PlanningFailure, match="No feasible push"):
         _plan(planner, Task(slot, task.goal), domain.initial_belief)

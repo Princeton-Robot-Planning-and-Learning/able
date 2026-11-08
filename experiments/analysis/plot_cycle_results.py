@@ -43,11 +43,20 @@ ENV_TO_DISPLAY_NAME = {
     "human_reach": "Human reach",
 }
 
-# Each panel plots one column of eval_results.csv: (column, axis label).
+# Each panel plots one column of eval_results.csv: (column, axis label). Runs that
+# record timeouts get a third panel; their planning time leaves out timed-out tasks.
 METRICS = [
     ("planning_wall_time", "Planning time per task"),
     ("success", "Success rate"),
 ]
+TIMEOUT_METRIC = ("timed_out", "Timeout rate")
+RATE_METRICS = ("success", "timed_out")
+
+CAPTION = "Lines show the mean over seeds; shaded bands show one standard error."
+TIMEOUT_CAPTION = (
+    "Timed-out tasks are excluded from planning time, counted as failures, and "
+    "shown on the right."
+)
 
 # The table's windows of cycles: (name, first cycle, last cycle or None for the end).
 TABLE_WINDOWS = [
@@ -63,33 +72,63 @@ def _get_colors(approaches: list[str]) -> dict[str, str]:
     return {a: APPROACH_TO_COLOR.get(a) or next(extra) for a in sorted(approaches)}
 
 
+def _has_timeouts(df: pd.DataFrame) -> bool:
+    """Whether the runs record timeouts; runs from before they were recorded do
+    not."""
+    return "timed_out" in df.columns
+
+
+def _finished(df: pd.DataFrame) -> pd.DataFrame:
+    """The rows whose planning did not time out, which planning time averages."""
+    if not _has_timeouts(df):
+        return df
+    return df[~df["timed_out"]]
+
+
 def _main(results_dir: Path, outfile: Path) -> None:
     df = combine_results_csvs(results_dir, "eval_results.csv")
+    metrics = list(METRICS)
+    if _has_timeouts(df):
+        # Runs without the column, mixed with runs that have it, had no timeouts
+        # recorded.
+        df["timed_out"] = df["timed_out"].fillna(False).astype(bool)
+        metrics.append(TIMEOUT_METRIC)
     envs = sorted(df["env"].unique())
     approaches = sorted(df["approach"].unique())
     colors = _get_colors(approaches)
 
     fig, axes = plt.subplots(
         len(envs),
-        len(METRICS),
-        figsize=(5.5 * len(METRICS), 4.0 * len(envs)),
+        len(metrics),
+        figsize=(5.5 * len(metrics), 4.0 * len(envs)),
         squeeze=False,
     )
     for row, env in enumerate(envs):
         env_df = df[df["env"] == env]
         num_seeds = env_df["seed"].nunique()
-        for col, (metric, label) in enumerate(METRICS):
+        # Every panel spans every cycle, so a cycle whose tasks all timed out
+        # leaves a gap in the planning-time line instead of being skipped.
+        cycles = np.sort(env_df["cycle"].unique())
+        for col, (metric, label) in enumerate(metrics):
             scale, unit = 1.0, ""
+            metric_df = env_df
+            # Markers keep a planning time between two timed-out cycles visible.
+            marker = None
             if metric == "planning_wall_time":
                 scale, unit = _get_time_scale(env_df[metric])
                 label = f"{label} ({unit})"
+                metric_df = _finished(env_df)
+                marker = "o" if _has_timeouts(df) else None
             ax = axes[row, col]
-            summary = summarize_over_seeds(env_df, metric)
+            summary = summarize_over_seeds(metric_df, metric)
             for approach in approaches:
-                approach_summary = summary[summary["approach"] == approach]
-                cycles = approach_summary["cycle"].to_numpy()
-                mean = approach_summary["mean"].to_numpy() * scale
-                sem = approach_summary["sem"].to_numpy() * scale
+                approach_summary = (
+                    summary[summary["approach"] == approach]
+                    .set_index("cycle")
+                    .reindex(cycles)
+                )
+                mean = approach_summary["mean"].to_numpy(dtype=np.float64) * scale
+                sem = approach_summary["sem"].to_numpy(dtype=np.float64) * scale
                 ax.fill_between(
                     cycles, mean - sem, mean + sem, color=colors[approach], alpha=0.2
                 )
@@ -99,16 +138,20 @@ def _main(results_dir: Path, outfile: Path) -> None:
                     color=colors[approach],
                     linestyle=APPROACH_TO_LINESTYLE.get(approach, "-"),
                     linewidth=2,
+                    marker=marker,
+                    markersize=3,
                     solid_capstyle="round",
                     label=APPROACH_TO_DISPLAY_NAME.get(approach, approach),
                 )
+            pad = 0.05 * (cycles[-1] - cycles[0]) if len(cycles) > 1 else 0.5
+            ax.set_xlim(cycles[0] - pad, cycles[-1] + pad)
             ax.set_xlabel("Cycle")
             ax.set_ylabel(label)
             ax.set_title(
                 f"{ENV_TO_DISPLAY_NAME.get(env, env)} ({num_seeds} seeds)",
                 fontsize=11,
             )
-            if metric == "success":
+            if metric in RATE_METRICS:
                 ax.set_ylim(0.0, 1.05)
             else:
                 ax.set_ylim(bottom=0.0)
@@ -126,11 +169,15 @@ def _main(results_dir: Path, outfile: Path) -> None:
         frameon=False,
         bbox_to_anchor=(0.5, 1.0),
     )
+    caption = CAPTION
+    if _has_timeouts(df):
+        caption += "\n" + TIMEOUT_CAPTION
     fig.text(
         0.5,
         -0.02,
-        "Lines show the mean over seeds; shaded bands show one standard error.",
+        caption,
         ha="center",
+        va="top",
         fontsize=9,
         color="#52514e",
     )
@@ -159,7 +206,8 @@ def _over_seeds(df: pd.DataFrame, metric: str, first: int, last: int | None) -> 
     first = first if first >= 0 else max(0, max_cycle + 1 + first)
     last = max_cycle if last is None else last
     window = df[(df["cycle"] >= first) & (df["cycle"] <= last)]
-    per_seed = window.groupby("seed")[metric].mean()
+    # A seed whose every task in the window timed out has no planning time.
+    per_seed = window.groupby("seed")[metric].mean().dropna()
     if per_seed.empty:
         return "–"
     values = per_seed.to_numpy(dtype=np.float64)
@@ -170,14 +218,19 @@ def _over_seeds(df: pd.DataFrame, metric: str, first: int, last: int | None) -> 
 
 
 def _make_table(eval_df: pd.DataFrame, cycle_df: pd.DataFrame) -> str:
-    """A Markdown table per environment of planning time, success rate, and sleep
-    time. ± is one standard error over seeds."""
+    """A Markdown table per environment of planning time, success rate, timeout
+    rate (when the runs record timeouts), and sleep time. Planning time leaves out
+    timed-out tasks. ± is one standard error over seeds."""
     sections = []
     for env in sorted(eval_df["env"].unique()):
         env_df = eval_df[eval_df["env"] == env]
         approaches = sorted(env_df["approach"].unique())
         scale, unit = _get_time_scale(env_df["planning_wall_time"])
-        env_df = env_df.assign(planning_time=env_df["planning_wall_time"] * scale)
+        planning_time = env_df["planning_wall_time"] * scale
+        if _has_timeouts(env_df):
+            # NaN rows are skipped in each seed's mean.
+            planning_time = planning_time.where(~env_df["timed_out"])
+        env_df = env_df.assign(planning_time=planning_time)
         names = [APPROACH_TO_DISPLAY_NAME.get(a, a) for a in approaches]
         lines = [
             f"### {ENV_TO_DISPLAY_NAME.get(env, env)}",
@@ -190,6 +243,8 @@ def _make_table(eval_df: pd.DataFrame, cycle_df: pd.DataFrame) -> str:
             for name, first, last in TABLE_WINDOWS
         ]
         rows.append(("Success rate, all cycles", "success", 0, None))
+        if _has_timeouts(env_df):
+            rows.append(("Timeout rate, all cycles", "timed_out", 0, None))
         for label, metric, first, last in rows:
             cells = [
                 _over_seeds(env_df[env_df["approach"] == a], metric, first, last)
@@ -210,16 +265,27 @@ def _make_table(eval_df: pd.DataFrame, cycle_df: pd.DataFrame) -> str:
 
 
 def _print_final_cycle(df: pd.DataFrame) -> None:
-    """Print the final cycle's results, so they are visible without the plot."""
+    """Print the final cycle's results, so they are visible without the plot.
+
+    Planning time leaves out timed-out tasks, which are counted after it.
+    """
     final = df[df["cycle"] == df["cycle"].max()]
     for (env, approach), group in final.groupby(["env", "approach"]):
         scale, unit = _get_time_scale(df[df["env"] == env]["planning_wall_time"])
-        time = scale * np.mean(group["planning_wall_time"])
-        success = np.mean(group["success"])
-        print(
-            f"{env}, {approach}, cycle {group['cycle'].iloc[0]}: "
-            f"planning time {time:.2f} {unit}, success rate {success:.2f}"
+        finished = _finished(group)
+        time = (
+            f"{scale * np.mean(finished['planning_wall_time']):.2f} {unit}"
+            if len(finished)
+            else "none finished"
         )
+        success = np.mean(group["success"])
+        line = (
+            f"{env}, {approach}, cycle {group['cycle'].iloc[0]}: "
+            f"planning time {time}, success rate {success:.2f}"
+        )
+        if len(finished) < len(group):
+            line += f", {len(group) - len(finished)} timed out"
+        print(line)
 
 
 if __name__ == "__main__":
