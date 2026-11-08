@@ -1,6 +1,8 @@
 """Tests for parallel.py and the parallel paths of the cycle and the model
 learner."""
 
+import os
+
 import numpy as np
 import pytest
 from hydra import compose, initialize_config_dir
@@ -19,6 +21,7 @@ from able.parallel import (
     ProcessPool,
     SerialPool,
     WorkerContext,
+    WorkerDied,
     WorkerPool,
     build_context,
 )
@@ -203,3 +206,24 @@ def test_build_context():
     assert isinstance(context.planner, RandomShootingPlanner)
     assert isinstance(context.learner, ModelLearner)
     assert len(list(context.domain.task_distribution.get_tasks())) == 12
+
+
+def _empty_context() -> WorkerContext:
+    return WorkerContext(domain=None, planner=None, learner=None)
+
+
+def _exit_worker(context: WorkerContext) -> None:
+    """Kill the worker, as the out-of-memory killer would."""
+    del context
+    os._exit(1)  # pylint: disable=protected-access
+
+
+def test_a_dead_worker_fails_the_pool():
+    """Tests that a worker that dies makes map() raise instead of waiting for its
+    job forever."""
+    pool = ProcessPool(1, _empty_context)
+    try:
+        with pytest.raises(WorkerDied, match="died"):
+            pool.map(_exit_worker, [()])
+    finally:
+        pool.close()
