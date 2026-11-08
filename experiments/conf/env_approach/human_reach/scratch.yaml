@@ -2,8 +2,8 @@ _target_: able.approaches.make_human_reach_scratch_robot
 # PDDLStream's time limit per plan (s), the belief particles it plans under, and
 # the chance a usable pose may be out of reach.
 max_time: 600.0
+num_particles: 256
+delta: 0.02
 # The most one solve may grow the process's memory (GB). A solve that grows more
 # fails, rather than the run being killed for running out of memory.
 max_memory_gb: 4.0
-num_particles: 256
-delta: 0.1
