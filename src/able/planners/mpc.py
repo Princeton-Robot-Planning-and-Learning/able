@@ -19,6 +19,7 @@ import numpy as np
 from kinder.envs.dynamic3d.limb_utils import NUM_ROBOT_JOINTS
 from numpy.typing import NDArray
 
+from able.belief_updaters.range_of_motion import FLOOR_STEP
 from able.beliefs.base import Belief
 from able.beliefs.range_of_motion import RangeOfMotionBelief
 from able.envs.limb.constraints import (
@@ -414,6 +415,17 @@ def retarget(
     return moved, True
 
 
+def _with_start_reach(
+    belief: RangeOfMotionBelief, start: LimbState
+) -> RangeOfMotionBelief:
+    """The belief with each motion's floor raised to the start's reach, by the
+    belief updater's rule."""
+    for motion, reach in enumerate(start.max_reach):
+        if reach > belief.lower[motion] + FLOOR_STEP:
+            belief = belief.with_floor(motion, reach)
+    return belief
+
+
 class _Checker:
     """Checks the constraints after a simulator step, under the believed limits."""
 
@@ -625,12 +637,19 @@ class LimbMPCPlanner(
     ) -> LimbMPCPolicy:
         """Find torque corrections that reach the goal under the believed limits.
 
+        The limb starts at the task's initial configuration, so the person's range
+        covers it: the believed limits first rise to the start's reach, as the
+        belief updater raises them after every step. Otherwise a start beyond what
+        half of the belief's samples allow would break the believed range of motion
+        before any control.
+
         Raises PlanningFailure if MPC breaks a constraint, diverges, runs out of
         steps or budget, or the replay misses the goal, with and without the
         model.
         """
         assert isinstance(belief, RangeOfMotionBelief), "Need a RangeOfMotionBelief"
         start_time = time.perf_counter()
+        belief = _with_start_reach(belief, task.initial_state)
         particles = np.stack([belief.sample(rng) for _ in range(params.num_particles)])
         limits = ParticleLimits.from_particles(
             self._model.variant, particles, params.confidence
