@@ -319,9 +319,9 @@ class ReachPDDLStreamPlanner(
 
     The policy executes the plan's actions, then NO_ACTION until the horizon; a
     plan longer than the horizon fails. The model in the parameters ranks where
-    each item, requested or clutter, is placed first; if planning with it fails, the planner
-    plans again without it. The planning budget's wall time, if set, caps all
-    planning. The statistics are the number of stream evaluations, the plan's
+    each item, requested or clutter, is placed first; if planning with it fails,
+    the planner plans again without it. The planning budget's wall time, if set,
+    caps all planning. The statistics are the number of stream evaluations, the plan's
     length, whether the model guided the plan, and whether it fell back. The
     default parameters, if given, replace PDDLStreamParams().
     """
