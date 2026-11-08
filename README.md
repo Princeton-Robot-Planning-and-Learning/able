@@ -95,6 +95,14 @@ The robots that learn guide POMCPOW with a flow-matching model of good pushes, u
 
 The friction environment evaluates 8 tasks per cycle and dreams 4 times per sleep, rolling out 1 training task per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
 
+Every push runs a fixed number of POMCPOW simulations, so friction's planning time cannot fall with learning: a better model shows up as a higher success rate instead (#130). To show the speedup as the simulations per push a robot needs to reach a given success rate, run the comparison at several budgets:
+
+```
+./experiments/run_comparison.sh env=friction approach.num_sims=100,300,1000
+```
+
+The plot against cycles then shows the largest budget, and `budget_results.png` shows each approach's success rate over the last 5 cycles against the budget, with scratch at the largest budget as a dotted line. `summary_table.md` adds each approach's success rate at every budget and the simulations per push it needs to match scratch at the largest budget, interpolated in the budget's logarithm. On Della, the smaller budgets add jobs (three times as many), but they are short.
+
 ## Human reach
 
 The human reach environment needs the `human_reach` extra (`pip install -e ".[human_reach]"`), which builds PDDLStream's Fast Downward (it needs cmake and a C++ compiler).

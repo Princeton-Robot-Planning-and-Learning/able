@@ -11,7 +11,8 @@ def combine_results_csvs(directory: Path, results_filename: str) -> pd.DataFrame
 
     A run is a directory that contains the results file and the resolved config.yaml
     written by run_single_experiment.py. Each row gets the run's environment, approach,
-    and seed.
+    and seed, and, for planners with a simulation budget (friction's POMCPOW), its
+    simulations per push as simulation_budget.
     """
     frames = []
     for config_path in sorted(directory.rglob("config.yaml")):
@@ -24,6 +25,9 @@ def combine_results_csvs(directory: Path, results_filename: str) -> pd.DataFrame
         df["env"] = cfg.env_name
         df["approach"] = cfg.approach_name
         df["seed"] = cfg.seed
+        budget = OmegaConf.select(cfg, "approach.num_sims")
+        if budget is not None:
+            df["simulation_budget"] = int(budget)
         frames.append(df)
     assert frames, f"No {results_filename} files found under {directory}"
     return pd.concat(frames, ignore_index=True)

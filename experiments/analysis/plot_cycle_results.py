@@ -1,5 +1,9 @@
 """Plot offline evaluation results against cycles, with one line per approach.
 
+An environment whose runs use several simulation budgets (friction's
+approach.num_sims) is plotted against cycles at its largest budget, and its success
+rate is also plotted against the budget, in budget_results.png.
+
 Example:
     python experiments/analysis/plot_cycle_results.py --results_dir logs/comparison
 """
@@ -67,6 +71,15 @@ ENV_TO_PLANNER_WORK = {
     "human_reach": ("Stream calls per task", "stream_calls", None),
 }
 
+# Success against the simulation budget is taken over the last cycles, after the
+# robots have learned.
+BUDGET_WINDOW = 5
+BUDGET_CAPTION = (
+    "Each point is the mean over seeds of the success rate over the last {window}"
+    " cycles; bars show one standard error.\nThe dotted line is planning from scratch"
+    " at {budget} simulations per push."
+)
+
 # The table's windows of cycles: (name, first cycle, last cycle or None for the end).
 TABLE_WINDOWS = [
     ("cycle 0", 0, 0),
@@ -95,7 +108,10 @@ def _finished(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _main(results_dir: Path, outfile: Path) -> None:
-    df = combine_results_csvs(results_dir, "eval_results.csv")
+    all_df = combine_results_csvs(results_dir, "eval_results.csv")
+    budget_envs = _get_budget_envs(all_df)
+    # Against cycles, an environment with several budgets shows its largest.
+    df = _at_full_budget(all_df)
     metrics = list(METRICS)
     if _has_timeouts(df):
         # Runs without the column, mixed with runs that have it, had no timeouts
@@ -156,10 +172,11 @@ def _main(results_dir: Path, outfile: Path) -> None:
             ax.set_xlim(cycles[0] - pad, cycles[-1] + pad)
             ax.set_xlabel("Cycle")
             ax.set_ylabel(label)
-            ax.set_title(
-                f"{ENV_TO_DISPLAY_NAME.get(env, env)} ({num_seeds} seeds)",
-                fontsize=11,
-            )
+            title = f"{ENV_TO_DISPLAY_NAME.get(env, env)} ({num_seeds} seeds"
+            if env in budget_envs:
+                budget = int(env_df["simulation_budget"].max())
+                title += f", {budget} simulations per push"
+            ax.set_title(title + ")", fontsize=11)
             if metric in RATE_METRICS:
                 ax.set_ylim(0.0, 1.05)
             else:
@@ -196,11 +213,198 @@ def _main(results_dir: Path, outfile: Path) -> None:
     plt.close(fig)
     _print_final_cycle(df)
     print(f"Wrote plot to {outfile}")
-    table = _make_table(df, combine_results_csvs(results_dir, "cycle_results.csv"))
+    cycle_df = _at_full_budget(combine_results_csvs(results_dir, "cycle_results.csv"))
+    table = _make_table(df, cycle_df)
+    if budget_envs:
+        budget_df = all_df[all_df["env"].isin(budget_envs)]
+        budget_file = outfile.with_name("budget_results.png")
+        _plot_budgets(budget_df, colors, budget_file)
+        print(f"Wrote plot to {budget_file}")
+        table += "\n" + _make_budget_table(budget_df)
     table_file = outfile.with_name("summary_table.md")
     table_file.write_text(table, encoding="utf-8")
     print(table)
     print(f"Wrote table to {table_file}")
+
+
+def _get_budget_envs(df: pd.DataFrame) -> list[str]:
+    """The environments whose runs use more than one simulation budget."""
+    if "simulation_budget" not in df.columns:
+        return []
+    budgets = df.groupby("env")["simulation_budget"].nunique()
+    return sorted(budgets[budgets > 1].index)
+
+
+def _at_full_budget(df: pd.DataFrame) -> pd.DataFrame:
+    """The rows of each environment at its largest simulation budget, and every row
+    of environments without one."""
+    if "simulation_budget" not in df.columns:
+        return df
+    largest = df.groupby("env")["simulation_budget"].transform("max")
+    keep = df["simulation_budget"].isna() | (df["simulation_budget"] == largest)
+    return df[keep]
+
+
+def summarize_budgets(df: pd.DataFrame, window: int = BUDGET_WINDOW) -> pd.DataFrame:
+    """For each environment, approach, and simulation budget: the success rate over
+    the last `window` cycles, averaged over each seed's tasks and then over seeds
+    (mean and standard error)."""
+    last = df.groupby(["env", "approach", "simulation_budget", "seed"])[
+        "cycle"
+    ].transform("max")
+    recent = df[df["cycle"] > last - window]
+    per_seed = recent.groupby(["env", "approach", "simulation_budget", "seed"])[
+        "success"
+    ].mean()
+    summary = per_seed.groupby(["env", "approach", "simulation_budget"]).agg(
+        mean="mean", sem="sem", num_seeds="count"
+    )
+    summary["sem"] = summary["sem"].fillna(0.0)
+    return summary.reset_index()
+
+
+def budget_to_match(
+    budgets: np.ndarray, success: np.ndarray, target: float
+) -> float | None:
+    """The smallest budget at which the success rate, interpolated linearly in the
+    budget's logarithm between measured budgets, reaches the target: the first
+    budget if it already does, and None if no budget does."""
+    order = np.argsort(budgets)
+    budgets, success = budgets[order], success[order]
+    for i, (budget, rate) in enumerate(zip(budgets, success)):
+        if rate < target:
+            continue
+        if i == 0:
+            return float(budget)
+        low, high = np.log(budgets[i - 1]), np.log(budget)
+        fraction = (target - success[i - 1]) / (rate - success[i - 1])
+        return float(np.exp(low + fraction * (high - low)))
+    return None
+
+
+def _plot_budgets(df: pd.DataFrame, colors: dict[str, str], outfile: Path) -> None:
+    """A panel per environment of the success rate against the simulation budget,
+    with a line per approach and scratch's success at the largest budget as a
+    reference."""
+    summary = summarize_budgets(df)
+    envs = sorted(summary["env"].unique())
+    fig, axes = plt.subplots(
+        1, len(envs), figsize=(6.0 * len(envs), 4.2), squeeze=False
+    )
+    full_budget = int(summary["simulation_budget"].max())
+    for col, env in enumerate(envs):
+        ax = axes[0, col]
+        env_summary = summary[summary["env"] == env]
+        for approach in sorted(env_summary["approach"].unique()):
+            rows = env_summary[env_summary["approach"] == approach].sort_values(
+                "simulation_budget"
+            )
+            ax.errorbar(
+                rows["simulation_budget"],
+                rows["mean"],
+                yerr=rows["sem"],
+                color=colors[approach],
+                linestyle=APPROACH_TO_LINESTYLE.get(approach, "-"),
+                linewidth=2,
+                marker="o",
+                markersize=4,
+                capsize=3,
+                label=APPROACH_TO_DISPLAY_NAME.get(approach, approach),
+            )
+        reference = env_summary[
+            (env_summary["approach"] == "scratch")
+            & (env_summary["simulation_budget"] == full_budget)
+        ]
+        if not reference.empty:
+            ax.axhline(
+                float(reference["mean"].iloc[0]),
+                color="#8a8984",
+                linestyle=":",
+                linewidth=1.5,
+            )
+        budgets = sorted(env_summary["simulation_budget"].unique())
+        ax.set_xscale("log")
+        ax.set_xticks(budgets, [str(int(b)) for b in budgets])
+        ax.minorticks_off()
+        ax.set_xlabel("Simulations per push")
+        ax.set_ylabel(f"Success rate, last {BUDGET_WINDOW} cycles")
+        ax.set_ylim(0.0, 1.05)
+        num_seeds = int(env_summary["num_seeds"].max())
+        ax.set_title(
+            f"{ENV_TO_DISPLAY_NAME.get(env, env)} ({num_seeds} seeds)", fontsize=11
+        )
+        ax.grid(color="#e4e3df", linewidth=1)
+        ax.set_axisbelow(True)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=len(labels), frameon=False)
+    fig.text(
+        0.5,
+        -0.02,
+        BUDGET_CAPTION.format(window=BUDGET_WINDOW, budget=full_budget),
+        ha="center",
+        va="top",
+        fontsize=9,
+        color="#52514e",
+    )
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.9))
+    fig.savefig(outfile, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _make_budget_table(df: pd.DataFrame) -> str:
+    """A Markdown table per environment of each approach's success rate at each
+    simulation budget, and the budget it needs to match scratch at the largest one.
+    """
+    summary = summarize_budgets(df)
+    sections = []
+    for env in sorted(summary["env"].unique()):
+        env_summary = summary[summary["env"] == env]
+        budgets = sorted(int(b) for b in env_summary["simulation_budget"].unique())
+        full = budgets[-1]
+        reference = env_summary[
+            (env_summary["approach"] == "scratch")
+            & (env_summary["simulation_budget"] == full)
+        ]
+        target = None if reference.empty else float(reference["mean"].iloc[0])
+        header = [f"{b} sims" for b in budgets]
+        match_label = f"Sims per push to match scratch at {full}"
+        lines = [
+            f"### {ENV_TO_DISPLAY_NAME.get(env, env)}: success rate over the last"
+            f" {BUDGET_WINDOW} cycles by simulation budget",
+            "",
+            "| | " + " | ".join(header + [match_label]) + " |",
+            "| --- |" + " --- |" * (len(header) + 1),
+        ]
+        for approach in sorted(env_summary["approach"].unique()):
+            rows = env_summary[env_summary["approach"] == approach].set_index(
+                "simulation_budget"
+            )
+            cells = [
+                (
+                    f"{rows.loc[b, 'mean']:.2f} ± {rows.loc[b, 'sem']:.2f}"
+                    if b in rows.index
+                    else "–"
+                )
+                for b in budgets
+            ]
+            match = "–"
+            if approach == "scratch":
+                match = "reference"
+            elif target is not None:
+                needed = budget_to_match(
+                    rows.index.to_numpy(dtype=np.float64),
+                    rows["mean"].to_numpy(dtype=np.float64),
+                    target,
+                )
+                match = f"> {full}" if needed is None else f"{needed:.0f}"
+            name = APPROACH_TO_DISPLAY_NAME.get(approach, approach)
+            lines.append(f"| {name} | " + " | ".join(cells + [match]) + " |")
+        sections.append("\n".join(lines))
+    footer = "± is one standard error over seeds. Budgets between measured ones are"
+    footer += " interpolated linearly in their logarithm."
+    return "\n\n".join(sections) + "\n\n" + footer + "\n"
 
 
 def _get_time_scale(times: pd.Series) -> tuple[float, str]:
