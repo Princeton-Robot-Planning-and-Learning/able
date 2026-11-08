@@ -92,7 +92,7 @@ def test_reach_planner(tmp_path, monkeypatch):
     assert stats["plan_length"] == len(plan) and stats["stream_calls"] > 0
     places = [args[0] for name, args in plan if name == "place"]
     assert {"req0", "req1"} <= set(places)
-    with pytest.raises(PlanningTimeout, match="no plan within its time limit"):
+    with pytest.raises(PlanningTimeout, match="no plan within its time limit") as error:
         planner.plan(
             task,
             _point_belief(np.array([0.1, 0.1, 0.1])),
@@ -100,6 +100,9 @@ def test_reach_planner(tmp_path, monkeypatch):
             Budget(max_wall_time=5.0),
             rng,
         )
+    # A failed plan still reports its statistics.
+    stats = error.value.stats
+    assert stats["stream_calls"] > 0 and stats["seeded"] == stats["fell_back"] == 0
     # A budget already spent stops before searching, also a timeout.
     with pytest.raises(PlanningTimeout):
         planner.plan(
@@ -135,6 +138,44 @@ class _FailingWithModel(ReachPDDLStreamPlanner):
         return super()._solve(
             task, particles, params, budget, rng, proposal, stats, start_time
         )
+
+
+class _TimingOutWithModel(ReachPDDLStreamPlanner):
+    """Runs out of time whenever the model guides it."""
+
+    def _solve(self, task, particles, params, budget, rng, proposal, stats, start_time):
+        if proposal is not None:
+            return None, "time"
+        return super()._solve(
+            task, particles, params, budget, rng, proposal, stats, start_time
+        )
+
+
+def test_failed_plans_report_their_statistics(tmp_path, monkeypatch):
+    """A plan whose guided try ran out of time and whose fallback found nothing
+    reports both in its failure's statistics."""
+    monkeypatch.chdir(tmp_path)
+    domain = make_domain(seed=0, num_requested=2, num_clutter=0, true_theta=THETA)
+    model = domain.env_model
+    assert isinstance(model, ReachModel)
+    planner = _TimingOutWithModel(model, PDDLStreamParams(max_time=60))
+    task = domain.task_distribution.sample(np.random.default_rng(0))
+    slot = build_stream_context(planner.sim, task.initial_state.scene).slot_points(
+        "req0"
+    )[0]
+    params = planner.set_model(planner.get_default_params(), _FixedModel(slot))
+    with pytest.raises(PlanningTimeout) as error:
+        planner.plan(
+            task,
+            _point_belief(np.array([0.1, 0.1, 0.1])),
+            params,
+            Budget(max_wall_time=5.0),
+            np.random.default_rng(0),
+        )
+    stats = error.value.stats
+    assert stats["seeded"] == stats["seeded_timed_out"] == stats["fell_back"] == 1.0
+    assert stats["stream_calls"] > 0
+    _close(model, planner)
 
 
 def _make_failing(model: ReachModel) -> ReachPDDLStreamPlanner:
