@@ -256,6 +256,27 @@ def test_a_trained_model_guides_planning(tmp_path, monkeypatch):
     _close(model, planner)
 
 
+def test_memory_is_released_after_every_solve(tmp_path, monkeypatch):
+    """Every solve returns its freed memory, whether it found a plan or not."""
+    monkeypatch.chdir(tmp_path)
+    pddlstream_planner.release_memory()  # runs where malloc_trim is missing too
+    releases = []
+    monkeypatch.setattr(
+        pddlstream_planner, "release_memory", lambda: releases.append(1)
+    )
+    domain = make_domain(seed=0, num_requested=2, num_clutter=0, true_theta=THETA)
+    model = domain.env_model
+    assert isinstance(model, ReachModel)
+    planner = _make_planner(model)
+    task = domain.task_distribution.sample(np.random.default_rng(0))
+    rng = np.random.default_rng(0)
+    planner.plan(
+        task, _point_belief(THETA), planner.get_default_params(), Budget(), rng
+    )
+    assert releases == [1]
+    _close(model, planner)
+
+
 def test_memory_limit(tmp_path, monkeypatch):
     """A solve stops once the process's memory has grown past its limit, checked
     every MEMORY_CHECK_EVERY stream evaluations, and planning then fails."""
