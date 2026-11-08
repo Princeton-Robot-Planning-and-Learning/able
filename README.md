@@ -192,7 +192,15 @@ tail -n 1 logs/comparison/<env>/<sweep>/*/run_single_experiment.log
 
 The first line of each log names the job's seed and approach.
 
-Jobs request 24 hours, `num_workers` CPUs (1 by default), and 8 GB per CPU, which puts them in Della's short QOS: up to 500 jobs and 1000 CPUs at once per user. For longer runs, raise `hydra.launcher.timeout_min`; up to 4320 minutes goes to the medium QOS (400 CPUs per user) and up to 8640 minutes to vlong (325 CPUs per user). `hydra.launcher.mem_per_cpu` sets the memory per CPU.
+Jobs request 24 hours, `num_workers` CPUs (1 by default), and 8 GB per CPU, which puts them in Della's short QOS: up to 500 jobs and 1000 CPUs at once per user.
+
+Shorter time limits get jobs out of the queue sooner, but a limit of an hour or less puts them in Della's test QOS, which runs only 2 jobs per user at once. To choose limits, run a short sweep (for example `num_cycles=2` with one seed), then estimate each approach's full run from its cycle times:
+
+```
+python experiments/analysis/estimate_run_times.py --results_dir <sweep> --num_cycles 20
+```
+
+It prints the slowest run's estimate per approach and a limit 1.3 times as long, never below 61 minutes. One sweep has one limit, so approaches with very different times can run as separate sweeps (`APPROACHES=...`) with `hydra.launcher.timeout_min=<limit>`. For longer runs, raise `hydra.launcher.timeout_min`; up to 4320 minutes goes to the medium QOS (400 CPUs per user) and up to 8640 minutes to vlong (325 CPUs per user). `hydra.launcher.mem_per_cpu` sets the memory per CPU.
 
 To copy results to your laptop:
 
