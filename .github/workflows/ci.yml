@@ -2,9 +2,13 @@ name: CI Checks
 
 on: [push]
 
+# ubuntu-latest is moving to Ubuntu 26.04, whose newer GCC rejects the Fast
+# Downward sources that pddlstream builds (tl::optional in optional.hh), so jobs
+# that land there fail whenever the uv cache misses. Pin the image that builds.
+
 jobs:
   autoformat:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Run black to test code linting
@@ -15,7 +19,7 @@ jobs:
       - name: Run isort to organize imports
         uses: isort/isort-action@master
   linting:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ["3.11"]
@@ -34,7 +38,7 @@ jobs:
       run: |
         uv run pytest . --pylint -m pylint --pylint-rcfile=.pylintrc
   static-type-checking:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ["3.11"]
@@ -53,7 +57,7 @@ jobs:
       run: |
         uv run mypy .
   unit-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ["3.11"]
