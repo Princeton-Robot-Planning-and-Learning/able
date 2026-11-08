@@ -48,9 +48,11 @@ from able.models.exact_match_cache import ExactMatchCache
 from able.planners.mpc import LimbMPCPlanner, MPCParams
 from able.planners.pddlstream import PDDLStreamParams, ReachPDDLStreamPlanner
 from able.planners.pomcpow import (
+    EarlyStopConfig,
     FrictionPOMCPOWPlanner,
     POMCPOWConfig,
     POMCPOWParams,
+    ProposalConfig,
 )
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
 from able.recording.base import CycleRecorder
@@ -555,18 +557,25 @@ def _make_friction_parts(
     num_sims: int,
     max_depth: int,
     model: ConditionalModel | None = None,
+    early_stop: EarlyStopConfig | None = None,
+    proposal: ProposalConfig | None = None,
 ) -> tuple[
     FrictionModel, FrictionPOMCPOWPlanner, FrictionBeliefUpdater, ProbeFloorGatherer
 ]:
     """The friction robot's model of the environment, planner, belief updater, and
-    gatherer. POMCPOW runs num_sims simulations per push, max_depth pushes deep,
-    and the model, if given, proposes pushes."""
+    gatherer. POMCPOW runs up to num_sims simulations per push, max_depth pushes
+    deep, and stops early by the early_stop rule, if given. The model, if given,
+    proposes pushes as the proposal config says."""
     env_model = domain.env_model
     assert isinstance(env_model, FrictionModel)
-    config = POMCPOWConfig(num_sims=num_sims, max_depth=max_depth)
+    config = POMCPOWConfig(
+        num_sims=num_sims, max_depth=max_depth, early_stop=early_stop
+    )
     params = POMCPOWParams(config)
     if model is not None:
         params = dataclasses.replace(params, model=model)
+    if proposal is not None:
+        params = dataclasses.replace(params, proposal=proposal)
     belief_updater = FrictionBeliefUpdater(env_model.world)
     return (
         env_model,
@@ -580,13 +589,14 @@ def make_friction_scratch_robot(
     domain: FrictionDomain,
     num_sims: int = 1000,
     max_depth: int = 8,
+    early_stop: EarlyStopConfig | None = None,
     recorder: CycleRecorder[FrictionState, FrictionTask, ArmArray] | None = None,
 ) -> FrictionRobot:
     """A robot that plans each push with POMCPOW, probes the least certain floor,
     and never learns."""
     del recorder  # unused because the robot imagines nothing while it sleeps
     _, planner, belief_updater, gatherer = _make_friction_parts(
-        domain, num_sims, max_depth
+        domain, num_sims, max_depth, early_stop=early_stop
     )
     return Robot(
         planner=planner,
@@ -604,13 +614,15 @@ def make_friction_current_belief_robot(
     num_training_tasks: int = 1,
     num_sims: int = 1000,
     max_depth: int = 8,
+    early_stop: EarlyStopConfig | None = None,
+    proposal: ProposalConfig | None = None,
     recorder: CycleRecorder[FrictionState, FrictionTask, ArmArray] | None = None,
 ) -> FrictionRobot:
     """A friction robot whose model, while it sleeps, learns the pushes of solved
     rollouts under its current belief. It never anticipates belief updates."""
     del recorder  # unused because the robot imagines nothing while it sleeps
     env_model, planner, belief_updater, gatherer = _make_friction_parts(
-        domain, num_sims, max_depth, model
+        domain, num_sims, max_depth, model, early_stop, proposal
     )
     return Robot(
         planner=planner,
@@ -636,13 +648,15 @@ def make_friction_prior_only_robot(
     num_training_tasks: int = 1,
     num_sims: int = 1000,
     max_depth: int = 8,
+    early_stop: EarlyStopConfig | None = None,
+    proposal: ProposalConfig | None = None,
     recorder: CycleRecorder[FrictionState, FrictionTask, ArmArray] | None = None,
 ) -> FrictionRobot:
     """A friction robot whose model learns the pushes of solved rollouts under the
     prior in its first sleep, and never learns again."""
     del recorder  # unused because the robot imagines nothing while it sleeps
     env_model, planner, belief_updater, gatherer = _make_friction_parts(
-        domain, num_sims, max_depth, model
+        domain, num_sims, max_depth, model, early_stop, proposal
     )
     return Robot(
         planner=planner,
@@ -671,6 +685,8 @@ def make_friction_dreaming_robot(
     num_training_tasks: int = 1,
     num_sims: int = 1000,
     max_depth: int = 8,
+    early_stop: EarlyStopConfig | None = None,
+    proposal: ProposalConfig | None = None,
     recorder: CycleRecorder[FrictionState, FrictionTask, ArmArray] | None = None,
 ) -> FrictionRobot:
     """A friction robot that dreams while it sleeps: its model learns the pushes of
@@ -680,7 +696,7 @@ def make_friction_dreaming_robot(
     execution, and planning.
     """
     env_model, planner, belief_updater, gatherer = _make_friction_parts(
-        domain, num_sims, max_depth, model
+        domain, num_sims, max_depth, model, early_stop, proposal
     )
     belief_source: ImaginedNextBeliefSource = ImaginedNextBeliefSource(
         env_model,
@@ -720,6 +736,8 @@ def make_friction_belief_coverage_robot(
     num_training_tasks: int = 1,
     num_sims: int = 1000,
     max_depth: int = 8,
+    early_stop: EarlyStopConfig | None = None,
+    proposal: ProposalConfig | None = None,
     recorder: CycleRecorder[FrictionState, FrictionTask, ArmArray] | None = None,
 ) -> FrictionRobot:
     """A friction robot whose model learns, while it sleeps, under dreamed beliefs
@@ -727,7 +745,7 @@ def make_friction_belief_coverage_robot(
     farthest of num_candidates dreams. The model is refit once per sleep, as for
     dreaming."""
     env_model, planner, belief_updater, gatherer = _make_friction_parts(
-        domain, num_sims, max_depth, model
+        domain, num_sims, max_depth, model, early_stop, proposal
     )
     dreamer = _make_dreamer(
         domain,
@@ -763,15 +781,20 @@ def _make_reach_parts(
     num_particles: int,
     delta: float,
     model: ConditionalModel | None = None,
+    max_memory_gb: float | None = None,
 ) -> tuple[ReachModel, ReachPDDLStreamPlanner, ReachBeliefUpdater, ReachQueryGatherer]:
     """The human reach robot's model of the environment, planner, belief updater,
-    and gatherer. PDDLStream plans for up to max_time seconds, a pose is usable if
-    at least 1 - delta of num_particles belief particles reach it, and the model,
-    if given, ranks the placements."""
+    and gatherer. PDDLStream plans for up to max_time seconds, and a solve fails if
+    it grows the process's memory by more than max_memory_gb, if set. A pose is
+    usable if at least 1 - delta of num_particles belief particles reach it, and
+    the model, if given, ranks the placements."""
     env_model = domain.env_model
     assert isinstance(env_model, ReachModel)
     params = PDDLStreamParams(
-        max_time=max_time, num_particles=num_particles, delta=delta
+        max_time=max_time,
+        num_particles=num_particles,
+        delta=delta,
+        max_memory_gb=max_memory_gb,
     )
     if model is not None:
         params = dataclasses.replace(params, model=model)
@@ -789,13 +812,14 @@ def make_human_reach_scratch_robot(
     max_time: float = 300.0,
     num_particles: int = 256,
     delta: float = 0.1,
+    max_memory_gb: float | None = None,
     recorder: CycleRecorder[ReachState, ReachTask, ArmArray] | None = None,
 ) -> ReachRobot:
     """A robot that plans with PDDLStream, asks the person to reach for the gripper,
     and never learns."""
     del recorder  # unused because the robot imagines nothing while it sleeps
     _, planner, belief_updater, gatherer = _make_reach_parts(
-        domain, max_time, num_particles, delta
+        domain, max_time, num_particles, delta, max_memory_gb=max_memory_gb
     )
     return Robot(
         planner=planner,
@@ -814,13 +838,14 @@ def make_human_reach_current_belief_robot(
     max_time: float = 300.0,
     num_particles: int = 256,
     delta: float = 0.1,
+    max_memory_gb: float | None = None,
     recorder: CycleRecorder[ReachState, ReachTask, ArmArray] | None = None,
 ) -> ReachRobot:
     """A human reach robot whose model, while it sleeps, learns plans for sampled
     scenes under its current belief. It never anticipates belief updates."""
     del recorder  # unused because the robot imagines nothing while it sleeps
     _, planner, belief_updater, gatherer = _make_reach_parts(
-        domain, max_time, num_particles, delta, model
+        domain, max_time, num_particles, delta, model, max_memory_gb
     )
     return Robot(
         planner=planner,
@@ -846,13 +871,14 @@ def make_human_reach_prior_only_robot(
     max_time: float = 300.0,
     num_particles: int = 256,
     delta: float = 0.1,
+    max_memory_gb: float | None = None,
     recorder: CycleRecorder[ReachState, ReachTask, ArmArray] | None = None,
 ) -> ReachRobot:
     """A human reach robot whose model learns plans for sampled scenes under the
     prior in its first sleep, and never learns again."""
     del recorder  # unused because the robot imagines nothing while it sleeps
     _, planner, belief_updater, gatherer = _make_reach_parts(
-        domain, max_time, num_particles, delta, model
+        domain, max_time, num_particles, delta, model, max_memory_gb
     )
     return Robot(
         planner=planner,
@@ -881,6 +907,7 @@ def make_human_reach_dreaming_robot(
     max_time: float = 300.0,
     num_particles: int = 256,
     delta: float = 0.1,
+    max_memory_gb: float | None = None,
     recorder: CycleRecorder[ReachState, ReachTask, ArmArray] | None = None,
 ) -> ReachRobot:
     """A human reach robot that dreams while it sleeps: its model learns plans for
@@ -890,7 +917,7 @@ def make_human_reach_dreaming_robot(
     execution, and planning.
     """
     env_model, planner, belief_updater, gatherer = _make_reach_parts(
-        domain, max_time, num_particles, delta, model
+        domain, max_time, num_particles, delta, model, max_memory_gb
     )
     belief_source: ImaginedNextBeliefSource = ImaginedNextBeliefSource(
         env_model,
@@ -930,6 +957,7 @@ def make_human_reach_belief_coverage_robot(
     max_time: float = 300.0,
     num_particles: int = 256,
     delta: float = 0.1,
+    max_memory_gb: float | None = None,
     recorder: CycleRecorder[ReachState, ReachTask, ArmArray] | None = None,
 ) -> ReachRobot:
     """A human reach robot whose model learns, while it sleeps, under dreamed beliefs
@@ -937,7 +965,7 @@ def make_human_reach_belief_coverage_robot(
     farthest of num_candidates dreams. The model is refit once per sleep, as for
     dreaming."""
     env_model, planner, belief_updater, gatherer = _make_reach_parts(
-        domain, max_time, num_particles, delta, model
+        domain, max_time, num_particles, delta, model, max_memory_gb
     )
     dreamer = _make_dreamer(
         domain,

@@ -30,6 +30,7 @@ def _write_run(
     times: list[float],
     env: str = "two_link_arm",
     timed_out: list[bool] | None = None,
+    extra: dict[str, list[float]] | None = None,
 ) -> None:
     """Write a run with two cycles of two evaluation tasks each, with a timed_out
     column if given (runs from before timeouts were recorded have none)."""
@@ -51,6 +52,8 @@ def _write_run(
     )
     if timed_out is not None:
         eval_df["timed_out"] = timed_out
+    for column, values in (extra or {}).items():
+        eval_df[column] = values
     eval_df.to_csv(run_dir / "eval_results.csv", index=False)
 
 
@@ -138,3 +141,32 @@ def test_plot_cycle_results(tmp_path: Path) -> None:
     assert "### Limb repositioning" in table
     assert "| Planning time (s), cycle 0 | 150.00 ± 0.00 |" in table
     assert "| Sleep time (s), all cycles | 2.00 ± 0.00 | 2.00 ± 0.00 |" in table
+
+
+def test_planner_work_in_the_table(tmp_path: Path) -> None:
+    """Tests that the table reports the planner's work per task, here friction's
+    simulations per push, when the runs record it."""
+    # Cycle 0's tasks ran 1000 simulations over 4 pushes and 600 over 2.
+    _write_run(
+        tmp_path / "0",
+        "scratch",
+        0,
+        [40.0, 20.0, 30.0, 30.0],
+        "friction",
+        extra={"num_sims": [1000, 600, 300, 300], "num_searches": [4, 2, 3, 3]},
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ANALYSIS_DIR / "plot_cycle_results.py"),
+            "--results_dir",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    table = (tmp_path / "summary_table.md").read_text(encoding="utf-8")
+    assert "| Simulations per push, cycle 0 | 275.00 ± 0.00 |" in table
+    assert "| Simulations per push, last 5 cycles | 187.50 ± 0.00 |" in table

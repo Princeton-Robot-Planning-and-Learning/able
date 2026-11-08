@@ -11,9 +11,10 @@ env:
   # Instantiated with the domain's environment model, only when recording videos.
   renderer:
     _target_: able.rendering.human_reach.HumanReachRenderer
-# Planning a human reach task takes minutes, so evaluate fewer tasks and dream less
-# than on the arm.
-num_eval_tasks: 2
+# Planning a human reach task takes minutes, so dream less than on the arm. 8
+# evaluation tasks per cycle keep the per-cycle means steady; with num_workers,
+# they run at once.
+num_eval_tasks: 8
 budgets:
   sleep:
     max_iterations: 4

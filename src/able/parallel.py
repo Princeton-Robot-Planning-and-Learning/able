@@ -13,6 +13,8 @@ processes can find it by name.
 import multiprocessing
 import os
 from abc import ABC, abstractmethod
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
@@ -66,33 +68,47 @@ class ProcessPool(WorkerPool):
 
     make_context runs once in each worker and must be picklable, for example
     functools.partial(build_context, config). The workers start fresh ("spawn"),
-    so they share no simulator or thread state with this process.
+    so they share no simulator or thread state with this process. If a worker dies
+    (for example, killed for running out of memory), map() raises WorkerDied
+    instead of waiting for its job forever.
     """
 
     def __init__(
         self, num_workers: int, make_context: Callable[[], WorkerContext]
     ) -> None:
         assert num_workers > 0, "Need at least one worker"
-        saved = {name: os.environ.get(name) for name in _THREAD_VARIABLES}
-        # Workers copy the environment when they start.
+        # Workers start as jobs arrive and copy the environment then, so the thread
+        # limits stay set until the pool closes.
+        self._saved_environment = {
+            name: os.environ.get(name) for name in _THREAD_VARIABLES
+        }
         os.environ.update({name: "1" for name in _THREAD_VARIABLES})
-        try:
-            self._pool = multiprocessing.get_context("spawn").Pool(
-                num_workers, initializer=_init_worker, initargs=(make_context,)
-            )
-        finally:
-            for name, value in saved.items():
-                if value is None:
-                    del os.environ[name]
-                else:
-                    os.environ[name] = value
+        self._executor = ProcessPoolExecutor(
+            num_workers,
+            mp_context=multiprocessing.get_context("spawn"),
+            initializer=_init_worker,
+            initargs=(make_context,),
+        )
 
     def map(self, fn: Callable[..., Any], jobs: Sequence[tuple[Any, ...]]) -> list[Any]:
-        return self._pool.starmap(_run_job, [(fn, args) for args in jobs], 1)
+        try:
+            return list(self._executor.map(_run_job, [fn] * len(jobs), jobs))
+        except BrokenProcessPool as error:
+            raise WorkerDied(
+                "A worker process died, for example killed for running out of memory"
+            ) from error
 
     def close(self) -> None:
-        self._pool.close()
-        self._pool.join()
+        self._executor.shutdown()
+        for name, value in self._saved_environment.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+class WorkerDied(RuntimeError):
+    """Raised when a worker process dies while the pool has jobs for it."""
 
 
 def build_context(config: dict[str, Any]) -> WorkerContext:

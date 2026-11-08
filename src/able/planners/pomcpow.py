@@ -66,8 +66,30 @@ ActionProposer = Callable[
 
 
 @dataclass(frozen=True)
+class EarlyStopConfig:
+    """When a search may stop before num_sims.
+
+    From min_sims simulations on, every check_every simulations, the search stops
+    if the most visited root action is settled in either of two ways:
+    - its lead in visits over the runner-up exceeds the simulations left, so no
+      action could overtake it and the full search would return it too; or
+    - its return's lower confidence bound (mean - z standard errors) is at least
+      every other visited root action's upper bound minus epsilon, so it is
+      likely within epsilon of the best of them.
+    An action visited once takes the standard deviation of all root returns. The
+    returns' distribution drifts as the tree below grows, so the bounds are
+    approximate.
+    """
+
+    min_sims: int = 100
+    check_every: int = 25
+    epsilon: float = 1.0
+    z: float = 2.0
+
+
+@dataclass(frozen=True)
 class POMCPOWConfig:
-    """Search parameters."""
+    """Search parameters. early_stop, if set, lets a search stop before num_sims."""
 
     num_sims: int = 1000
     max_time: float | None = None  # seconds; None runs all simulations
@@ -78,6 +100,7 @@ class POMCPOWConfig:
     action_widening: tuple[float, float] = (2.0, 0.5)
     observation_widening: tuple[float, float] = (1.0, 0.25)
     rollout_depth: int = 0  # random steps before the model's leaf value
+    early_stop: EarlyStopConfig | None = None
 
 
 @dataclass
@@ -94,6 +117,8 @@ class _ObservationNode(Generic[S, A]):
 class _ActionNode:
     visits: int = 0
     value: float = 0.0
+    # Sum of squared deviations of the returns from their mean (Welford).
+    squared_deviations: float = 0.0
     children: dict = field(default_factory=dict)
     counts: dict = field(default_factory=dict)
 
@@ -146,6 +171,8 @@ class POMCPOW(Generic[S, A, O]):
             state = particles[int(self.rng.integers(len(particles)))]
             self._simulate(state, self.root, config.max_depth)
             sims += 1
+            if self.is_settled(sims):
+                break
         stats = SearchStats(
             num_sims=sims,
             seconds=time.perf_counter() - start,
@@ -164,6 +191,38 @@ class POMCPOW(Generic[S, A, O]):
             self.root.actions.items(), key=lambda kv: (kv[1].visits, kv[1].value)
         )
         return best[0], stats
+
+    def is_settled(self, sims: int) -> bool:
+        """Whether the early-stop rule, if any, ends the search after sims
+        simulations."""
+        rule = self.config.early_stop
+        if rule is None or self.root is None or sims >= self.config.num_sims:
+            return False
+        if sims < rule.min_sims or sims % rule.check_every != 0:
+            return False
+        visited = [n for n in self.root.actions.values() if n.visits > 0]
+        if len(visited) < 2:
+            return False
+        visited.sort(key=lambda n: (n.visits, n.value), reverse=True)
+        best, others = visited[0], visited[1:]
+        if best.visits - others[0].visits > self.config.num_sims - sims:
+            return True
+        total = sum(n.visits for n in visited)
+        mean = sum(n.visits * n.value for n in visited) / total
+        # Within-action and between-action deviations of every root return.
+        pooled_ss = sum(
+            n.squared_deviations + n.visits * (n.value - mean) ** 2 for n in visited
+        )
+        pooled_sd = math.sqrt(pooled_ss / max(total - 1, 1))
+
+        def standard_error(node: _ActionNode) -> float:
+            if node.visits < 2:
+                return pooled_sd
+            return math.sqrt(node.squared_deviations / (node.visits - 1) / node.visits)
+
+        lower = best.value - rule.z * standard_error(best)
+        upper = max(n.value + rule.z * standard_error(n) for n in others)
+        return lower >= upper - rule.epsilon
 
     @staticmethod
     def _widened(visits: int, size: int, widening: tuple[float, float]) -> bool:
@@ -264,7 +323,9 @@ class POMCPOW(Generic[S, A, O]):
             )
         node.visits += 1
         child.visits += 1
-        child.value += (total - child.value) / child.visits
+        deviation = total - child.value
+        child.value += deviation / child.visits
+        child.squared_deviations += deviation * (total - child.value)
         return total
 
 
@@ -275,12 +336,21 @@ X_DIM, Y_DIM = 13, 4
 @dataclass(frozen=True)
 class ProposalConfig:
     """How the model proposes pushes inside POMCPOW, and which root pushes become
-    its training labels."""
+    its training labels.
+
+    The first model_first pushes tried at each node come from the model while its
+    draws for the node's puck cell last; later ones come from it with probability
+    mix. action_widening, if set, replaces the search's progressive widening
+    whenever the model proposes, so that a trained model's pushes get the visits
+    instead of new random ones.
+    """
 
     mix: float = 0.5  # chance a proposal comes from the model
     num_draws: int = 16  # model draws cached per puck cell
     cell: float = 0.05  # cache resolution (m)
     min_visit_fraction: float = 0.2  # labels, relative to the most visited push
+    model_first: int = 0
+    action_widening: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True, eq=False)
@@ -379,7 +449,7 @@ class _ModelProposer:
         rng: np.random.Generator,
     ) -> Push | None:
         del states  # unused because proposals depend on the sampled state
-        if rng.random() < self._config.mix:
+        if len(tried) < self._config.model_first or rng.random() < self._config.mix:
             for push in self.draw(state.puck_array, rng):
                 if push not in tried:
                     return push
@@ -480,6 +550,11 @@ class FrictionPOMCPOWPolicy(Policy[FrictionState, Push]):
         self, state: FrictionState, proposer: ActionProposer | None
     ) -> tuple[Push | None, tuple[tuple[Push, int, float], ...]]:
         config = self._get_config()
+        widening = self._params.proposal.action_widening
+        if proposer is not None and widening is not None:
+            # A config file gives a list.
+            k, alpha = widening
+            config = replace(config, action_widening=(float(k), float(alpha)))
         push, stats = self._planner.search(
             state, self._belief, config, self._rng, proposer
         )
