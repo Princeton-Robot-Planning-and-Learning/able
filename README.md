@@ -6,7 +6,7 @@ Work in progress.
 
 ## Experiments
 
-We use [hydra](https://hydra.cc/) for experiments, with configurations in [experiments/conf](experiments/conf/). To compare five approaches on the two-link arm over five seeds and plot offline evaluation per cycle:
+We use [hydra](https://hydra.cc/) for experiments, with configurations in [experiments/conf](experiments/conf/). To compare five approaches on the two-link arm over ten seeds and plot offline evaluation per cycle:
 
 ```
 ./experiments/run_comparison.sh
@@ -23,7 +23,7 @@ In the limb, friction, and human reach environments there is no plan cache, so `
 
 The same script compares the approaches in the other environments, for example `./experiments/run_comparison.sh env=limb`. Approach names are the same in every environment: `approach=<name>` uses the shared budgets in `experiments/conf/approach/<name>.yaml` and the environment's factory in `experiments/conf/env_approach/<env>/<name>.yaml`.
 
-The results, the plot (`cycle_results.png`) and a Markdown table of planning time, success rate, timeouts and sleep time (`summary_table.md`) go to `logs/comparison/<env>/<date>_<time>/`. Extra arguments are passed to hydra, for example `./experiments/run_comparison.sh num_cycles=10`. `SEEDS=0,1` changes the seeds and `APPROACHES=scratch,dreaming` the approaches. `WORKERS=4` gives each run 4 worker processes (`num_workers`), which evaluate tasks at once and, for robots that refit once per sleep with a fixed number of iterations, make the sleep's dreams and training plans at once. Each evaluation task and each dream then gets its own random generator, so results match a run without workers in distribution but not draw for draw. A run that records videos uses no workers, since the videos follow every episode. With `record_videos=true` (and, for example, `video_cycles=[0,19]`), the script also combines each run's stage videos into one video per run.
+The results, the plot (`cycle_results.png`) and a Markdown table of planning time, success rate, timeouts, the planner's work per task (samples, MPC rollouts, simulations per push, or stream calls, which do not depend on the machine) and sleep time (`summary_table.md`) go to `logs/comparison/<env>/<date>_<time>/`. Extra arguments are passed to hydra, for example `./experiments/run_comparison.sh num_cycles=10`. `SEEDS=0,1` changes the seeds and `APPROACHES=scratch,dreaming` the approaches. `WORKERS=4` gives each run 4 worker processes (`num_workers`), which evaluate tasks at once and, for robots that refit once per sleep with a fixed number of iterations, make the sleep's dreams and training plans at once. Each evaluation task and each dream then gets its own random generator, so results match a run without workers in distribution but not draw for draw. A run that records videos uses no workers, since the videos follow every episode. With `record_videos=true` (and, for example, `video_cycles=[0,19]`), the script also combines each run's stage videos into one video per run.
 
 To run one approach with one seed:
 
@@ -67,13 +67,13 @@ As on the arm, the robot asks no queries by default (`budgets.information_gather
 
 `env.domain.variant` chooses the scene and limb, for example `env.domain.variant=bed-right-leg`. `env.domain.min_separation` and `env.domain.max_separation` bound the joint-space distance between a task's start and goal, 0.5 to 0.8 rad in the experiments. Planning a task takes a few minutes with the default 32 MPC rollouts per step.
 
-The robots that learn seed MPC with a flow-matching model of the next controls, trained while they sleep on plans for sampled tasks. As on the arm, they differ only in the beliefs they train under: `current_belief`, `prior_only`, `dreaming`, and `belief_coverage`. To compare them with `scratch` over five seeds:
+The robots that learn seed MPC with a flow-matching model of the next controls, trained while they sleep on plans for sampled tasks. As on the arm, they differ only in the beliefs they train under: `current_belief`, `prior_only`, `dreaming`, and `belief_coverage`. To compare them with `scratch` over ten seeds:
 
 ```
 ./experiments/run_comparison.sh env=limb
 ```
 
-The limb environment evaluates 2 tasks per cycle and dreams 4 times per sleep, planning 1 training task per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
+The limb environment evaluates 8 tasks per cycle and dreams 4 times per sleep, planning 1 training task per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
 
 ## Friction
 
@@ -87,13 +87,13 @@ python experiments/run_single_experiment.py env=friction approach=scratch
 
 `env.domain.num_holes` (0 to 9) and `env.domain.goal_radius` choose how hard the maze is, 4 and 0.3 m in the experiments. `env.domain.sim=3d` runs the pushes in PyBullet with a TidyBot holding a paddle instead of in 2D, with the same physics. Planning a push takes several seconds with the default 1000 simulations, and a task takes up to 15 pushes. As on the arm and the limb, the robot asks no queries by default; a query probes the floor the belief is least sure of.
 
-The robots that learn guide POMCPOW with a flow-matching model of good pushes, used for half of its proposals. While they sleep they roll out sampled tasks under a training belief and learn the well-visited pushes of the rollouts that reach the goal. As on the arm and the limb, they differ only in the beliefs they train under: `current_belief`, `prior_only`, `dreaming`, and `belief_coverage`. To compare them with `scratch` over five seeds:
+The robots that learn guide POMCPOW with a flow-matching model of good pushes, used for half of its proposals. While they sleep they roll out sampled tasks under a training belief and learn the well-visited pushes of the rollouts that reach the goal. As on the arm and the limb, they differ only in the beliefs they train under: `current_belief`, `prior_only`, `dreaming`, and `belief_coverage`. To compare them with `scratch` over ten seeds:
 
 ```
 ./experiments/run_comparison.sh env=friction
 ```
 
-The friction environment evaluates 2 tasks per cycle and dreams 4 times per sleep, rolling out 1 training task per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
+The friction environment evaluates 8 tasks per cycle and dreams 4 times per sleep, rolling out 1 training task per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
 
 ## Human reach
 
@@ -107,13 +107,13 @@ python experiments/run_single_experiment.py env=human_reach approach=scratch
 
 `env.domain.num_requested` and `env.domain.num_clutter` set the scene, 2 and 5 in the experiments. Under the prior, only 3 bedside spots are reachable with 90% probability, so scenes with more requested items often have no plan until the belief narrows. PDDLStream plans for up to 10 minutes per task (`approach.max_time` and `budgets.planning.max_wall_time`, so a retry without the model shares that time), and planning a scene takes from seconds to minutes. A task that runs out of time counts as a timeout. As in the other environments, the robot asks no queries by default; a query presents the gripper at points along a direction from the person's shoulder.
 
-The robots that learn rank PDDLStream's placements for each requested item with a flow-matching model of where plans put it, trained while they sleep on plans for sampled scenes. As in the other environments, they differ only in the beliefs they train under: `current_belief`, `prior_only`, `dreaming`, and `belief_coverage`. To compare them with `scratch` over five seeds:
+The robots that learn rank PDDLStream's placements for each requested item with a flow-matching model of where plans put it, trained while they sleep on plans for sampled scenes. As in the other environments, they differ only in the beliefs they train under: `current_belief`, `prior_only`, `dreaming`, and `belief_coverage`. To compare them with `scratch` over ten seeds:
 
 ```
 ./experiments/run_comparison.sh env=human_reach
 ```
 
-The human reach environment evaluates 2 tasks per cycle and dreams 4 times per sleep, planning 1 training scene per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
+The human reach environment evaluates 8 tasks per cycle and dreams 4 times per sleep, planning 1 training scene per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
 
 
 ## Della
