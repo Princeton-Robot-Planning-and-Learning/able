@@ -31,7 +31,7 @@ from able.planners.mpc import (
     get_mpc_features,
     retarget,
 )
-from able.structs import Budget, PlanningFailure
+from able.structs import Budget, PlanningFailure, PlanningTimeout
 
 # The limb tests share a planned task, so they run on one pytest-xdist worker.
 pytestmark = pytest.mark.xdist_group("limb_mpc")
@@ -299,8 +299,11 @@ def test_planning_failures(setup):
     fails."""
     _, task, planner = setup
     rng = np.random.default_rng(0)
-    with pytest.raises(PlanningFailure, match="budget"):
+    with pytest.raises(PlanningFailure, match="budget") as failure:
         planner.plan(task, _prior(), FAST, Budget(max_iterations=0), rng)
+    assert not isinstance(failure.value, PlanningTimeout)
+    with pytest.raises(PlanningTimeout, match="time"):
+        planner.plan(task, _prior(), FAST, Budget(max_wall_time=0.0), rng)
     short = dataclasses.replace(
         FAST, config=dataclasses.replace(FAST.config, divergence_patience=0)
     )

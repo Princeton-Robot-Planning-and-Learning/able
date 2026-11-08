@@ -17,3 +17,7 @@ num_eval_tasks: 2
 budgets:
   sleep:
     max_iterations: 4
+  # At most 10 minutes per task (with approach.max_time), shared with the retry
+  # without the model when a seeded plan fails. Running out counts as a timeout.
+  planning:
+    max_wall_time: 600

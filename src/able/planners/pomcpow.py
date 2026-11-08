@@ -24,7 +24,7 @@ from able.models.base import ConditionalModel, Dataset
 from able.models.flow_matching import FlowMatchingModel
 from able.planners.base import TrainablePlanner
 from able.policies.base import Policy
-from able.structs import Budget, PlanningFailure
+from able.structs import Budget, PlanningFailure, PlanningTimeout
 
 S = TypeVar("S")
 A = TypeVar("A", bound=Hashable)
@@ -509,8 +509,10 @@ class FrictionPOMCPOWPolicy(Policy[FrictionState, Push]):
         if budget.max_wall_time is not None:
             left = budget.max_wall_time - self._search_time
             max_time = left if max_time is None else min(max_time, left)
-        if num_sims <= 0 or (max_time is not None and max_time <= 0):
-            raise PlanningFailure("The planning budget ran out")
+        if max_time is not None and max_time <= 0:
+            raise PlanningTimeout("The planning budget ran out of time")
+        if num_sims <= 0:
+            raise PlanningFailure("The planning budget ran out of simulations")
         return replace(config, num_sims=num_sims, max_time=max_time)
 
 

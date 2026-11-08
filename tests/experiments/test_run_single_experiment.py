@@ -118,12 +118,22 @@ def test_run_single_experiment(tmp_path: Path) -> None:
         eval_df = pd.read_csv(run_dir / "eval_results.csv")
         assert len(eval_df) == 24
         assert list(eval_df.cycle.unique()) == [0, 1]
-        for column in ("success", "planning_wall_time", "total_cost", "num_samples"):
+        for column in (
+            "success",
+            "planning_wall_time",
+            "total_cost",
+            "num_samples",
+            "failure",
+        ):
             assert column in eval_df.columns
+        # Random shooting has no time limit here.
+        assert not eval_df.timed_out.any()
 
         cycle_df = pd.read_csv(run_dir / "cycle_results.csv")
         assert list(cycle_df.cycle) == [0, 1]
         assert list(cycle_df.num_executed_tasks) == [1, 1]
+        # The arm's robots have no information gatherer, so the query asks nothing.
+        assert list(cycle_df.num_queries) == [0, 0]
         for column in STAGE_TIME_COLUMNS:
             assert (cycle_df[column] >= 0).all()
         stage_total = cycle_df[list(STAGE_TIME_COLUMNS)].sum(axis=1)
@@ -220,6 +230,14 @@ def test_format_progress() -> None:
     )
     assert format_progress(results, 2, 3400.0, now) == (
         f"Cycle 1 done (2/2) | {stages} | elapsed 0:56:40"
+    )
+    # A timed-out task is left out of the mean planning time and counted.
+    last = results[-1]
+    timed_out = dataclasses.replace(last.evaluations[1], timed_out=True)
+    last = dataclasses.replace(last, evaluations=[last.evaluations[0], timed_out])
+    assert format_progress([last], 1, 60.0, now).startswith(
+        "Cycle 1 done (1/1) | success rate 0.50, mean planning time 200 s, "
+        "1 timed out | "
     )
 
 

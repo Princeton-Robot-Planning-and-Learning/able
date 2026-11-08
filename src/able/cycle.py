@@ -18,6 +18,7 @@ from able.structs import (
     HiddenParamsType,
     PlannerParamsType,
     PlanningFailure,
+    PlanningTimeout,
     QueryResponse,
     QueryType,
     ResponseType,
@@ -34,7 +35,8 @@ class EpisodeResult(Generic[StateType, ActType, TaskType]):
     Success means the environment's goal check passed on the final state. The
     planning wall time covers plan() and every call to get_action(). If planning
     fails, the trajectory is None, the total cost is infinite, the episode is not
-    a success, and the failure holds the error message.
+    a success, and the failure holds the error message. A failure timed out if a
+    time limit caused it (PlanningTimeout).
     """
 
     task: TaskType
@@ -44,6 +46,7 @@ class EpisodeResult(Generic[StateType, ActType, TaskType]):
     planning_wall_time: float
     planning_stats: dict[str, float]
     failure: str | None = None
+    timed_out: bool = False
 
 
 @dataclass(frozen=True)
@@ -133,6 +136,7 @@ def _plan_and_run(
             planning_wall_time=time.perf_counter() - start_time,
             planning_stats={},
             failure=str(failure),
+            timed_out=isinstance(failure, PlanningTimeout),
         )
     plan_time = time.perf_counter() - start_time
     try:
@@ -146,6 +150,7 @@ def _plan_and_run(
             planning_wall_time=plan_time + policy.total_time,
             planning_stats=policy.get_planning_stats(),
             failure=str(failure),
+            timed_out=isinstance(failure, PlanningTimeout),
         )
     return EpisodeResult(
         task=task,

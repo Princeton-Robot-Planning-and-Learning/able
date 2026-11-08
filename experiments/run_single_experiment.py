@@ -111,16 +111,23 @@ def format_progress(
 ) -> str:
     """One line on the latest cycle: its evaluation, the wall time of each stage,
     the run's elapsed time, and when the run should finish at the mean cycle time
-    so far."""
+    so far.
+
+    As in the plots, the mean planning time leaves out timed-out tasks, which are
+    counted separately.
+    """
     result = results[-1]
     parts = [f"Cycle {result.cycle} done ({len(results)}/{num_cycles})"]
     if result.evaluations:
         success_rate = np.mean([e.success for e in result.evaluations])
-        planning_time = np.mean([e.planning_wall_time for e in result.evaluations])
-        parts.append(
-            f"success rate {success_rate:.2f}, "
-            f"mean planning time {planning_time:.4g} s"
-        )
+        finished = [e.planning_wall_time for e in result.evaluations if not e.timed_out]
+        evaluation = f"success rate {success_rate:.2f}"
+        if finished:
+            evaluation += f", mean planning time {np.mean(finished):.4g} s"
+        num_timeouts = len(result.evaluations) - len(finished)
+        if num_timeouts:
+            evaluation += f", {num_timeouts} timed out"
+        parts.append(evaluation)
     stages = [
         ("sleep", result.sleep_wall_time),
         ("gathering", result.gathering_wall_time),
@@ -189,7 +196,8 @@ def _make_video_recorder(cfg: DictConfig, domain: Domain) -> VideoRecorder:
 
 
 def _get_eval_rows(results: list[CycleResult]) -> list[dict[str, Any]]:
-    """One row per evaluation task per cycle, including planner statistics."""
+    """One row per evaluation task per cycle, including why planning failed, whether
+    a time limit caused it, and planner statistics."""
     rows: list[dict[str, Any]] = []
     for result in results:
         for task_id, evaluation in enumerate(result.evaluations):
@@ -201,6 +209,8 @@ def _get_eval_rows(results: list[CycleResult]) -> list[dict[str, Any]]:
                     "planning_wall_time": evaluation.planning_wall_time,
                     "total_cost": evaluation.total_cost,
                     "planning_failed": evaluation.failure is not None,
+                    "timed_out": evaluation.timed_out,
+                    "failure": evaluation.failure,
                     **evaluation.planning_stats,
                 }
             )

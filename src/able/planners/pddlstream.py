@@ -55,7 +55,7 @@ from able.models.base import ConditionalModel, Dataset
 from able.models.flow_matching import FlowMatchingModel
 from able.planners.base import TrainablePlanner
 from able.policies.base import OpenLoopPolicy, Policy
-from able.structs import Budget, PlanningFailure
+from able.structs import Budget, PlanningFailure, PlanningTimeout
 
 
 @contextmanager
@@ -396,8 +396,8 @@ class ReachPDDLStreamPlanner(
     ) -> OpenLoopPolicy[ReachState, ReachAction]:
         """Plan under num_particles of the belief's particles.
 
-        Raises PlanningFailure if PDDLStream finds no plan in time, with and
-        without the model.
+        Raises PlanningFailure if PDDLStream finds no plan, with and without the
+        model, and PlanningTimeout if the last try ran out of time.
         """
         assert isinstance(belief, ParticleBelief), "Need a ParticleBelief"
         start_time = time.perf_counter()
@@ -408,14 +408,16 @@ class ReachPDDLStreamPlanner(
         proposal = self._propose(task, belief, params, rng)
         stats = {"stream_calls": 0.0, "seeded": float(proposal is not None)}
         stats["fell_back"] = 0.0
-        plan = self._solve(
+        plan, timed_out = self._solve(
             task, particles, params, budget, rng, proposal, stats, start_time
         )
         if plan is None and proposal is not None:
             stats["fell_back"] = 1.0
-            plan = self._solve(
+            plan, timed_out = self._solve(
                 task, particles, params, budget, rng, None, stats, start_time
             )
+        if plan is None and timed_out:
+            raise PlanningTimeout("PDDLStream found no plan within its time limit")
         if plan is None:
             raise PlanningFailure("PDDLStream found no plan")
         horizon = self._model.horizon
@@ -453,12 +455,14 @@ class ReachPDDLStreamPlanner(
         proposal: PlaceProposal | None,
         stats: dict[str, float],
         start_time: float,
-    ) -> list | None:
+    ) -> tuple[list | None, bool]:
+        """The plan or None, and whether the search stopped at its time limit:
+        PDDLStream only gives up once its time is used up."""
         max_time = params.max_time
         if budget.max_wall_time is not None:
             left = budget.max_wall_time - (time.perf_counter() - start_time)
             if left <= 0:
-                return None
+                return None, True
             max_time = min(max_time, left)
         sim, scene = self.sim, task.initial_state.scene
         sim.reset(options={"init_state": scene})
@@ -470,8 +474,10 @@ class ReachPDDLStreamPlanner(
             seed=int(rng.integers(2**31 - 1)),
             proposal=proposal,
         )
+        solve_start = time.perf_counter()
         plan = solve_problem(
             create_problem(sim, scene, ctx=ctx), max_time, params.algorithm
         )
+        timed_out = plan is None and time.perf_counter() - solve_start >= max_time
         stats["stream_calls"] += float(sum(ctx.calls.values()))
-        return plan
+        return plan, timed_out
