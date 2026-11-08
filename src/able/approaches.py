@@ -345,11 +345,13 @@ def _make_limb_parts(
     num_rollouts: int,
     num_particles: int,
     model: ConditionalModel | None = None,
+    seed_tolerance: float = 0.0,
 ) -> tuple[LimbModel, LimbMPCPlanner, RangeOfMotionBeliefUpdater, PushToLimitGatherer]:
     """The limb robot's model of the environment, planner, belief updater, and
     gatherer. MPC scores num_rollouts candidates per step, constrains the limb to
     the range that half of num_particles belief samples allow, and is seeded by the
-    model, if given."""
+    model, if given. A step the model proposes is taken if it costs at most
+    1 + seed_tolerance times the best directed candidate."""
     env_model = domain.env_model
     assert isinstance(env_model, LimbModel)
     default = MPCParams()
@@ -358,6 +360,7 @@ def _make_limb_parts(
         config=dataclasses.replace(default.config, sampling=sampling),
         num_particles=num_particles,
         model=default.model if model is None else model,
+        seed=dataclasses.replace(default.seed, tolerance=seed_tolerance),
     )
     belief_updater = RangeOfMotionBeliefUpdater(env_model.variant)
     return (
@@ -396,13 +399,14 @@ def make_limb_current_belief_robot(
     num_training_tasks: int = 1,
     num_rollouts: int = 32,
     num_particles: int = 32,
+    seed_tolerance: float = 0.0,
     recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
 ) -> LimbRobot:
     """A limb robot whose model, while it sleeps, learns plans for sampled tasks
     under its current belief. It never anticipates belief updates."""
     del recorder  # unused because the robot imagines nothing while it sleeps
     _, planner, belief_updater, gatherer = _make_limb_parts(
-        domain, num_rollouts, num_particles, model
+        domain, num_rollouts, num_particles, model, seed_tolerance
     )
     return Robot(
         planner=planner,
@@ -427,13 +431,14 @@ def make_limb_prior_only_robot(
     num_training_tasks: int = 1,
     num_rollouts: int = 32,
     num_particles: int = 32,
+    seed_tolerance: float = 0.0,
     recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
 ) -> LimbRobot:
     """A limb robot whose model learns plans for sampled tasks under the prior in
     its first sleep, and never learns again."""
     del recorder  # unused because the robot imagines nothing while it sleeps
     _, planner, belief_updater, gatherer = _make_limb_parts(
-        domain, num_rollouts, num_particles, model
+        domain, num_rollouts, num_particles, model, seed_tolerance
     )
     return Robot(
         planner=planner,
@@ -461,6 +466,7 @@ def make_limb_dreaming_robot(
     num_training_tasks: int = 1,
     num_rollouts: int = 32,
     num_particles: int = 32,
+    seed_tolerance: float = 0.0,
     recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
 ) -> LimbRobot:
     """A limb robot that dreams while it sleeps: its model learns plans for sampled
@@ -470,7 +476,7 @@ def make_limb_dreaming_robot(
     execution, and planning.
     """
     env_model, planner, belief_updater, gatherer = _make_limb_parts(
-        domain, num_rollouts, num_particles, model
+        domain, num_rollouts, num_particles, model, seed_tolerance
     )
     belief_source: ImaginedNextBeliefSource = ImaginedNextBeliefSource(
         env_model,
@@ -509,6 +515,7 @@ def make_limb_belief_coverage_robot(
     num_training_tasks: int = 1,
     num_rollouts: int = 32,
     num_particles: int = 32,
+    seed_tolerance: float = 0.0,
     recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
 ) -> LimbRobot:
     """A limb robot whose model learns, while it sleeps, under dreamed beliefs
@@ -516,7 +523,7 @@ def make_limb_belief_coverage_robot(
     farthest of num_candidates dreams. The model is refit once per sleep, as for
     dreaming."""
     env_model, planner, belief_updater, gatherer = _make_limb_parts(
-        domain, num_rollouts, num_particles, model
+        domain, num_rollouts, num_particles, model, seed_tolerance
     )
     dreamer = _make_dreamer(
         domain,

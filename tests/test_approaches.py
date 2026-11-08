@@ -268,8 +268,8 @@ def _draw_once(distribution: LimbTaskDistribution) -> LimbTask:
 
 
 def test_make_limb_learning_robots():
-    """Tests that the limb robots that learn seed MPC with the given model, sleep,
-    and that prior-only learns in its first sleep only."""
+    """Tests that the limb robots that learn seed MPC with the given model and
+    tolerance, sleep, and that prior-only learns in its first sleep only."""
     # Drawing limb tasks is slow, so the robots train on one task drawn once, and a
     # planning budget of no MPC steps makes every plan fail at once.
     domain = make_limb_domain(seed=0)
@@ -279,7 +279,12 @@ def test_make_limb_learning_robots():
         domain, task_distribution=FiniteTaskDistribution([_draw_once(distribution)])
     )
     model = MLPRegressor(num_steps=5)
-    options = {"model": model, "num_rollouts": 4, "num_particles": 4}
+    options = {
+        "model": model,
+        "num_rollouts": 4,
+        "num_particles": 4,
+        "seed_tolerance": 0.1,
+    }
     budgets = _budgets(num_dreams=0)
     no_steps = Budget(max_iterations=0)
     robots = [
@@ -297,6 +302,7 @@ def test_make_limb_learning_robots():
     for robot in robots:
         assert robot.planner_params.model is model
         assert robot.planner_params.config.sampling.num_rollouts == 4
+        assert robot.planner_params.seed.tolerance == 0.1
         robot.sleep(Budget(max_iterations=1), rng)
     prior_only = robots[1]
     params = prior_only.planner_params

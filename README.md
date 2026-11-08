@@ -67,13 +67,13 @@ As on the arm, the robot asks no queries by default (`budgets.information_gather
 
 `env.domain.variant` chooses the scene and limb, for example `env.domain.variant=bed-right-leg`. `env.domain.min_separation` and `env.domain.max_separation` bound the joint-space distance between a task's start and goal, 0.5 to 0.8 rad in the experiments. Planning a task takes a few minutes with the default 32 MPC rollouts per step.
 
-The robots that learn seed MPC with a flow-matching model of the next controls, trained while they sleep on plans for sampled tasks. As on the arm, they differ only in the beliefs they train under: `current_belief`, `prior_only`, `dreaming`, and `belief_coverage`. To compare them with `scratch` over ten seeds:
+The robots that learn seed MPC with a flow-matching model of the next controls, trained while they sleep on plans for sampled tasks. A step the model proposes is taken if it costs at most 5% more than the best directed candidate (`approach.seed_tolerance=0.05`). As on the arm, they differ only in the beliefs they train under: `current_belief`, `prior_only`, `dreaming`, and `belief_coverage`. To compare them with `scratch` over ten seeds:
 
 ```
 ./experiments/run_comparison.sh env=limb
 ```
 
-The limb environment evaluates 8 tasks per cycle and dreams 4 times per sleep, planning 1 training task per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
+The limb environment evaluates 8 tasks per cycle and dreams 4 times per sleep, planning 2 training tasks per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
 
 ## Friction
 
