@@ -71,17 +71,68 @@ def private_cwd() -> Iterator[None]:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+class OutOfMemory(Exception):
+    """Raised by a stream when the solve in progress has grown past its memory
+    limit."""
+
+
+# Streams check the process's memory every this many evaluations.
+MEMORY_CHECK_EVERY = 64
+# The solve in progress's limit: (resident bytes at its start, growth allowed).
+_MEMORY_LIMIT: tuple[int, int] | None = None
+
+
+def get_resident_bytes() -> int | None:
+    """This process's resident memory, or None where /proc is unavailable."""
+    try:
+        with open("/proc/self/statm", encoding="ascii") as statm:
+            return int(statm.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+@contextmanager
+def memory_limit(max_growth: int | None) -> Iterator[None]:
+    """Streams evaluated inside raise OutOfMemory once this process's resident
+    memory has grown more than max_growth bytes (None for no limit).
+
+    PDDLStream's own max_memory measures virtual memory, which libraries such as
+    torch make large from the start, so it cannot serve here.
+    """
+    global _MEMORY_LIMIT  # pylint: disable=global-statement
+    previous = _MEMORY_LIMIT
+    start = None if max_growth is None else get_resident_bytes()
+    _MEMORY_LIMIT = None if max_growth is None or start is None else (start, max_growth)
+    try:
+        yield
+    finally:
+        _MEMORY_LIMIT = previous
+
+
+def count_evaluation(calls: Counter, name: str) -> None:
+    """Count an evaluation of stream `name`, and check the memory limit every
+    MEMORY_CHECK_EVERY evaluations."""
+    calls[name] += 1
+    if _MEMORY_LIMIT is None or calls.total() % MEMORY_CHECK_EVERY:
+        return
+    resident = get_resident_bytes()
+    start, max_growth = _MEMORY_LIMIT
+    if resident is not None and resident - start > max_growth:
+        raise OutOfMemory(f"Memory grew by {(resident - start) / 1e9:.1f} GB")
+
+
 def counted(fn: Callable, calls: Counter, name: str, generator: bool) -> Callable:
-    """`fn` with each evaluation of stream `name` counted in `calls`."""
+    """`fn` with each evaluation of stream `name` counted in `calls`, which raises
+    OutOfMemory if the solve has grown past its memory limit."""
 
     def test(*args):
-        calls[name] += 1
+        count_evaluation(calls, name)
         return fn(*args)
 
     def gen(*args):
         outputs = fn(*args)
         while True:
-            calls[name] += 1
+            count_evaluation(calls, name)
             try:
                 out = next(outputs)
             except StopIteration:
@@ -237,7 +288,8 @@ class PDDLStreamParams:
     """Parameters of the human reach PDDLStream planner.
 
     A requested item's pose is usable if at least 1 - delta of num_particles belief
-    particles reach it. Planning stops after max_time seconds. The model proposes
+    particles reach it. Planning stops after max_time seconds, or once a solve has
+    grown the process's resident memory by max_memory_gb, if set. The model proposes
     num_draws placements per item, requested or clutter, from get_place_features(),
     which rank its candidate slots; an untrained model proposes nothing.
     """
@@ -245,6 +297,8 @@ class PDDLStreamParams:
     max_time: float = 300.0
     num_particles: int = 256
     delta: float = 0.1
+    # The most a solve may grow this process's resident memory (GB), or None.
+    max_memory_gb: float | None = None
     algorithm: str = "adaptive"
     model: ConditionalModel = field(default_factory=FlowMatchingModel)
     num_draws: int = 16
@@ -400,7 +454,8 @@ class ReachPDDLStreamPlanner(
         """Plan under num_particles of the belief's particles.
 
         Raises PlanningFailure if PDDLStream finds no plan, with and without the
-        model, and PlanningTimeout if the last try ran out of time.
+        model, or the last try ran out of memory, and PlanningTimeout if it ran out
+        of time.
         """
         assert isinstance(belief, ParticleBelief), "Need a ParticleBelief"
         start_time = time.perf_counter()
@@ -411,16 +466,18 @@ class ReachPDDLStreamPlanner(
         proposal = self._propose(task, belief, params, rng)
         stats = {"stream_calls": 0.0, "seeded": float(proposal is not None)}
         stats["fell_back"] = 0.0
-        plan, timed_out = self._solve(
+        plan, stopped_by = self._solve(
             task, particles, params, budget, rng, proposal, stats, start_time
         )
         if plan is None and proposal is not None:
             stats["fell_back"] = 1.0
-            plan, timed_out = self._solve(
+            plan, stopped_by = self._solve(
                 task, particles, params, budget, rng, None, stats, start_time
             )
-        if plan is None and timed_out:
+        if plan is None and stopped_by == "time":
             raise PlanningTimeout("PDDLStream found no plan within its time limit")
+        if plan is None and stopped_by == "memory":
+            raise PlanningFailure("PDDLStream ran out of memory")
         if plan is None:
             raise PlanningFailure("PDDLStream found no plan")
         horizon = self._model.horizon
@@ -458,14 +515,15 @@ class ReachPDDLStreamPlanner(
         proposal: PlaceProposal | None,
         stats: dict[str, float],
         start_time: float,
-    ) -> tuple[list | None, bool]:
-        """The plan or None, and whether the search stopped at its time limit:
-        PDDLStream only gives up once its time is used up."""
+    ) -> tuple[list | None, str | None]:
+        """The plan or None, and what stopped a search without one: "time" for its
+        time limit (PDDLStream only gives up once its time is used up), "memory"
+        for its memory limit, or None."""
         max_time = params.max_time
         if budget.max_wall_time is not None:
             left = budget.max_wall_time - (time.perf_counter() - start_time)
             if left <= 0:
-                return None, True
+                return None, "time"
             max_time = min(max_time, left)
         sim, scene = self.sim, task.initial_state.scene
         sim.reset(options={"init_state": scene})
@@ -478,9 +536,18 @@ class ReachPDDLStreamPlanner(
             proposal=proposal,
         )
         solve_start = time.perf_counter()
-        plan = solve_problem(
-            create_problem(sim, scene, ctx=ctx), max_time, params.algorithm
+        max_growth = (
+            None if params.max_memory_gb is None else int(params.max_memory_gb * 1e9)
         )
-        timed_out = plan is None and time.perf_counter() - solve_start >= max_time
+        try:
+            with memory_limit(max_growth):
+                plan = solve_problem(
+                    create_problem(sim, scene, ctx=ctx), max_time, params.algorithm
+                )
+        except OutOfMemory:
+            stats["stream_calls"] += float(sum(ctx.calls.values()))
+            return None, "memory"
         stats["stream_calls"] += float(sum(ctx.calls.values()))
-        return plan, timed_out
+        if plan is None and time.perf_counter() - solve_start >= max_time:
+            return None, "time"
+        return plan, None
