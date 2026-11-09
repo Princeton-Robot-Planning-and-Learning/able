@@ -42,6 +42,9 @@ BASE_ROTATIONS = (0.0, 0.4, -0.4)
 CORRIDOR_X = 1.5
 POSE_JITTER = 0.015
 MAX_PLACE_POSE_ATTEMPTS = 100_000
+# Draws per uniform sample of a requested item's placement, which keeps it within
+# the largest reach the prior allows.
+MAX_WITHIN_REACH_DRAWS = 1000
 # How placements are sampled; see the module docstring.
 PLACEMENTS = ("slots", "continuous")
 
@@ -279,13 +282,21 @@ def snap_placement(ctx: BedsideStreamContext, o: str, point: NDArray) -> Placeme
 
 
 def sample_uniform_placement(ctx: BedsideStreamContext, o: str) -> Placement:
-    """`o` resting anywhere on its surfaces, uniformly over their area."""
+    """`o` resting anywhere on its surfaces, uniformly over their area. A requested
+    item stays within the largest reach the prior allows, as the candidate slots do:
+    no belief makes a pose beyond it usable."""
     surfaces = ctx.placement_surfaces(o)
     boxes = [ctx.surface_box(s) for s in surfaces]
     areas = np.array([np.prod(high - low) for low, high in boxes])
-    k = int(ctx.rng.choice(len(surfaces), p=areas / areas.sum()))
-    xy = ctx.rng.uniform(*boxes[k])
-    pose = ctx.sim.resting_pose(o, (float(xy[0]), float(xy[1])), surfaces[k])
+    largest = np.asarray(ctx.sim.config.reach_theta_ub)
+    for _ in range(MAX_WITHIN_REACH_DRAWS):
+        k = int(ctx.rng.choice(len(surfaces), p=areas / areas.sum()))
+        xy = ctx.rng.uniform(*boxes[k])
+        pose = ctx.sim.resting_pose(o, (float(xy[0]), float(xy[1])), surfaces[k])
+        if o not in ctx.requested:
+            break
+        if reach_margin(ctx.sim.grasp_point(o, pose), largest, ctx.sim.shoulder) >= 0:
+            break
     return Placement(o, pose, surfaces[k])
 
 
