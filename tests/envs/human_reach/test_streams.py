@@ -96,13 +96,20 @@ def _in_box(ctx, placement) -> bool:
 
 def test_continuous_placements_cover_the_surfaces(sim):
     """Without a proposal, continuous placements spread over the bedside's area for
-    requested items, rather than sitting at slot centers, and rest on it."""
+    requested items, within the largest reach the prior allows, rather than sitting
+    at slot centers, and rest on it."""
     obs, _ = sim.reset(seed=0)
     ctx = build_stream_context(sim, obs, placement="continuous")
     samples = streams.sample_continuous_place_pose(ctx, "req0")
     placements = [next(samples)[0] for _ in range(300)]
-    assert {p.surface for p in placements} == set(sim.config.bedside_regions)
+    # The same surfaces as the candidate slots: the foot chest is beyond reach.
+    candidates = {r for r, _ in streams.requested_candidate_slots(sim)}
+    assert {p.surface for p in placements} == candidates
     assert all(_in_box(ctx, p) for p in placements)
+    largest = np.asarray(sim.config.reach_theta_ub)
+    for p in placements:
+        point = sim.grasp_point("req0", p.pose)
+        assert reach_margin(point, largest, sim.shoulder) >= 0
     for p in placements[:5]:
         assert p.pose == sim.resting_pose("req0", tuple(p.pose.position[:2]), p.surface)
     slots = np.concatenate(
