@@ -94,7 +94,17 @@ class Budget:
 
 
 class PlanningFailure(Exception):
-    """Raised when a planner or policy cannot produce an action within its budget."""
+    """Raised when a planner or policy cannot produce an action within its budget.
+
+    stats, if given, are the planner's statistics up to the failure, so that
+    failed plans can be told apart, for example by which try ran out of time.
+    """
+
+    def __init__(
+        self, message: str = "", stats: dict[str, float] | None = None
+    ) -> None:
+        super().__init__(message)
+        self.stats: dict[str, float] = dict(stats or {})
 
 
 class PlanningTimeout(PlanningFailure):

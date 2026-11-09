@@ -38,7 +38,8 @@ class EpisodeResult(Generic[StateType, ActType, TaskType]):
     planning wall time covers plan() and every call to get_action(). If planning
     fails, the trajectory is None, the total cost is infinite, the episode is not
     a success, and the failure holds the error message. A failure timed out if a
-    time limit caused it (PlanningTimeout).
+    time limit caused it (PlanningTimeout). A plan that fails keeps the statistics
+    its planner gave with the failure.
     """
 
     task: TaskType
@@ -129,7 +130,7 @@ def _plan_and_run(
             total_cost=float("inf"),
             success=False,
             planning_wall_time=time.perf_counter() - start_time,
-            planning_stats={},
+            planning_stats=dict(failure.stats),
             failure=str(failure),
             timed_out=isinstance(failure, PlanningTimeout),
         )
