@@ -170,3 +170,70 @@ def test_planner_work_in_the_table(tmp_path: Path) -> None:
     table = (tmp_path / "summary_table.md").read_text(encoding="utf-8")
     assert "| Simulations per push, cycle 0 | 275.00 ± 0.00 |" in table
     assert "| Simulations per push, last 5 cycles | 187.50 ± 0.00 |" in table
+
+
+def _write_budget_run(
+    run_dir: Path, approach: str, seed: int, num_sims: int, success: float
+) -> None:
+    """A friction run with the simulation budget whose 4 tasks over 2 cycles
+    succeed at the given rate."""
+    run_dir.mkdir(parents=True)
+    OmegaConf.save(
+        {
+            "env_name": "friction",
+            "approach_name": approach,
+            "seed": seed,
+            "approach": {"num_sims": num_sims},
+        },
+        run_dir / "config.yaml",
+    )
+    pd.DataFrame({"cycle": [0, 1], "sleep_wall_time": [1.0, 1.0]}).to_csv(
+        run_dir / "cycle_results.csv", index=False
+    )
+    num_successes = round(4 * success)
+    pd.DataFrame(
+        {
+            "cycle": [0, 0, 1, 1],
+            "task_id": [0, 1, 0, 1],
+            "success": [i < num_successes for i in range(4)],
+            "planning_wall_time": [float(num_sims)] * 4,
+        }
+    ).to_csv(run_dir / "eval_results.csv", index=False)
+
+
+def test_success_against_the_simulation_budget(tmp_path: Path) -> None:
+    """Tests that a sweep over simulation budgets plots against cycles at the largest
+    budget, plots success against the budget, and reports the budget each approach
+    needs to match scratch at the largest one."""
+    runs = [
+        ("scratch", 100, 0.25),
+        ("scratch", 1000, 0.5),
+        ("dreaming", 100, 0.25),
+        ("dreaming", 1000, 0.75),
+        ("prior_only", 100, 0.25),
+        ("prior_only", 1000, 0.25),
+    ]
+    for i, (approach, num_sims, success) in enumerate(runs):
+        _write_budget_run(tmp_path / str(i), approach, 0, num_sims, success)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ANALYSIS_DIR / "plot_cycle_results.py"),
+            "--results_dir",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "budget_results.png").stat().st_size > 0
+    # Against cycles, only the 1000-simulation runs: planning time 1000 s.
+    assert "friction, scratch, cycle 1: planning time 1000.00 s" in result.stdout
+    table = (tmp_path / "summary_table.md").read_text(encoding="utf-8")
+    assert "| Planning time (s), cycle 0 | 1000.00 ± 0.00 |" in table
+    # Dreaming reaches scratch's 0.5 halfway between 100 and 1000 in log budget,
+    # at 316; prior only never does.
+    assert "| Dreaming | 0.25 ± 0.00 | 0.75 ± 0.00 | 316 |" in table
+    assert "| Prior only (first sleep) | 0.25 ± 0.00 | 0.25 ± 0.00 | > 1000 |" in table
+    assert "| Plan from scratch | 0.25 ± 0.00 | 0.50 ± 0.00 | reference |" in table
