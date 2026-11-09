@@ -403,11 +403,11 @@ def test_make_human_reach_learning_robots():
     assert robots[2].planner_params.model is model
 
 
-def _make_coverage_robot(make_coverage, domain, planning, options):
-    """The env's belief-coverage robot, with two candidates."""
+def _make_coverage_robot(make_coverage, domain, planning, options, num_candidates=2):
+    """The env's belief-coverage robot, with two candidates unless given."""
     budgets = _budgets(num_dreams=0)
     args = (domain, budgets.information_gathering, budgets.execution, planning)
-    return make_coverage(*args, num_candidates=2, **options)
+    return make_coverage(*args, num_candidates=num_candidates, **options)
 
 
 def test_make_limb_belief_coverage_robot():
@@ -442,12 +442,13 @@ def test_make_friction_belief_coverage_robot():
 
 def test_make_human_reach_belief_coverage_robot():
     """Tests that the human reach belief-coverage robot refits the model once per
-    sleep."""
+    sleep. Each dream plans and executes a scene, so one candidate per training
+    belief keeps the test short; the other environments' tests use two."""
     domain = make_reach_domain(seed=0, num_requested=1, num_clutter=0)
     model = MLPRegressor(num_steps=5)
     options = {"model": model, "max_time": 30.0, "delta": 1.0}
     robot = _make_coverage_robot(
-        make_human_reach_belief_coverage_robot, domain, Budget(), options
+        make_human_reach_belief_coverage_robot, domain, Budget(), options, 1
     )
     with mock.patch.object(
         MLPRegressor, "fit", autospec=True, side_effect=lambda m, d: m
