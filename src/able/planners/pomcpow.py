@@ -474,7 +474,9 @@ class FrictionPOMCPOWPolicy(Policy[FrictionState, Push]):
     showed. If the model proposes pushes, they guide the search; if that search
     finds no push, the policy searches again without the model. After the task ends
     it returns NO_PUSH without searching. All searches share the planning budget,
-    where one iteration is one simulation.
+    where one iteration is one simulation, so a fallback costs the task's later
+    pushes simulations. Running out of the budget's simulations or time is a
+    timeout (PlanningTimeout), and every failure carries the statistics so far.
     """
 
     def __init__(
@@ -542,7 +544,7 @@ class FrictionPOMCPOWPolicy(Policy[FrictionState, Push]):
             self._stats["num_fallbacks"] += 1
             push, root_values = self._run(state, None)
         if push is None:
-            raise PlanningFailure("No feasible push")
+            raise PlanningFailure("No feasible push", self.get_planning_stats())
         self.searches.append(PushSearch(state, push, root_values))
         return push
 
@@ -585,9 +587,14 @@ class FrictionPOMCPOWPolicy(Policy[FrictionState, Push]):
             left = budget.max_wall_time - self._search_time
             max_time = left if max_time is None else min(max_time, left)
         if max_time is not None and max_time <= 0:
-            raise PlanningTimeout("The planning budget ran out of time")
+            raise PlanningTimeout(
+                "The planning budget ran out of time", self.get_planning_stats()
+            )
         if num_sims <= 0:
-            raise PlanningFailure("The planning budget ran out of simulations")
+            raise PlanningTimeout(
+                "The planning budget ran out of simulations",
+                self.get_planning_stats(),
+            )
         return replace(config, num_sims=num_sims, max_time=max_time)
 
 
@@ -602,10 +609,10 @@ class FrictionPOMCPOWPlanner(
     puck and itself. Leaf values roll out greedy pushes whose speeds assume the
     belief's mean frictions. plan() searches the first push, and the policy
     searches each later one after updating its belief. The model in the parameters
-    proposes pushes. Planning fails if no push is feasible or the budget runs out.
-    The statistics are the number of simulations, searches, searches the model
-    guided, and fallbacks without it. The default parameters, if given, replace
-    POMCPOWParams().
+    proposes pushes. Planning fails if no push is feasible, and times out if the
+    budget runs out. The statistics are the number of simulations, searches,
+    searches the model guided, and fallbacks without it. The default parameters, if
+    given, replace POMCPOWParams().
     """
 
     def __init__(

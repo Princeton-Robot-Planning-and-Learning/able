@@ -89,6 +89,8 @@ python experiments/run_single_experiment.py env=friction approach=scratch
 
 `env.domain.num_holes` (0 to 9) and `env.domain.goal_radius` choose how hard the maze is, 4 and 0.3 m in the experiments. `env.domain.sim=3d` runs the pushes in PyBullet with a TidyBot holding a paddle instead of in 2D, with the same physics. Planning a push takes several seconds with the default 1000 simulations, and a task takes up to 15 pushes. As on the arm and the limb, the robot asks no queries by default; a query probes the floor the belief is least sure of.
 
+Planning stops after 15000 POMCPOW simulations per task (`budgets.planning.max_iterations`), shared by all its pushes, which caps the planner's work the same way on any machine and under any load. That is 15 pushes of 1000 simulations, all that planning from scratch can use, so a model-guided search that finds no push and falls back to a search without the model costs the task's later pushes simulations. With a smaller `approach.num_sims` the limit does not bind. A simulation takes about 0.014 s, so this binds before the 10-minute limit (`budgets.planning.max_wall_time`), which guards against a slow machine. Running out of either counts as a timeout.
+
 The robots that learn guide POMCPOW with a flow-matching model of good pushes, used for half of its proposals. While they sleep they roll out sampled tasks under a training belief and learn the well-visited pushes of the rollouts that reach the goal. As on the arm and the limb, they differ only in the beliefs they train under: `current_belief`, `prior_only`, `dreaming`, and `belief_coverage`. To compare them with `scratch` over ten seeds:
 
 ```
