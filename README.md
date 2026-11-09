@@ -113,7 +113,7 @@ The robots that learn rank PDDLStream's placements for each item, requested or c
 ./experiments/run_comparison.sh env=human_reach
 ```
 
-The human reach environment evaluates 8 tasks per cycle and dreams 4 times per sleep, planning 1 training scene per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
+The human reach environment evaluates 8 tasks per cycle and dreams 4 times per sleep, planning 2 training scenes per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
 
 
 ## Della
