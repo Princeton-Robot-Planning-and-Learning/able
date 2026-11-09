@@ -12,9 +12,10 @@ delta: 0.02
 # The most one solve may grow the process's memory (GB). A solve that grows more
 # fails, rather than the run being killed for running out of memory.
 max_memory_gb: 4.0
-# The share of the time limit a try the model guides may use, so that a poor
-# ranking leaves the fallback without the model time to plan (#132).
-guided_time_fraction: 0.5
+# The share of the time limit and of the planning budget's stream calls a try the
+# model guides may use, so that a poor ranking leaves the fallback without the
+# model the budget to plan (#132).
+guided_budget_fraction: 0.5
 # The model that ranks placements, refit once per sleep.
 model:
   _target_: able.models.flow_matching.FlowMatchingModel

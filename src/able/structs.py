@@ -108,5 +108,6 @@ class PlanningFailure(Exception):
 
 
 class PlanningTimeout(PlanningFailure):
-    """Raised when planning fails because a time limit ran out, rather than for
-    another reason, so timeouts can be counted apart from other failures."""
+    """Raised when planning fails because its budget ran out, such as a time limit
+    or a limit on the planner's work, rather than for another reason, so timeouts
+    can be counted apart from other failures."""
