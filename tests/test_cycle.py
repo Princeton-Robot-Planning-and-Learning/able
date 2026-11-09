@@ -109,11 +109,12 @@ class _TimeoutPlanner(RandomShootingPlanner):
     """Always runs out of time."""
 
     def plan(self, task, belief, params, budget, rng):
-        raise PlanningTimeout("Out of time")
+        raise PlanningTimeout("Out of time", {"num_samples": 3.0})
 
 
 def test_evaluate_timeout():
-    """Tests that a failure caused by a time limit is recorded as a timeout."""
+    """Tests that a failure caused by a time limit is recorded as a timeout, with
+    the planner's statistics."""
     domain = make_domain(seed=0, true_limits=TRUE_LIMITS)
     robot = Robot(
         planner=_TimeoutPlanner(TwoLinkArmModel()),
@@ -128,6 +129,8 @@ def test_evaluate_timeout():
     assert result.failure == "Out of time"
     assert result.timed_out
     assert not result.success
+    # The planner's statistics up to the failure are kept.
+    assert result.planning_stats == {"num_samples": 3.0}
 
 
 def test_execute():

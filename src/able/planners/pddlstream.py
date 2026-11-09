@@ -400,8 +400,9 @@ class ReachPDDLStreamPlanner(
     each item, requested or clutter, is placed first; if planning with it fails,
     the planner plans again without it. The planning budget's wall time, if set,
     caps all planning. The statistics are the number of stream evaluations, the plan's
-    length, whether the model guided the plan, and whether it fell back. The
-    default parameters, if given, replace PDDLStreamParams().
+    length, whether the model guided the plan, whether the guided try ran out of
+    time, and whether it fell back; a failed plan raises with them. The default
+    parameters, if given, replace PDDLStreamParams().
     """
 
     def __init__(
@@ -490,23 +491,27 @@ class ReachPDDLStreamPlanner(
         proposal = self._propose(task, belief, params, rng)
         stats = {"stream_calls": 0.0, "seeded": float(proposal is not None)}
         stats["fell_back"] = 0.0
+        stats["seeded_timed_out"] = 0.0
         plan, stopped_by = self._solve(
             task, particles, params, budget, rng, proposal, stats, start_time
         )
         if plan is None and proposal is not None:
+            stats["seeded_timed_out"] = float(stopped_by == "time")
             stats["fell_back"] = 1.0
             plan, stopped_by = self._solve(
                 task, particles, params, budget, rng, None, stats, start_time
             )
         if plan is None and stopped_by == "time":
-            raise PlanningTimeout("PDDLStream found no plan within its time limit")
+            raise PlanningTimeout(
+                "PDDLStream found no plan within its time limit", stats
+            )
         if plan is None and stopped_by == "memory":
-            raise PlanningFailure("PDDLStream ran out of memory")
+            raise PlanningFailure("PDDLStream ran out of memory", stats)
         if plan is None:
-            raise PlanningFailure("PDDLStream found no plan")
+            raise PlanningFailure("PDDLStream found no plan", stats)
         horizon = self._model.horizon
         if len(plan) > horizon:
-            raise PlanningFailure("The plan is longer than the horizon")
+            raise PlanningFailure("The plan is longer than the horizon", stats)
         stats["plan_length"] = len(plan)
         actions = [tuple(action) for action in plan]
         return OpenLoopPolicy(actions + [NO_ACTION] * (horizon - len(plan)), stats)
