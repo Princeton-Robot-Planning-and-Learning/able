@@ -72,6 +72,14 @@ def _arm_path(sim, target, exclude: set[int], seed: int) -> list:
     )
 
 
+# IK solutions tried per waypoint of the descent, of which the one nearest the last
+# conf is kept. pybullet_helpers otherwise samples solutions until its 5 s limit
+# runs out, which made every pick and place take about 5 s and its path depend on
+# the machine's speed; the warm-started differential IK solution it tries first
+# is nearly always the nearest.
+DESCENT_IK_CANDIDATES = 10
+
+
 def _descent(sim, hover, grasp, target: int, seed: int) -> list:
     """Straight-line end-effector path from the hover conf down to the grasp conf."""
     # pylint: disable=protected-access
@@ -97,6 +105,7 @@ def _descent(sim, hover, grasp, target: int, seed: int) -> list:
             joint_distance_fn=create_joint_distance_fn(arm),
             seed=seed,
             include_start=False,
+            max_smoothing_iters_per_step=DESCENT_IK_CANDIDATES,
             held_object=held,
             base_link_to_held_obj=sim._grasped_object_transform,
         )

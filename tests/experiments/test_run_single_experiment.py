@@ -10,6 +10,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Callable
 
+import hydra
 import numpy as np
 import pandas as pd
 import pytest
@@ -18,8 +19,9 @@ from omegaconf import OmegaConf
 
 from able.approaches import make_scratch_robot
 from able.cycle import CycleBudgets, CycleResult, run_cycles
-from able.envs.base import FiniteTaskDistribution, TaskDistribution
+from able.envs.base import Domain, FiniteTaskDistribution, TaskDistribution
 from able.envs.two_link_arm import make_domain
+from able.robot import Robot
 from able.structs import Budget, Task
 
 SCRIPT = (
@@ -73,6 +75,33 @@ def test_get_eval_tasks_infinite() -> None:
     ]
     # The cycles draw from np.random.default_rng(seed), which is a different stream.
     assert goals != list(np.random.default_rng(0).uniform(size=6))
+
+
+APPROACHES = ("scratch", "prior_only", "current_belief", "dreaming", "belief_coverage")
+
+
+@pytest.mark.parametrize("env", ["limb", "friction", "human_reach"])
+def test_every_approach_config_builds_its_robot(env: str) -> None:
+    """Tests that every approach's config for the environment builds its robot, as
+    run_single_experiment.py does, without running any cycles. Short runs of each
+    environment test the cycles."""
+    with initialize_config_dir(
+        config_dir=str(SCRIPT.parent / "conf"), version_base=None
+    ):
+        configs = [
+            compose(config_name="config", overrides=[f"env={env}", f"approach={a}"])
+            for a in APPROACHES
+        ]
+    domain = hydra.utils.instantiate(configs[0].env.domain, seed=0)
+    assert isinstance(domain, Domain)
+    for cfg in configs:
+        make_robot = hydra.utils.instantiate(cfg.approach, _partial_=True)
+        robot = make_robot(domain=domain, recorder=None)
+        assert isinstance(robot, Robot)
+        if env == "human_reach":
+            params = robot.planner_params
+            assert params.placement == "continuous" and params.delta == 0.02
+    assert isinstance(hydra.utils.instantiate(configs[0].budgets), CycleBudgets)
 
 
 def test_della_launcher() -> None:
@@ -315,34 +344,6 @@ def test_limb(tmp_path: Path) -> None:
     ]
 
 
-def test_limb_dreaming(tmp_path: Path) -> None:
-    """Tests one short cycle of the dreaming robot in the limb environment."""
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "env=limb",
-            "approach=dreaming",
-            "num_cycles=1",
-            "num_eval_tasks=1",
-            "budgets.sleep.max_iterations=1",
-            "env.domain.horizon=1",
-            "approach.num_rollouts=4",
-            "approach.num_particles=4",
-            "approach.model.num_steps=5",
-            f"hydra.run.dir={tmp_path}",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    cfg = OmegaConf.load(tmp_path / "config.yaml")
-    assert cfg.approach_name == "dreaming"
-    assert len(pd.read_csv(tmp_path / "eval_results.csv")) == 1
-    assert list(pd.read_csv(tmp_path / "cycle_results.csv").num_executed_tasks) == [1]
-
-
 def test_friction(tmp_path: Path) -> None:
     """Tests one short cycle in the friction environment, with videos."""
     result = subprocess.run(
@@ -375,35 +376,6 @@ def test_friction(tmp_path: Path) -> None:
         "cycle_000_3_execution.mp4",
         "cycle_000_4_evaluation.mp4",
     ]
-
-
-def test_friction_dreaming(tmp_path: Path) -> None:
-    """Tests one short cycle of the dreaming robot in the friction environment."""
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "env=friction",
-            "approach=dreaming",
-            "num_cycles=1",
-            "num_eval_tasks=1",
-            "budgets.sleep.max_iterations=1",
-            "env.domain.horizon=2",
-            "env.domain.num_particles=20",
-            "approach.num_sims=20",
-            "approach.max_depth=2",
-            "approach.model.num_steps=5",
-            f"hydra.run.dir={tmp_path}",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    cfg = OmegaConf.load(tmp_path / "config.yaml")
-    assert cfg.approach_name == "dreaming"
-    assert len(pd.read_csv(tmp_path / "eval_results.csv")) == 1
-    assert list(pd.read_csv(tmp_path / "cycle_results.csv").num_executed_tasks) == [1]
 
 
 def test_worker_processes(tmp_path: Path) -> None:
@@ -449,7 +421,8 @@ def test_worker_processes(tmp_path: Path) -> None:
 
 
 def test_human_reach(tmp_path: Path) -> None:
-    """Tests one short cycle in the human reach environment, with videos."""
+    """Tests one short cycle in the human reach environment. The other environments'
+    tests record videos; the human reach renderer has its own tests."""
     result = subprocess.run(
         [
             sys.executable,
@@ -465,7 +438,6 @@ def test_human_reach(tmp_path: Path) -> None:
             "approach.delta=1.0",
             "approach.max_time=60",
             "budgets.information_gathering.max_iterations=1",
-            "record_videos=true",
             f"hydra.run.dir={tmp_path}",
         ],
         capture_output=True,
@@ -477,38 +449,3 @@ def test_human_reach(tmp_path: Path) -> None:
     cycle_df = pd.read_csv(tmp_path / "cycle_results.csv")
     assert list(cycle_df.num_queries) == [1]
     assert list(cycle_df.num_executed_tasks) == [1]
-    assert sorted(p.name for p in (tmp_path / "videos").iterdir()) == [
-        "cycle_000_2_queries.mp4",
-        "cycle_000_3_execution.mp4",
-        "cycle_000_4_evaluation.mp4",
-    ]
-
-
-def test_human_reach_dreaming(tmp_path: Path) -> None:
-    """Tests one short cycle of the dreaming robot in the human reach environment."""
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "env=human_reach",
-            "approach=dreaming",
-            "num_cycles=1",
-            "num_eval_tasks=1",
-            "budgets.sleep.max_iterations=1",
-            "env.domain.num_requested=1",
-            "env.domain.num_clutter=0",
-            "env.domain.num_particles=50",
-            "approach.delta=1.0",
-            "approach.max_time=60",
-            "approach.model.num_steps=5",
-            f"hydra.run.dir={tmp_path}",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    cfg = OmegaConf.load(tmp_path / "config.yaml")
-    assert cfg.approach_name == "dreaming"
-    assert len(pd.read_csv(tmp_path / "eval_results.csv")) == 1
-    assert list(pd.read_csv(tmp_path / "cycle_results.csv").num_executed_tasks) == [1]

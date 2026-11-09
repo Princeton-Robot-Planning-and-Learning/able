@@ -98,7 +98,7 @@ def test_reach_planner(tmp_path, monkeypatch):
             task,
             _point_belief(np.array([0.1, 0.1, 0.1])),
             planner.get_default_params(),
-            Budget(max_wall_time=5.0),
+            Budget(max_wall_time=2.0),
             rng,
         )
     # A failed plan still reports its statistics.
@@ -118,7 +118,11 @@ def test_reach_planner(tmp_path, monkeypatch):
 
 
 class _FixedModel(ConditionalModel):
-    """Always proposes the same placement."""
+    """Proposes one placement for req0, and none for the other items.
+
+    One draw rather than num_samples copies of it: PDDLStream would otherwise
+    check every pair of the identical placements.
+    """
 
     def __init__(self, point) -> None:
         self.point = np.asarray(point, dtype=float)
@@ -127,7 +131,9 @@ class _FixedModel(ConditionalModel):
         return self
 
     def sample(self, x, num_samples, rng):
-        return np.tile(self.point, (num_samples, 1))
+        if x[0] != 1.0:  # not req0's one-hot
+            return np.empty((0, 3))
+        return self.point[None]
 
 
 class _FailingWithModel(ReachPDDLStreamPlanner):
@@ -153,8 +159,8 @@ class _TimingOutWithModel(ReachPDDLStreamPlanner):
 
 
 def test_failed_plans_report_their_statistics(tmp_path, monkeypatch):
-    """A plan whose guided try ran out of time and whose fallback found nothing
-    reports both in its failure's statistics."""
+    """A plan whose guided try ran out of time and whose fallback ran out of stream
+    calls reports both in its failure's statistics."""
     monkeypatch.chdir(tmp_path)
     domain = make_domain(seed=0, num_requested=2, num_clutter=0, true_theta=THETA)
     model = domain.env_model
@@ -170,7 +176,7 @@ def test_failed_plans_report_their_statistics(tmp_path, monkeypatch):
             task,
             _point_belief(np.array([0.1, 0.1, 0.1])),
             params,
-            Budget(max_wall_time=5.0),
+            Budget(max_iterations=200),
             np.random.default_rng(0),
         )
     stats = error.value.stats
@@ -271,36 +277,10 @@ def test_place_proposal_ranks_clutter_candidates():
 
 
 def test_a_trained_model_guides_planning(tmp_path, monkeypatch):
-    """A model's placements guide the plan, and planning that fails with the model
-    is repeated without it."""
-    monkeypatch.chdir(tmp_path)
-    domain = make_domain(seed=0, num_requested=2, num_clutter=0, true_theta=THETA)
-    model = domain.env_model
-    assert isinstance(model, ReachModel)
-    planner = _make_planner(model)
-    task = domain.task_distribution.sample(np.random.default_rng(0))
-    slot = build_stream_context(planner.sim, task.initial_state.scene).slot_points(
-        "req0"
-    )[0]
-    params = planner.set_model(planner.get_default_params(), _FixedModel(slot))
-    rng = np.random.default_rng(0)
-    policy = planner.plan(task, _point_belief(THETA), params, Budget(), rng)
-    stats = policy.get_planning_stats()
-    assert stats["seeded"] == 1.0 and stats["fell_back"] == 0.0
-    plain = planner.plan(
-        task, _point_belief(THETA), planner.get_default_params(), Budget(), rng
-    )
-    assert plain.get_planning_stats()["seeded"] == 0.0
-    failing = _make_failing(model)
-    policy = failing.plan(task, _point_belief(THETA), params, Budget(), rng)
-    assert policy.get_planning_stats()["fell_back"] == 1.0
-    failing.close()
-    _close(model, planner)
-
-
-def test_a_trained_model_places_items_where_it_proposes(tmp_path, monkeypatch):
-    """With continuous placements, the model's draws are the placements: a usable
-    point off the slot grid that it proposes is where the plan puts an item."""
+    """The model's draws are the placements a plan tries first: a usable point off
+    the slot grid that it proposes is where the plan puts the item. Planning without
+    the model still finds a plan, and planning that fails with the model is
+    repeated without it."""
     monkeypatch.chdir(tmp_path)
     domain = make_domain(seed=0, num_requested=2, num_clutter=0, true_theta=THETA)
     model = domain.env_model
@@ -310,24 +290,28 @@ def test_a_trained_model_places_items_where_it_proposes(tmp_path, monkeypatch):
     ctx = build_stream_context(
         planner.sim, task.initial_state.scene, theta_particles=THETA[None]
     )
+    off_grid = [point + [0.013, -0.011, 0.0] for point in ctx.slot_points("req0")]
     usable = [
-        point + [0.013, -0.011, 0.0]
-        for point in ctx.slot_points("req0")
-        if usable_probability(ctx, "req0", Pose(tuple(point + [0.013, -0.011, 0.0])))
-        == 1.0
+        point
+        for point in off_grid
+        if usable_probability(ctx, "req0", Pose(tuple(point))) == 1.0
     ]
     point = usable[len(usable) // 2]
-    defaults = replace(planner.get_default_params(), placement="continuous")
-    params = planner.set_model(defaults, _FixedModel(point))
+    params = planner.set_model(planner.get_default_params(), _FixedModel(point))
     rng = np.random.default_rng(0)
     policy = planner.plan(task, _point_belief(THETA), params, Budget(), rng)
     stats = policy.get_planning_stats()
     assert stats["seeded"] == 1.0 and stats["fell_back"] == 0.0
-    final = get_final_placements(policy.actions)
-    assert any(np.allclose(final[o], point) for o in ("req0", "req1"))
-    # Without the model, continuous placements still find a plan.
-    plain = planner.plan(task, _point_belief(THETA), defaults, Budget(), rng)
+    assert np.allclose(get_final_placements(policy.actions)["req0"], point)
+    plain = planner.plan(
+        task, _point_belief(THETA), planner.get_default_params(), Budget(), rng
+    )
+    assert plain.get_planning_stats()["seeded"] == 0.0
     assert {"req0", "req1"} <= set(get_final_placements(plain.actions))
+    failing = _make_failing(model)
+    policy = failing.plan(task, _point_belief(THETA), params, Budget(), rng)
+    assert policy.get_planning_stats()["fell_back"] == 1.0
+    failing.close()
     _close(model, planner)
 
 
