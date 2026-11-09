@@ -67,6 +67,8 @@ As on the arm, the robot asks no queries by default (`budgets.information_gather
 
 `env.domain.variant` chooses the scene and limb, for example `env.domain.variant=bed-right-leg`. `env.domain.min_separation` and `env.domain.max_separation` bound the joint-space distance between a task's start and goal, 0.5 to 0.8 rad in the experiments. Planning a task takes a few minutes with the default 32 MPC rollouts per step.
 
+Planning stops after 2000 MPC rollouts per task (`budgets.planning.max_iterations`), which caps the planner's work the same way on any machine and under any load. Without a limit, planning from scratch took about 2000 rollouts per task on average and almost always succeeded, so the robots that learn could only show their speedup as planning time; with the limit, a robot that plans faster also succeeds more often. A rollout takes about 0.12 s, so this binds before the 10-minute limit (`budgets.planning.max_wall_time`), which guards against a slow machine. A retry without the model shares both, and running out of either counts as a timeout. The limit also applies to the plans the robots learn from while they sleep.
+
 The robots that learn seed MPC with a flow-matching model of the next controls, trained while they sleep on plans for sampled tasks. A step the model proposes is taken if it costs at most 5% more than the best directed candidate (`approach.seed_tolerance=0.05`). As on the arm, they differ only in the beliefs they train under: `current_belief`, `prior_only`, `dreaming`, and `belief_coverage`. To compare them with `scratch` over ten seeds:
 
 ```

@@ -559,15 +559,19 @@ class LimbMPCPlanner(
 ):
     """Plans torque corrections for a limb task with predictive-sampling MPC.
 
-    One iteration of the budget is one MPC step. The policy is the committed
-    controls up to the step where the replay reaches the task's goal, which ends the
-    task, then STOP to the horizon, so nothing moves after a plan that stops short
-    of the goal (for example, at a retargeted goal). The model in the parameters
-    seeds each MPC step; if planning with it fails, the planner plans again without
-    it, and the statistics count both attempts. They are the number of rollouts,
-    MPC steps, and seeded steps, whether it fell back, whether the goal was
-    retargeted, and the replayed distance to the goal. The default parameters, if
-    given, replace MPCParams().
+    One iteration of the budget is one MPC rollout, which caps the planner's work
+    the same way on any machine. MPC starts no step once the plan has used the
+    budget's rollouts or time, so the last step can go over by less than one
+    step's rollouts. The policy is the committed controls up to the step where the
+    replay reaches the task's goal, which ends the task, then STOP to the horizon,
+    so nothing moves after a plan that stops short of the goal (for example, at a
+    retargeted goal). The model in the parameters seeds each MPC step; if planning
+    with it fails other than by running out of budget, the planner plans again
+    without it, and both attempts share the budget and the statistics. They are
+    the number of rollouts, MPC steps, and seeded steps, whether it fell back,
+    whether the goal was retargeted, and the replayed distance to the goal; a
+    failed plan carries them up to the failure. The default parameters, if given,
+    replace MPCParams().
     """
 
     def __init__(
@@ -643,9 +647,9 @@ class LimbMPCPlanner(
         half of the belief's samples allow would break the believed range of motion
         before any control.
 
-        Raises PlanningFailure if MPC breaks a constraint, diverges, runs out of
-        steps or budget, or the replay misses the goal, with and without the
-        model.
+        Raises PlanningTimeout if the plan runs out of the budget's rollouts or
+        time, and PlanningFailure if MPC breaks a constraint, diverges, runs out of
+        steps, or the replay misses the goal, with and without the model.
         """
         assert isinstance(belief, RangeOfMotionBelief), "Need a RangeOfMotionBelief"
         start_time = time.perf_counter()
@@ -666,7 +670,22 @@ class LimbMPCPlanner(
         }
         attempt = _Attempt(task, goal, limits, belief, params, budget, start_time, rng)
         try:
+            return self._plan_with_fallback(attempt, stats)
+        except PlanningFailure as failure:
+            # Each attempt counts its rollouts as it stops, so the statistics are
+            # complete only now.
+            failure.stats = dict(stats)
+            raise
+
+    def _plan_with_fallback(
+        self, attempt: "_Attempt", stats: dict[str, float]
+    ) -> LimbMPCPolicy:
+        """Plan with the model, and again without it if that fails for a reason
+        other than the shared budget running out."""
+        try:
             return self._plan_once(attempt, stats, use_model=True)
+        except PlanningTimeout:
+            raise
         except PlanningFailure:
             if not attempt.model_proposed:
                 raise
@@ -727,8 +746,10 @@ class LimbMPCPlanner(
                 max_wall_time = attempt.budget.max_wall_time
                 if max_wall_time is not None and elapsed >= max_wall_time:
                     raise PlanningTimeout("Ran out of planning budget time")
-                if attempt.budget.is_exhausted(elapsed, int(stats["num_mpc_steps"])):
-                    raise PlanningFailure("Ran out of planning budget")
+                # Both attempts' rollouts, since they share the budget.
+                num_rollouts = int(stats["num_rollouts"]) + mpc.num_rollouts
+                if attempt.budget.is_exhausted(elapsed, num_rollouts):
+                    raise PlanningTimeout("Ran out of planning budget rollouts")
                 state = world.capture()
                 try:
                     committed = mpc.step()
