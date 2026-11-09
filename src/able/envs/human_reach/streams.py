@@ -3,6 +3,11 @@
 Requested items are usable at a pose if, under the belief's particles, the person
 reaches it with probability at least 1 - delta. Planning is IK-only: carry, hover,
 and grasp waypoints and unchecked base moves, which execution refines.
+
+Placements come from one of two streams. With "slots", items try the centers of a
+grid of slots on each surface, jittered, so a model can only rank the slots. With
+"continuous", items are placed anywhere on a surface: the model's draws are the
+placements, and uniform samples follow them.
 """
 
 from collections import Counter
@@ -37,6 +42,11 @@ BASE_ROTATIONS = (0.0, 0.4, -0.4)
 CORRIDOR_X = 1.5
 POSE_JITTER = 0.015
 MAX_PLACE_POSE_ATTEMPTS = 100_000
+# Draws per uniform sample of a requested item's placement, which keeps it within
+# the largest reach the prior allows.
+MAX_WITHIN_REACH_DRAWS = 1000
+# How placements are sampled; see the module docstring.
+PLACEMENTS = ("slots", "continuous")
 
 
 @dataclass(eq=False)
@@ -85,8 +95,11 @@ class BedsideStreamContext:
     all_surfaces: list[str]
     slots: dict[str, NDArray] = field(default_factory=dict)
     requested_slots: list[tuple[str, NDArray]] = field(default_factory=list)
-    proposal: Any = None  # psi hook: `.order(o, points, rng)` ranks placements
+    # psi hook: with slots, `.order(o, points, rng)` ranks placements; with
+    # continuous placements, `.points(o)` are the placements to try first.
+    proposal: Any = None
     calls: Counter = field(default_factory=Counter)  # stream evaluations by name
+    placement: str = "slots"  # one of PLACEMENTS
 
     def slot_points(self, o: str) -> NDArray[np.float64]:
         """Resting position of `o` at each requested slot."""
@@ -114,6 +127,26 @@ class BedsideStreamContext:
             [self.sim.resting_pose(o, tuple(xy), s).position for s, xy in candidates]
         )
         return np.asarray(self.proposal.order(o, points, self.rng))
+
+    def proposed_points(self, o: str) -> NDArray[np.float64]:
+        """psi's draws of where `o` goes, (k, 3), or none without a proposal."""
+        if self.proposal is None:
+            return np.empty((0, 3))
+        return np.asarray(self.proposal.points(o), dtype=float).reshape(-1, 3)
+
+    def surface_box(self, s: str) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """The lowest and highest (x, y) of an item's center on surface `s`: half a
+        slot in from each edge, the area the slot grid's centers span."""
+        (x0, x1), (y0, y1), _ = self.sim.config.surface_regions[s]
+        margin = self.sim.config.slot_spacing / 2
+        return np.array([x0 + margin, y0 + margin]), np.array(
+            [x1 - margin, y1 - margin]
+        )
+
+    def placement_surfaces(self, o: str) -> list[str]:
+        """The surfaces `o` may go on: the bedside for requested items, where they
+        are usable, and every surface for clutter."""
+        return self.bedside_surfaces if o in self.requested else self.all_surfaces
 
 
 def _wrap(a: float) -> float:
@@ -233,6 +266,50 @@ def sample_place_pose(ctx: BedsideStreamContext, o: str) -> Iterator[tuple[Place
             ctx.rng.uniform(y0 + 0.05, y1 - 0.05),
         )
         yield (Placement(o, ctx.sim.resting_pose(o, xy, s), s),)
+
+
+def snap_placement(ctx: BedsideStreamContext, o: str, point: NDArray) -> Placement:
+    """`o` resting on one of its surfaces as near `point` as it can: the point's
+    (x, y) moved into each surface's box, and the nearest of those poses."""
+    options = []
+    for s in ctx.placement_surfaces(o):
+        low, high = ctx.surface_box(s)
+        xy = np.clip(point[:2], low, high)
+        pose = ctx.sim.resting_pose(o, (float(xy[0]), float(xy[1])), s)
+        options.append(Placement(o, pose, s))
+    distances = [np.linalg.norm(np.array(p.pose.position) - point) for p in options]
+    return options[int(np.argmin(distances))]
+
+
+def sample_uniform_placement(ctx: BedsideStreamContext, o: str) -> Placement:
+    """`o` resting anywhere on its surfaces, uniformly over their area. A requested
+    item stays within the largest reach the prior allows, as the candidate slots do:
+    no belief makes a pose beyond it usable."""
+    surfaces = ctx.placement_surfaces(o)
+    boxes = [ctx.surface_box(s) for s in surfaces]
+    areas = np.array([np.prod(high - low) for low, high in boxes])
+    largest = np.asarray(ctx.sim.config.reach_theta_ub)
+    for _ in range(MAX_WITHIN_REACH_DRAWS):
+        k = int(ctx.rng.choice(len(surfaces), p=areas / areas.sum()))
+        xy = ctx.rng.uniform(*boxes[k])
+        pose = ctx.sim.resting_pose(o, (float(xy[0]), float(xy[1])), surfaces[k])
+        if o not in ctx.requested:
+            break
+        if reach_margin(ctx.sim.grasp_point(o, pose), largest, ctx.sim.shoulder) >= 0:
+            break
+    return Placement(o, pose, surfaces[k])
+
+
+def sample_continuous_place_pose(
+    ctx: BedsideStreamContext, o: str
+) -> Iterator[tuple[Placement]]:
+    """psi's draws for `o`, each snapped onto its nearest surface, then uniform
+    samples over its surfaces (the bedside for requested items, every surface for
+    clutter)."""
+    for point in ctx.proposed_points(o):
+        yield (snap_placement(ctx, o, point),)
+    for _ in range(MAX_PLACE_POSE_ATTEMPTS):
+        yield (sample_uniform_placement(ctx, o),)
 
 
 def sample_grasp(ctx: BedsideStreamContext, o: str) -> Iterator[tuple[Grasp]]:
