@@ -4,6 +4,7 @@ import dataclasses
 
 import numpy as np
 import pytest
+from kinder.envs.dynamic3d.limb_utils import NUM_ROBOT_JOINTS
 from pybullet_helpers.geometry import SE2Pose
 
 from able.beliefs.range_of_motion import RangeOfMotionBelief
@@ -296,13 +297,12 @@ def test_plan_reaches_the_goal(setup, plain):
 
 
 def test_planning_failures(setup):
-    """Tests that running out of budget, or a goal the belief rules out entirely,
-    fails."""
+    """Tests that running out of the budget's rollouts or time is a timeout, and
+    that MPC that stops improving fails."""
     _, task, planner = setup
     rng = np.random.default_rng(0)
-    with pytest.raises(PlanningFailure, match="budget") as failure:
+    with pytest.raises(PlanningTimeout, match="rollouts"):
         planner.plan(task, _prior(), FAST, Budget(max_iterations=0), rng)
-    assert not isinstance(failure.value, PlanningTimeout)
     with pytest.raises(PlanningTimeout, match="time"):
         planner.plan(task, _prior(), FAST, Budget(max_wall_time=0.0), rng)
     short = dataclasses.replace(
@@ -325,11 +325,11 @@ def test_the_start_raises_the_believed_limits(setup):
     assert reach[2] > 0.75
     raised = _with_start_reach(belief, task.initial_state)
     assert np.allclose(raised.floor, [prior.low, prior.low, reach[2]])
-    # Planning gets past the first step and runs out of its two-step budget.
-    with pytest.raises(PlanningFailure, match="budget"):
-        planner.plan(
-            task, belief, FAST, Budget(max_iterations=2), np.random.default_rng(0)
-        )
+    # Planning gets past the first step and runs out of its rollouts.
+    budget = Budget(max_iterations=2 * FAST.config.sampling.num_rollouts)
+    with pytest.raises(PlanningTimeout, match="rollouts") as failure:
+        planner.plan(task, belief, FAST, budget, np.random.default_rng(0))
+    assert failure.value.stats["num_mpc_steps"] >= 1
 
 
 class _RecordingModel(ConditionalModel):
@@ -404,6 +404,31 @@ def test_a_trained_model_seeds_mpc(setup, plain):
     assert isinstance(real_env, SimulatedEnvironment)
     trajectory = run_episode(real_env, task, seeded)
     assert real_env.check_goal(task, trajectory.states[-1])
+
+
+def test_the_budget_caps_rollouts(setup, plain):
+    """Tests that planning starts no MPC step once it has used the budget's
+    rollouts, that the timed-out plan keeps its statistics, and that a seeded plan
+    that runs out is not retried without the model, which shares the budget."""
+    _, task, planner = setup
+    plain_policy, _ = plain
+    plain_stats = plain_policy.get_planning_stats()
+    budget = Budget(max_iterations=int(plain_stats["num_rollouts"]) // 2)
+    params = dataclasses.replace(FAST, model=_RecordingModel())
+    with pytest.raises(PlanningTimeout, match="rollouts") as failure:
+        planner.plan(task, _prior(), params, budget, np.random.default_rng(0))
+    stats = failure.value.stats
+    assert stats["num_rollouts"] >= budget.max_iterations
+    assert stats["num_mpc_steps"] < plain_stats["num_mpc_steps"]
+    # A model that always proposes zero controls seeds the first step.
+    horizon = FAST.config.sampling.horizon
+    proposer = _RecordingModel(np.zeros(horizon * NUM_ROBOT_JOINTS))
+    seeded_params = dataclasses.replace(FAST, model=proposer)
+    rng = np.random.default_rng(0)
+    with pytest.raises(PlanningTimeout, match="rollouts") as failure:
+        planner.plan(task, _prior(), seeded_params, Budget(max_iterations=1), rng)
+    assert failure.value.stats["num_mpc_steps"] == 1
+    assert failure.value.stats["fell_back"] == 0 and len(proposer.inputs) == 1
 
 
 class _FailingWithModel(LimbMPCPlanner):

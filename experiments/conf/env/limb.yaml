@@ -20,3 +20,13 @@ num_eval_tasks: 8
 budgets:
   sleep:
     max_iterations: 4
+  # Planning stops after 2000 MPC rollouts per task (iterations), which caps the
+  # planner's work the same way on any machine and under any load. Without a
+  # limit, planning from scratch took 1990 rollouts per task on average, and a
+  # rollout took about 0.12 s on Della, so 2000 is about 4 minutes; the 10 minutes
+  # only guard against a slow machine. Both are shared with the retry without the
+  # model when a seeded plan fails, and apply to the plans the robots learn from
+  # while they sleep. Running out of either counts as a timeout.
+  planning:
+    max_wall_time: 600
+    max_iterations: 2000
