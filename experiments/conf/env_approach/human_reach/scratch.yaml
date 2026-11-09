@@ -7,3 +7,7 @@ delta: 0.02
 # The most one solve may grow the process's memory (GB). A solve that grows more
 # fails, rather than the run being killed for running out of memory.
 max_memory_gb: 4.0
+# Where items may go: "continuous" places them anywhere on a surface, trying the
+# model's draws first; "slots" tries only the slot grid's centers, which the
+# model can only rank (#137).
+placement: continuous

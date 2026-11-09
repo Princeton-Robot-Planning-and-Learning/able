@@ -783,13 +783,15 @@ def _make_reach_parts(
     model: ConditionalModel | None = None,
     max_memory_gb: float | None = None,
     guided_time_fraction: float = 1.0,
+    placement: str = "slots",
 ) -> tuple[ReachModel, ReachPDDLStreamPlanner, ReachBeliefUpdater, ReachQueryGatherer]:
     """The human reach robot's model of the environment, planner, belief updater,
     and gatherer. PDDLStream plans for up to max_time seconds, and a solve fails if
     it grows the process's memory by more than max_memory_gb, if set. A try the
     model guides gets at most guided_time_fraction of the time limit. A pose is
-    usable if at least 1 - delta of num_particles belief particles reach it, and
-    the model, if given, ranks the placements."""
+    usable if at least 1 - delta of num_particles belief particles reach it.
+    Placements come from the slot grid or anywhere on a surface (placement, "slots"
+    or "continuous"), and the model, if given, proposes them."""
     env_model = domain.env_model
     assert isinstance(env_model, ReachModel)
     params = PDDLStreamParams(
@@ -798,6 +800,7 @@ def _make_reach_parts(
         delta=delta,
         max_memory_gb=max_memory_gb,
         guided_time_fraction=guided_time_fraction,
+        placement=placement,
     )
     if model is not None:
         params = dataclasses.replace(params, model=model)
@@ -816,13 +819,19 @@ def make_human_reach_scratch_robot(
     num_particles: int = 256,
     delta: float = 0.1,
     max_memory_gb: float | None = None,
+    placement: str = "slots",
     recorder: CycleRecorder[ReachState, ReachTask, ArmArray] | None = None,
 ) -> ReachRobot:
     """A robot that plans with PDDLStream, asks the person to reach for the gripper,
     and never learns."""
     del recorder  # unused because the robot imagines nothing while it sleeps
     _, planner, belief_updater, gatherer = _make_reach_parts(
-        domain, max_time, num_particles, delta, max_memory_gb=max_memory_gb
+        domain,
+        max_time,
+        num_particles,
+        delta,
+        max_memory_gb=max_memory_gb,
+        placement=placement,
     )
     return Robot(
         planner=planner,
@@ -843,6 +852,7 @@ def make_human_reach_current_belief_robot(
     delta: float = 0.1,
     max_memory_gb: float | None = None,
     guided_time_fraction: float = 1.0,
+    placement: str = "slots",
     recorder: CycleRecorder[ReachState, ReachTask, ArmArray] | None = None,
 ) -> ReachRobot:
     """A human reach robot whose model, while it sleeps, learns plans for sampled
@@ -856,6 +866,7 @@ def make_human_reach_current_belief_robot(
         model,
         max_memory_gb,
         guided_time_fraction,
+        placement,
     )
     return Robot(
         planner=planner,
@@ -883,6 +894,7 @@ def make_human_reach_prior_only_robot(
     delta: float = 0.1,
     max_memory_gb: float | None = None,
     guided_time_fraction: float = 1.0,
+    placement: str = "slots",
     recorder: CycleRecorder[ReachState, ReachTask, ArmArray] | None = None,
 ) -> ReachRobot:
     """A human reach robot whose model learns plans for sampled scenes under the
@@ -896,6 +908,7 @@ def make_human_reach_prior_only_robot(
         model,
         max_memory_gb,
         guided_time_fraction,
+        placement,
     )
     return Robot(
         planner=planner,
@@ -926,6 +939,7 @@ def make_human_reach_dreaming_robot(
     delta: float = 0.1,
     max_memory_gb: float | None = None,
     guided_time_fraction: float = 1.0,
+    placement: str = "slots",
     recorder: CycleRecorder[ReachState, ReachTask, ArmArray] | None = None,
 ) -> ReachRobot:
     """A human reach robot that dreams while it sleeps: its model learns plans for
@@ -942,6 +956,7 @@ def make_human_reach_dreaming_robot(
         model,
         max_memory_gb,
         guided_time_fraction,
+        placement,
     )
     belief_source: ImaginedNextBeliefSource = ImaginedNextBeliefSource(
         env_model,
@@ -983,6 +998,7 @@ def make_human_reach_belief_coverage_robot(
     delta: float = 0.1,
     max_memory_gb: float | None = None,
     guided_time_fraction: float = 1.0,
+    placement: str = "slots",
     recorder: CycleRecorder[ReachState, ReachTask, ArmArray] | None = None,
 ) -> ReachRobot:
     """A human reach robot whose model learns, while it sleeps, under dreamed beliefs
@@ -997,6 +1013,7 @@ def make_human_reach_belief_coverage_robot(
         model,
         max_memory_gb,
         guided_time_fraction,
+        placement,
     )
     dreamer = _make_dreamer(
         domain,

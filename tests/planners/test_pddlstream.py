@@ -11,7 +11,7 @@ from pybullet_helpers.geometry import Pose
 from able.beliefs.particles import ParticleBelief
 from able.envs.human_reach.model import NO_ACTION, ReachModel
 from able.envs.human_reach.scene import BedsideStocking3DEnvConfig
-from able.envs.human_reach.streams import Placement
+from able.envs.human_reach.streams import Placement, usable_probability
 from able.envs.human_reach.tasks import make_domain
 from able.models.base import ConditionalModel, Dataset
 from able.planners import pddlstream as pddlstream_planner
@@ -23,6 +23,7 @@ from able.planners.pddlstream import (
     build_stream_context,
     counted,
     get_bedside_slots,
+    get_final_placements,
     get_place_features,
     private_cwd,
 )
@@ -294,6 +295,39 @@ def test_a_trained_model_guides_planning(tmp_path, monkeypatch):
     policy = failing.plan(task, _point_belief(THETA), params, Budget(), rng)
     assert policy.get_planning_stats()["fell_back"] == 1.0
     failing.close()
+    _close(model, planner)
+
+
+def test_a_trained_model_places_items_where_it_proposes(tmp_path, monkeypatch):
+    """With continuous placements, the model's draws are the placements: a usable
+    point off the slot grid that it proposes is where the plan puts an item."""
+    monkeypatch.chdir(tmp_path)
+    domain = make_domain(seed=0, num_requested=2, num_clutter=0, true_theta=THETA)
+    model = domain.env_model
+    assert isinstance(model, ReachModel)
+    planner = _make_planner(model)
+    task = domain.task_distribution.sample(np.random.default_rng(0))
+    ctx = build_stream_context(
+        planner.sim, task.initial_state.scene, theta_particles=THETA[None]
+    )
+    usable = [
+        point + [0.013, -0.011, 0.0]
+        for point in ctx.slot_points("req0")
+        if usable_probability(ctx, "req0", Pose(tuple(point + [0.013, -0.011, 0.0])))
+        == 1.0
+    ]
+    point = usable[len(usable) // 2]
+    defaults = replace(planner.get_default_params(), placement="continuous")
+    params = planner.set_model(defaults, _FixedModel(point))
+    rng = np.random.default_rng(0)
+    policy = planner.plan(task, _point_belief(THETA), params, Budget(), rng)
+    stats = policy.get_planning_stats()
+    assert stats["seeded"] == 1.0 and stats["fell_back"] == 0.0
+    final = get_final_placements(policy.actions)
+    assert any(np.allclose(final[o], point) for o in ("req0", "req1"))
+    # Without the model, continuous placements still find a plan.
+    plain = planner.plan(task, _point_belief(THETA), defaults, Budget(), rng)
+    assert {"req0", "req1"} <= set(get_final_placements(plain.actions))
     _close(model, planner)
 
 

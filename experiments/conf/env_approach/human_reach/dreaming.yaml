@@ -12,7 +12,11 @@ max_memory_gb: 4.0
 # The share of the time limit a try the model guides may use, so that a poor
 # ranking leaves the fallback without the model time to plan (#132).
 guided_time_fraction: 0.5
-# The model that ranks placements, refit once per sleep.
+# Where items may go: "continuous" places them anywhere on a surface, trying the
+# model's draws first; "slots" tries only the slot grid's centers, which the
+# model can only rank (#137).
+placement: continuous
+# The model that proposes placements, refit once per sleep.
 model:
   _target_: able.models.flow_matching.FlowMatchingModel
   width: 128

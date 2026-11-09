@@ -41,11 +41,13 @@ from able.envs.human_reach.scene import (
     ObjectCentricBedsideStocking3DEnv,
 )
 from able.envs.human_reach.streams import (
+    PLACEMENTS,
     BaseConf,
     BedsideStreamContext,
     Placement,
     inverse_kinematics_stream,
     requested_candidate_slots,
+    sample_continuous_place_pose,
     sample_grasp,
     sample_place_pose,
     test_cfree_pose_pose,
@@ -216,9 +218,12 @@ def build_stream_context(
     delta: float = 0.1,
     seed: int = 0,
     proposal=None,
+    placement: str = "slots",
 ) -> BedsideStreamContext:
     """The streams' shared context for planning in the state, with the reach
-    particles (the true reach if none) and an optional placement proposal."""
+    particles (the true reach if none), an optional placement proposal, and how
+    placements are sampled (one of PLACEMENTS)."""
+    assert placement in PLACEMENTS, f"Unknown placement: {placement}"
     if theta_particles is None:
         theta_particles = sim.reach_theta[None]
     cfg = sim.config
@@ -232,8 +237,11 @@ def build_stream_context(
         bedside_surfaces=list(cfg.bedside_regions),
         all_surfaces=surfaces,
         slots={s: cfg.region_slots(s) for s in surfaces},
-        requested_slots=requested_candidate_slots(sim),
+        requested_slots=(
+            requested_candidate_slots(sim) if placement == "slots" else []
+        ),
         proposal=proposal,
+        placement=placement,
     )
 
 
@@ -260,7 +268,11 @@ def create_problem(
             init.append(("Requested", name))
             goal.append(("Delivered", name))
     gens: dict[str, Callable[..., Any]] = {
-        "sample-place-pose": sample_place_pose,
+        "sample-place-pose": (
+            sample_place_pose
+            if ctx.placement == "slots"
+            else sample_continuous_place_pose
+        ),
         "sample-grasp": sample_grasp,
         "inverse-kinematics": inverse_kinematics_stream,
     }
@@ -311,8 +323,9 @@ class PDDLStreamParams:
     planning budget's wall time if set, else max_time), so that a poor ranking
     leaves the fallback without the model time to plan as scratch would. The
     model proposes num_draws placements per item, requested or clutter, from
-    get_place_features(), which rank its candidate slots; an untrained model
-    proposes nothing.
+    get_place_features(). With "slots" placement, they rank the item's candidate
+    slots; with "continuous", they are the placements tried first, anywhere on a
+    surface, before uniform samples. An untrained model proposes nothing.
     """
 
     max_time: float = 300.0
@@ -326,6 +339,8 @@ class PDDLStreamParams:
     algorithm: str = "adaptive"
     model: ConditionalModel = field(default_factory=FlowMatchingModel)
     num_draws: int = 16
+    # How placements are sampled: "slots" or "continuous" (see PLACEMENTS).
+    placement: str = "slots"
 
 
 def get_bedside_slots(config: BedsideStocking3DEnvConfig) -> NDArray[np.float64]:
@@ -369,9 +384,13 @@ def get_final_placements(
 @dataclass(frozen=True)
 class PlaceProposal:
     """Model draws of each item's placement, requested or clutter, which rank its
-    candidate slots."""
+    candidate slots, or are its first placements when placement is continuous."""
 
     samples: dict[str, NDArray[np.float64]]  # item -> (k, 3)
+
+    def points(self, o: str) -> NDArray[np.float64]:
+        """The draws for `o`, (k, 3), or none."""
+        return self.samples.get(o, np.empty((0, 3)))
 
     def order(
         self, o: str, points: NDArray[np.float64], rng: np.random.Generator
@@ -396,7 +415,7 @@ class ReachPDDLStreamPlanner(
     """Plans the whole human reach task with PDDLStream, in a simulator of its own.
 
     The policy executes the plan's actions, then NO_ACTION until the horizon; a
-    plan longer than the horizon fails. The model in the parameters ranks where
+    plan longer than the horizon fails. The model in the parameters proposes where
     each item, requested or clutter, is placed first; if planning with it fails,
     the planner plans again without it. The planning budget's wall time, if set,
     caps all planning. The statistics are the number of stream evaluations, the plan's
@@ -568,6 +587,7 @@ class ReachPDDLStreamPlanner(
             delta=params.delta,
             seed=int(rng.integers(2**31 - 1)),
             proposal=proposal,
+            placement=params.placement,
         )
         solve_start = time.perf_counter()
         max_growth = (
