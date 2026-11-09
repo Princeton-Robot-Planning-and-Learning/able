@@ -5,9 +5,7 @@ num_training_tasks: 1
 # the chance a usable pose may be out of reach.
 max_time: 600.0
 num_particles: 256
-# With continuous placements, 0.02 leaves too little usable bedside for scratch
-# to plan most scenes under the prior; 0.1 lets it plan about 40% (#137).
-delta: 0.1
+delta: 0.02
 # The most one solve may grow the process's memory (GB). A solve that grows more
 # fails, rather than the run being killed for running out of memory.
 max_memory_gb: 4.0
