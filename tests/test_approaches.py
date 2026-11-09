@@ -359,7 +359,7 @@ def test_make_human_reach_scratch_robot():
     robot = make_human_reach_scratch_robot(domain, max_time=10.0, num_particles=8)
     params = robot.planner_params
     assert params.max_time == 10.0 and params.num_particles == 8
-    assert params.placement == "slots"
+    assert params.placement == "continuous" and params.delta == 0.02
     assert robot.belief is domain.initial_belief
     robot.sleep(Budget(max_iterations=1), np.random.default_rng(0))
     assert robot.planner_params is params

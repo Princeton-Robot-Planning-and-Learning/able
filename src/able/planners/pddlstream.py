@@ -330,7 +330,7 @@ class PDDLStreamParams:
 
     max_time: float = 300.0
     num_particles: int = 256
-    delta: float = 0.1
+    delta: float = 0.02
     # The most a solve may grow this process's resident memory (GB), or None.
     max_memory_gb: float | None = None
     # The share of the time limit the model-guided try may use; the fallback
@@ -340,7 +340,7 @@ class PDDLStreamParams:
     model: ConditionalModel = field(default_factory=FlowMatchingModel)
     num_draws: int = 16
     # How placements are sampled: "slots" or "continuous" (see PLACEMENTS).
-    placement: str = "slots"
+    placement: str = "continuous"
 
 
 def get_bedside_slots(config: BedsideStocking3DEnvConfig) -> NDArray[np.float64]:
