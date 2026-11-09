@@ -783,7 +783,7 @@ def _make_reach_parts(
     model: ConditionalModel | None = None,
     max_memory_gb: float | None = None,
     guided_budget_fraction: float = 1.0,
-    placement: str = "slots",
+    placement: str = "continuous",
 ) -> tuple[ReachModel, ReachPDDLStreamPlanner, ReachBeliefUpdater, ReachQueryGatherer]:
     """The human reach robot's model of the environment, planner, belief updater,
     and gatherer. PDDLStream plans for up to max_time seconds, and a solve fails if
@@ -818,9 +818,9 @@ def make_human_reach_scratch_robot(
     domain: ReachDomain,
     max_time: float = 300.0,
     num_particles: int = 256,
-    delta: float = 0.1,
+    delta: float = 0.02,
     max_memory_gb: float | None = None,
-    placement: str = "slots",
+    placement: str = "continuous",
     recorder: CycleRecorder[ReachState, ReachTask, ArmArray] | None = None,
 ) -> ReachRobot:
     """A robot that plans with PDDLStream, asks the person to reach for the gripper,
@@ -850,10 +850,10 @@ def make_human_reach_current_belief_robot(
     num_training_tasks: int = 1,
     max_time: float = 300.0,
     num_particles: int = 256,
-    delta: float = 0.1,
+    delta: float = 0.02,
     max_memory_gb: float | None = None,
     guided_budget_fraction: float = 1.0,
-    placement: str = "slots",
+    placement: str = "continuous",
     recorder: CycleRecorder[ReachState, ReachTask, ArmArray] | None = None,
 ) -> ReachRobot:
     """A human reach robot whose model, while it sleeps, learns plans for sampled
@@ -892,10 +892,10 @@ def make_human_reach_prior_only_robot(
     num_training_tasks: int = 1,
     max_time: float = 300.0,
     num_particles: int = 256,
-    delta: float = 0.1,
+    delta: float = 0.02,
     max_memory_gb: float | None = None,
     guided_budget_fraction: float = 1.0,
-    placement: str = "slots",
+    placement: str = "continuous",
     recorder: CycleRecorder[ReachState, ReachTask, ArmArray] | None = None,
 ) -> ReachRobot:
     """A human reach robot whose model learns plans for sampled scenes under the
@@ -937,10 +937,10 @@ def make_human_reach_dreaming_robot(
     num_training_tasks: int = 1,
     max_time: float = 300.0,
     num_particles: int = 256,
-    delta: float = 0.1,
+    delta: float = 0.02,
     max_memory_gb: float | None = None,
     guided_budget_fraction: float = 1.0,
-    placement: str = "slots",
+    placement: str = "continuous",
     recorder: CycleRecorder[ReachState, ReachTask, ArmArray] | None = None,
 ) -> ReachRobot:
     """A human reach robot that dreams while it sleeps: its model learns plans for
@@ -996,10 +996,10 @@ def make_human_reach_belief_coverage_robot(
     num_training_tasks: int = 1,
     max_time: float = 300.0,
     num_particles: int = 256,
-    delta: float = 0.1,
+    delta: float = 0.02,
     max_memory_gb: float | None = None,
     guided_budget_fraction: float = 1.0,
-    placement: str = "slots",
+    placement: str = "continuous",
     recorder: CycleRecorder[ReachState, ReachTask, ArmArray] | None = None,
 ) -> ReachRobot:
     """A human reach robot whose model learns, while it sleeps, under dreamed beliefs
