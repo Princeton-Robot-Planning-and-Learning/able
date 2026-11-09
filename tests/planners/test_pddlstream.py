@@ -11,7 +11,7 @@ from pybullet_helpers.geometry import Pose
 from able.beliefs.particles import ParticleBelief
 from able.envs.human_reach.model import NO_ACTION, ReachModel
 from able.envs.human_reach.scene import BedsideStocking3DEnvConfig
-from able.envs.human_reach.streams import Placement
+from able.envs.human_reach.streams import Placement, usable_probability
 from able.envs.human_reach.tasks import make_domain
 from able.models.base import ConditionalModel, Dataset
 from able.planners import pddlstream as pddlstream_planner
@@ -23,6 +23,7 @@ from able.planners.pddlstream import (
     build_stream_context,
     counted,
     get_bedside_slots,
+    get_final_placements,
     get_place_features,
     private_cwd,
 )
@@ -92,7 +93,7 @@ def test_reach_planner(tmp_path, monkeypatch):
     assert stats["plan_length"] == len(plan) and stats["stream_calls"] > 0
     places = [args[0] for name, args in plan if name == "place"]
     assert {"req0", "req1"} <= set(places)
-    with pytest.raises(PlanningTimeout, match="no plan within its time limit"):
+    with pytest.raises(PlanningTimeout, match="no plan within its time limit") as error:
         planner.plan(
             task,
             _point_belief(np.array([0.1, 0.1, 0.1])),
@@ -100,6 +101,9 @@ def test_reach_planner(tmp_path, monkeypatch):
             Budget(max_wall_time=5.0),
             rng,
         )
+    # A failed plan still reports its statistics.
+    stats = error.value.stats
+    assert stats["stream_calls"] > 0 and stats["seeded"] == stats["fell_back"] == 0
     # A budget already spent stops before searching, also a timeout.
     with pytest.raises(PlanningTimeout):
         planner.plan(
@@ -135,6 +139,44 @@ class _FailingWithModel(ReachPDDLStreamPlanner):
         return super()._solve(
             task, particles, params, budget, rng, proposal, stats, start_time
         )
+
+
+class _TimingOutWithModel(ReachPDDLStreamPlanner):
+    """Runs out of time whenever the model guides it."""
+
+    def _solve(self, task, particles, params, budget, rng, proposal, stats, start_time):
+        if proposal is not None:
+            return None, "time"
+        return super()._solve(
+            task, particles, params, budget, rng, proposal, stats, start_time
+        )
+
+
+def test_failed_plans_report_their_statistics(tmp_path, monkeypatch):
+    """A plan whose guided try ran out of time and whose fallback found nothing
+    reports both in its failure's statistics."""
+    monkeypatch.chdir(tmp_path)
+    domain = make_domain(seed=0, num_requested=2, num_clutter=0, true_theta=THETA)
+    model = domain.env_model
+    assert isinstance(model, ReachModel)
+    planner = _TimingOutWithModel(model, PDDLStreamParams(max_time=60))
+    task = domain.task_distribution.sample(np.random.default_rng(0))
+    slot = build_stream_context(planner.sim, task.initial_state.scene).slot_points(
+        "req0"
+    )[0]
+    params = planner.set_model(planner.get_default_params(), _FixedModel(slot))
+    with pytest.raises(PlanningTimeout) as error:
+        planner.plan(
+            task,
+            _point_belief(np.array([0.1, 0.1, 0.1])),
+            params,
+            Budget(max_wall_time=5.0),
+            np.random.default_rng(0),
+        )
+    stats = error.value.stats
+    assert stats["seeded"] == stats["seeded_timed_out"] == stats["fell_back"] == 1.0
+    assert stats["stream_calls"] > 0
+    _close(model, planner)
 
 
 def _make_failing(model: ReachModel) -> ReachPDDLStreamPlanner:
@@ -256,6 +298,39 @@ def test_a_trained_model_guides_planning(tmp_path, monkeypatch):
     _close(model, planner)
 
 
+def test_a_trained_model_places_items_where_it_proposes(tmp_path, monkeypatch):
+    """With continuous placements, the model's draws are the placements: a usable
+    point off the slot grid that it proposes is where the plan puts an item."""
+    monkeypatch.chdir(tmp_path)
+    domain = make_domain(seed=0, num_requested=2, num_clutter=0, true_theta=THETA)
+    model = domain.env_model
+    assert isinstance(model, ReachModel)
+    planner = _make_planner(model)
+    task = domain.task_distribution.sample(np.random.default_rng(0))
+    ctx = build_stream_context(
+        planner.sim, task.initial_state.scene, theta_particles=THETA[None]
+    )
+    usable = [
+        point + [0.013, -0.011, 0.0]
+        for point in ctx.slot_points("req0")
+        if usable_probability(ctx, "req0", Pose(tuple(point + [0.013, -0.011, 0.0])))
+        == 1.0
+    ]
+    point = usable[len(usable) // 2]
+    defaults = replace(planner.get_default_params(), placement="continuous")
+    params = planner.set_model(defaults, _FixedModel(point))
+    rng = np.random.default_rng(0)
+    policy = planner.plan(task, _point_belief(THETA), params, Budget(), rng)
+    stats = policy.get_planning_stats()
+    assert stats["seeded"] == 1.0 and stats["fell_back"] == 0.0
+    final = get_final_placements(policy.actions)
+    assert any(np.allclose(final[o], point) for o in ("req0", "req1"))
+    # Without the model, continuous placements still find a plan.
+    plain = planner.plan(task, _point_belief(THETA), defaults, Budget(), rng)
+    assert {"req0", "req1"} <= set(get_final_placements(plain.actions))
+    _close(model, planner)
+
+
 def test_memory_is_released_after_every_solve(tmp_path, monkeypatch):
     """Every solve returns its freed memory, whether it found a plan or not."""
     monkeypatch.chdir(tmp_path)
@@ -309,4 +384,118 @@ def test_memory_limit(tmp_path, monkeypatch):
             Budget(max_wall_time=60.0),
             np.random.default_rng(0),
         )
+    _close(model, planner)
+
+
+def test_the_guided_try_leaves_the_fallback_time(tmp_path, monkeypatch):
+    """A try the model guides gets guided_budget_fraction of the time limit and of
+    the stream calls, and the fallback without the model gets what is left."""
+    monkeypatch.chdir(tmp_path)
+    limits: list[float] = []
+    call_limits: list[int | None] = []
+
+    def solve_problem(problem, max_time, algorithm):
+        del problem, algorithm
+        limits.append(max_time)
+        # pylint: disable-next=protected-access
+        call_limits.append(pddlstream_planner._CALL_LIMIT)
+        # The guided try finds nothing; the fallback finds an empty plan.
+        return None if len(limits) % 2 == 1 else []
+
+    monkeypatch.setattr(pddlstream_planner, "solve_problem", solve_problem)
+    domain = make_domain(seed=0, num_requested=2, num_clutter=0, true_theta=THETA)
+    model = domain.env_model
+    assert isinstance(model, ReachModel)
+    planner = _make_planner(model)
+    task = domain.task_distribution.sample(np.random.default_rng(0))
+    slot = build_stream_context(planner.sim, task.initial_state.scene).slot_points(
+        "req0"
+    )[0]
+    defaults = replace(planner.get_default_params(), max_time=600.0)
+    params = planner.set_model(
+        replace(defaults, guided_budget_fraction=0.5), _FixedModel(slot)
+    )
+    belief, rng = _point_belief(THETA), np.random.default_rng(0)
+    policy = planner.plan(task, belief, params, Budget(max_wall_time=600.0), rng)
+    assert policy.get_planning_stats()["fell_back"] == 1.0
+    assert limits[0] == pytest.approx(300.0)
+    assert 590.0 < limits[1] <= 600.0  # what is left of the 600 s budget
+    # Without a planning budget, the fallback gets all of max_time.
+    limits.clear()
+    planner.plan(task, belief, params, Budget(), rng)
+    assert limits == [pytest.approx(300.0), 600.0]
+    # A fraction of 1 gives the guided try the whole limit, as before.
+    limits.clear()
+    whole = replace(params, guided_budget_fraction=1.0)
+    planner.plan(task, belief, whole, Budget(max_wall_time=600.0), rng)
+    assert limits[0] > 590.0
+    # The stream calls split the same way; this solve made none, so the fallback
+    # gets them all.
+    call_limits.clear()
+    planner.plan(task, belief, params, Budget(max_iterations=1001), rng)
+    assert call_limits == [500, 1001]
+    assert pddlstream_planner._CALL_LIMIT is None  # pylint: disable=protected-access
+    _close(model, planner)
+
+
+def test_stream_call_limit():
+    """Streams evaluated inside a call limit make at most that many evaluations in
+    all, and the limit is lifted afterwards."""
+    calls: Counter = Counter()
+    with pddlstream_planner.call_limit(3):
+        for _ in range(3):
+            pddlstream_planner.count_evaluation(calls, "s")
+        with pytest.raises(pddlstream_planner.OutOfStreamCalls):
+            pddlstream_planner.count_evaluation(calls, "t")
+    assert calls == {"s": 3}
+    pddlstream_planner.count_evaluation(calls, "s")
+    assert calls.total() == 4
+
+
+def test_planning_stops_at_its_stream_calls(tmp_path, monkeypatch):
+    """With an iteration budget, planning stops after that many stream
+    evaluations, with and without the model together, which is a timeout."""
+    monkeypatch.chdir(tmp_path)
+    domain = make_domain(seed=0, num_requested=2, num_clutter=0, true_theta=THETA)
+    model = domain.env_model
+    assert isinstance(model, ReachModel)
+    planner = _make_planner(model)
+    task = domain.task_distribution.sample(np.random.default_rng(0))
+    unreachable = _point_belief(np.array([0.1, 0.1, 0.1]))
+    with pytest.raises(PlanningTimeout, match="within its stream calls") as error:
+        planner.plan(
+            task,
+            unreachable,
+            planner.get_default_params(),
+            Budget(max_wall_time=60.0, max_iterations=200),
+            np.random.default_rng(0),
+        )
+    assert error.value.stats["stream_calls"] == 200
+    slot = build_stream_context(planner.sim, task.initial_state.scene).slot_points(
+        "req0"
+    )[0]
+    params = planner.set_model(
+        replace(planner.get_default_params(), guided_budget_fraction=0.25),
+        _FixedModel(slot),
+    )
+    with pytest.raises(PlanningTimeout) as error:
+        planner.plan(
+            task,
+            unreachable,
+            params,
+            Budget(max_wall_time=60.0, max_iterations=200),
+            np.random.default_rng(0),
+        )
+    stats = error.value.stats
+    assert stats["stream_calls"] == 200
+    assert stats["seeded_timed_out"] == stats["fell_back"] == 1.0
+    # With the true reach, a budget large enough finds the plan.
+    policy = planner.plan(
+        task,
+        _point_belief(THETA),
+        planner.get_default_params(),
+        Budget(max_iterations=5000),
+        np.random.default_rng(0),
+    )
+    assert 0 < policy.get_planning_stats()["stream_calls"] <= 5000
     _close(model, planner)

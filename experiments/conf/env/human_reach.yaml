@@ -19,7 +19,13 @@ num_eval_tasks: 8
 budgets:
   sleep:
     max_iterations: 4
-  # At most 10 minutes per task (with approach.max_time), shared with the retry
-  # without the model when a seeded plan fails. Running out counts as a timeout.
+  # Planning stops after 5000 stream evaluations per task (iterations), which
+  # caps the planner's work the same way on any machine and under any load. In
+  # calibration a stream evaluation took about 0.04 s, so 5000 is about 3.5
+  # minutes; the 10 minutes (with approach.max_time) only guard against a search
+  # that runs long without evaluating streams. Both are shared with the retry
+  # without the model when a seeded plan fails. Running out of either counts as a
+  # timeout.
   planning:
     max_wall_time: 600
+    max_iterations: 5000

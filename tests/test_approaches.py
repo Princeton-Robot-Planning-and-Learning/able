@@ -359,18 +359,25 @@ def test_make_human_reach_scratch_robot():
     robot = make_human_reach_scratch_robot(domain, max_time=10.0, num_particles=8)
     params = robot.planner_params
     assert params.max_time == 10.0 and params.num_particles == 8
+    assert params.placement == "continuous" and params.delta == 0.02
     assert robot.belief is domain.initial_belief
     robot.sleep(Budget(max_iterations=1), np.random.default_rng(0))
     assert robot.planner_params is params
 
 
 def test_make_human_reach_learning_robots():
-    """Tests that the human reach robots that learn rank placements with the given
-    model, sleep, and that prior-only learns in its first sleep only."""
+    """Tests that the human reach robots that learn propose continuous placements
+    with the given model, sleep, and that prior-only learns in its first sleep
+    only."""
     domain = make_reach_domain(seed=0, num_requested=1, num_clutter=0)
     model = MLPRegressor(num_steps=5)
     # Every bedside pose is usable, so planning is quick.
-    options = {"model": model, "max_time": 30.0, "delta": 1.0}
+    options = {
+        "model": model,
+        "max_time": 30.0,
+        "delta": 1.0,
+        "placement": "continuous",
+    }
     budgets = _budgets(num_dreams=0)
     robots = [
         make_human_reach_current_belief_robot(domain, Budget(), **options),
@@ -384,6 +391,7 @@ def test_make_human_reach_learning_robots():
         ),
     ]
     rng = np.random.default_rng(0)
+    assert all(r.planner_params.placement == "continuous" for r in robots)
     for robot in robots[:2]:
         assert robot.planner_params.model is model
         robot.sleep(Budget(max_iterations=1), rng)
