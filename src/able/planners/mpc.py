@@ -316,14 +316,19 @@ def get_mpc_features(
     previous_control: NDArray[np.float64],
 ) -> NDArray[np.float64]:
     """The model's input at an MPC step: limb and robot positions, goal, belief
-    mean and standard deviation, step, limb and robot velocities, last control."""
+    mean and standard deviation, step, limb and robot velocities, last control.
+
+    The belief's moments are those of its truncated Gaussians, so a floor raised by
+    the limb's motion changes them. The untruncated parameters change only when the
+    person signals a limit or answers a query.
+    """
     return np.concatenate(
         [
             state.limb_positions,
             state.robot_positions[:NUM_ROBOT_JOINTS],
             goal,
-            belief.mean,
-            belief.stddev,
+            belief.truncated_mean,
+            belief.truncated_stddev,
             [float(step)],
             state.limb_velocities,
             state.robot_velocities[:NUM_ROBOT_JOINTS],
@@ -343,7 +348,8 @@ def get_control_window(
 
 class LimbMPCPolicy(OpenLoopPolicy[LimbState, NDArray[np.float64]]):
     """An open-loop plan that remembers how MPC made it: the target goal, the MPC
-    horizon, and the state before and control of each MPC step."""
+    horizon, the state before and control of each MPC step, and the belief the plan
+    was made under, with its floors raised to the start's reach."""
 
     def __init__(
         self,
@@ -353,12 +359,14 @@ class LimbMPCPolicy(OpenLoopPolicy[LimbState, NDArray[np.float64]]):
         horizon: int,
         states: list[CoupledState],
         controls: list[NDArray[np.float64]],
+        belief: RangeOfMotionBelief,
     ) -> None:
         super().__init__(actions, stats)
         self.target = target
         self.horizon = horizon
         self.states = tuple(states)
         self.controls = tuple(controls)
+        self.belief = belief
 
 
 @dataclass(frozen=True, eq=False)
@@ -598,14 +606,21 @@ class LimbMPCPlanner(
         policy: Policy[LimbState, NDArray[np.float64]],
     ) -> Dataset:
         """One row per MPC step of the plan: the features MPC's seeder saw, and
-        the next horizon of controls."""
-        assert isinstance(belief, RangeOfMotionBelief), "Need a RangeOfMotionBelief"
+        the next horizon of controls.
+
+        The features use the belief the plan was made under, which plan() raised
+        to the start's reach, so they match what the seeder saw. The belief
+        argument is unused.
+        """
+        del belief  # unused: the plan records the belief it was made under
         assert isinstance(policy, LimbMPCPolicy), "Need a plan from plan()"
         controls, horizon = list(policy.controls), policy.horizon
         x, y = [], []
         for step, state in enumerate(policy.states):
             previous = controls[step - 1] if step else np.zeros(NUM_ROBOT_JOINTS)
-            x.append(get_mpc_features(state, policy.target, belief, step, previous))
+            x.append(
+                get_mpc_features(state, policy.target, policy.belief, step, previous)
+            )
             y.append(get_control_window(controls, step, horizon).ravel())
         return Dataset(
             x=np.array(x),
@@ -788,6 +803,7 @@ class LimbMPCPlanner(
             config.sampling.horizon,
             states,
             controls,
+            attempt.belief,
         )
 
     def _replay(
