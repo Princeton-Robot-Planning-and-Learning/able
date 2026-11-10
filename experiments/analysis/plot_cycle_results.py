@@ -48,7 +48,9 @@ ENV_TO_DISPLAY_NAME = {
 }
 
 # Each panel plots one column of eval_results.csv: (column, axis label). Runs that
-# record timeouts get a third panel; their planning time leaves out timed-out tasks.
+# record timeouts get a third panel. Planning time averages every task, a timed-out
+# one at the time it took, so a robot that stops timing out does not seem slower
+# for the hard tasks it now finishes.
 METRICS = [
     ("planning_wall_time", "Planning time per task"),
     ("success", "Success rate"),
@@ -58,8 +60,8 @@ RATE_METRICS = ("success", "timed_out")
 
 CAPTION = "Lines show the mean over seeds; shaded bands show one standard error."
 TIMEOUT_CAPTION = (
-    "Timed-out tasks are excluded from planning time, counted as failures, and "
-    "shown on the right."
+    "Timed-out tasks count in planning time at the time they took, count as "
+    "failures, and are shown on the right."
 )
 
 # The planner's work per evaluation task, from its statistics, which do not depend
@@ -100,13 +102,6 @@ def _has_timeouts(df: pd.DataFrame) -> bool:
     return "timed_out" in df.columns
 
 
-def _finished(df: pd.DataFrame) -> pd.DataFrame:
-    """The rows whose planning did not time out, which planning time averages."""
-    if not _has_timeouts(df):
-        return df
-    return df[~df["timed_out"]]
-
-
 def _main(results_dir: Path, outfile: Path) -> None:
     all_df = combine_results_csvs(results_dir, "eval_results.csv")
     budget_envs = _get_budget_envs(all_df)
@@ -131,21 +126,15 @@ def _main(results_dir: Path, outfile: Path) -> None:
     for row, env in enumerate(envs):
         env_df = df[df["env"] == env]
         num_seeds = env_df["seed"].nunique()
-        # Every panel spans every cycle, so a cycle whose tasks all timed out
-        # leaves a gap in the planning-time line instead of being skipped.
+        # Every panel spans every cycle, so a cycle without results leaves a gap.
         cycles = np.sort(env_df["cycle"].unique())
         for col, (metric, label) in enumerate(metrics):
             scale, unit = 1.0, ""
-            metric_df = env_df
-            # Markers keep a planning time between two timed-out cycles visible.
-            marker = None
             if metric == "planning_wall_time":
                 scale, unit = _get_time_scale(env_df[metric])
                 label = f"{label} ({unit})"
-                metric_df = _finished(env_df)
-                marker = "o" if _has_timeouts(df) else None
             ax = axes[row, col]
-            summary = summarize_over_seeds(metric_df, metric)
+            summary = summarize_over_seeds(env_df, metric)
             for approach in approaches:
                 approach_summary = (
                     summary[summary["approach"] == approach]
@@ -163,8 +152,6 @@ def _main(results_dir: Path, outfile: Path) -> None:
                     color=colors[approach],
                     linestyle=APPROACH_TO_LINESTYLE.get(approach, "-"),
                     linewidth=2,
-                    marker=marker,
-                    markersize=3,
                     solid_capstyle="round",
                     label=APPROACH_TO_DISPLAY_NAME.get(approach, approach),
                 )
@@ -419,7 +406,8 @@ def _over_seeds(df: pd.DataFrame, metric: str, first: int, last: int | None) -> 
     first = first if first >= 0 else max(0, max_cycle + 1 + first)
     last = max_cycle if last is None else last
     window = df[(df["cycle"] >= first) & (df["cycle"] <= last)]
-    # A seed whose every task in the window timed out has no planning time.
+    # A seed with no values in the window, such as planner work for tasks that
+    # failed before any work, is left out.
     per_seed = window.groupby("seed")[metric].mean().dropna()
     if per_seed.empty:
         return "–"
@@ -433,18 +421,14 @@ def _over_seeds(df: pd.DataFrame, metric: str, first: int, last: int | None) -> 
 def _make_table(eval_df: pd.DataFrame, cycle_df: pd.DataFrame) -> str:
     """A Markdown table per environment of planning time, success rate, timeout
     rate (when the runs record timeouts), the planner's work (when the runs record
-    it), and sleep time. Planning time leaves out timed-out tasks. ± is one
-    standard error over seeds."""
+    it), and sleep time. Planning time counts timed-out tasks at the time they
+    took. ± is one standard error over seeds."""
     sections = []
     for env in sorted(eval_df["env"].unique()):
         env_df = eval_df[eval_df["env"] == env]
         approaches = sorted(env_df["approach"].unique())
         scale, unit = _get_time_scale(env_df["planning_wall_time"])
-        planning_time = env_df["planning_wall_time"] * scale
-        if _has_timeouts(env_df):
-            # NaN rows are skipped in each seed's mean.
-            planning_time = planning_time.where(~env_df["timed_out"])
-        env_df = env_df.assign(planning_time=planning_time)
+        env_df = env_df.assign(planning_time=env_df["planning_wall_time"] * scale)
         names = [APPROACH_TO_DISPLAY_NAME.get(a, a) for a in approaches]
         lines = [
             f"### {ENV_TO_DISPLAY_NAME.get(env, env)}",
@@ -510,24 +494,20 @@ def _get_planner_work(env: str, df: pd.DataFrame) -> tuple[str, pd.Series] | Non
 def _print_final_cycle(df: pd.DataFrame) -> None:
     """Print the final cycle's results, so they are visible without the plot.
 
-    Planning time leaves out timed-out tasks, which are counted after it.
+    Planning time counts timed-out tasks at the time they took.
     """
     final = df[df["cycle"] == df["cycle"].max()]
     for (env, approach), group in final.groupby(["env", "approach"]):
         scale, unit = _get_time_scale(df[df["env"] == env]["planning_wall_time"])
-        finished = _finished(group)
-        time = (
-            f"{scale * np.mean(finished['planning_wall_time']):.2f} {unit}"
-            if len(finished)
-            else "none finished"
-        )
+        time = scale * np.mean(group["planning_wall_time"])
         success = np.mean(group["success"])
         line = (
             f"{env}, {approach}, cycle {group['cycle'].iloc[0]}: "
-            f"planning time {time}, success rate {success:.2f}"
+            f"planning time {time:.2f} {unit}, success rate {success:.2f}"
         )
-        if len(finished) < len(group):
-            line += f", {len(group) - len(finished)} timed out"
+        num_timed_out = int(group["timed_out"].sum()) if _has_timeouts(group) else 0
+        if num_timed_out:
+            line += f", {num_timed_out} timed out"
         print(line)
 
 

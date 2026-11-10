@@ -58,8 +58,9 @@ def _write_run(
 
 
 def test_plot_timeouts(tmp_path: Path) -> None:
-    """Tests that timed-out tasks are left out of planning time and counted
-    separately, including when some runs predate the timed_out column."""
+    """Tests that timed-out tasks count in planning time at the time they took and
+    are counted separately, including when some runs predate the timed_out
+    column."""
     # The second task of cycle 0 failed by running out of its 600 s.
     _write_run(
         tmp_path / "0",
@@ -68,6 +69,15 @@ def test_plot_timeouts(tmp_path: Path) -> None:
         [100.0, 600.0, 200.0, 300.0],
         "human_reach",
         timed_out=[False, True, False, False],
+    )
+    # The first task of cycle 1 also ran out of its 600 s.
+    _write_run(
+        tmp_path / "2",
+        "belief_coverage",
+        0,
+        [100.0, 200.0, 600.0, 200.0],
+        "human_reach",
+        timed_out=[False, False, True, False],
     )
     _write_run(tmp_path / "1", "dreaming", 0, [50.0, 60.0, 70.0, 80.0], "human_reach")
     result = subprocess.run(
@@ -84,11 +94,24 @@ def test_plot_timeouts(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "cycle_results.png").stat().st_size > 0
     table = (tmp_path / "summary_table.md").read_text(encoding="utf-8")
-    # Columns: Dreaming, Plan from scratch.
-    assert "| Planning time (s), cycle 0 | 55.00 ± 0.00 | 100.00 ± 0.00 |" in table
-    assert "| Success rate, all cycles | 0.75 ± 0.00 | 0.75 ± 0.00 |" in table
-    assert "| Timeout rate, all cycles | 0.00 ± 0.00 | 0.25 ± 0.00 |" in table
+    # Columns: Belief coverage, Dreaming, Plan from scratch.
+    row = (
+        "| Planning time (s), cycle 0 | 150.00 ± 0.00 | 55.00 ± 0.00 | 350.00 ± 0.00 |"
+    )
+    assert row in table
+    assert (
+        "| Success rate, all cycles | 0.75 ± 0.00 | 0.75 ± 0.00 | 0.75 ± 0.00 |"
+        in table
+    )
+    assert (
+        "| Timeout rate, all cycles | 0.25 ± 0.00 | 0.00 ± 0.00 | 0.25 ± 0.00 |"
+        in table
+    )
     assert "human_reach, scratch, cycle 1: planning time 250.00 s" in result.stdout
+    final = next(
+        line for line in result.stdout.splitlines() if "belief_coverage" in line
+    )
+    assert "planning time 400.00 s" in final and final.endswith("1 timed out")
 
 
 def test_plot_cycle_results(tmp_path: Path) -> None:
