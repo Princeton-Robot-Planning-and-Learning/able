@@ -458,10 +458,11 @@ class _ModelProposer:
 
 @dataclass(frozen=True)
 class PushSearch:
-    """One push's search: the state it planned from, the push it chose, and the root
-    actions with their visits and values, most visited first."""
+    """One push's search: the state and belief it planned from, the push it chose,
+    and the root actions with their visits and values, most visited first."""
 
     state: FrictionState
+    belief: ParticleBelief
     push: Push
     root_values: tuple[tuple[Push, int, float], ...]
 
@@ -545,7 +546,7 @@ class FrictionPOMCPOWPolicy(Policy[FrictionState, Push]):
             push, root_values = self._run(state, None)
         if push is None:
             raise PlanningFailure("No feasible push", self.get_planning_stats())
-        self.searches.append(PushSearch(state, push, root_values))
+        self.searches.append(PushSearch(state, self._belief, push, root_values))
         return push
 
     def _run(
@@ -651,16 +652,20 @@ class FrictionPOMCPOWPlanner(
         policy: Policy[FrictionState, Push],
     ) -> Dataset:
         """Rows from each push the policy searched so far: the features under the
-        belief, and each root push visited at least min_visit_fraction as often as
-        the most visited one, plus the chosen push. A row's cost is the negative of
-        the push's value, and its group is the search."""
-        assert isinstance(belief, ParticleBelief), "Need a ParticleBelief"
+        belief that search used, and each root push visited at least
+        min_visit_fraction as often as the most visited one, plus the chosen push. A
+        row's cost is the negative of the push's value, and its group is the search.
+
+        The belief at the start of the task describes only the first search: the
+        policy updates its belief after every push, and the model is queried with
+        the updated one."""
+        del belief  # each search's own belief replaces the one at the task's start
         assert isinstance(policy, FrictionPOMCPOWPolicy), "Need a plan from plan()"
         fraction = policy.params.proposal.min_visit_fraction
         x, y, costs, groups = [], [], [], []
         for index, search in enumerate(policy.searches):
             features = get_push_features(
-                search.state.puck_array, task.goal, self.pomdp.world, belief
+                search.state.puck_array, task.goal, self.pomdp.world, search.belief
             )
             top = max(visits for _, visits, _ in search.root_values)
             for push, visits, value in search.root_values:

@@ -240,6 +240,8 @@ def test_replans_each_push_under_the_updated_belief(setup):
     assert searched.state == states[1]
     assert searched.root_values[0][0] == trajectory.actions[1]
     assert np.array_equal(policy.belief.particles, expected.particles)
+    assert policy.searches[0].belief is belief
+    assert np.array_equal(searched.belief.particles, expected.particles)
 
 
 def test_no_push_after_the_task_ends(setup):
@@ -307,8 +309,9 @@ def _make_failing(model: FrictionModel) -> FrictionPOMCPOWPlanner:
 
 
 def test_plan_examples(setup):
-    """Each search gives rows of its features and well-visited root pushes, with
-    the chosen push among them, costed by the negative of their values."""
+    """Each search gives rows of its features under the belief it searched with
+    and well-visited root pushes, with the chosen push among them, costed by the
+    negative of their values."""
     domain, planner, task = setup
     belief = domain.initial_belief
     policy = _plan(planner, task, belief)
@@ -316,9 +319,11 @@ def test_plan_examples(setup):
     rows = planner.get_plan_examples(task, belief, policy)
     assert rows.x.shape[1] == X_DIM and rows.y.shape[1] == Y_DIM
     assert sorted(set(rows.groups)) == [0, 1]
+    # The first push narrowed the belief the second search used.
+    assert not np.allclose(policy.searches[1].belief.std, belief.std)
     for group, search in enumerate(policy.searches):
         features = get_push_features(
-            search.state.puck_array, task.goal, planner.pomdp.world, belief
+            search.state.puck_array, task.goal, planner.pomdp.world, search.belief
         )
         mine = rows.groups == group
         assert np.allclose(rows.x[mine], features)
