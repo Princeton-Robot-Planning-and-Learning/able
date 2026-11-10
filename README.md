@@ -125,7 +125,7 @@ The robots that learn propose PDDLStream's placements for each item, requested o
 ./experiments/run_comparison.sh env=human_reach
 ```
 
-The human reach environment evaluates 8 tasks per cycle and dreams 4 times per sleep, planning 1 training scene per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
+The human reach environment evaluates 8 tasks per cycle and dreams 4 times per sleep, planning 2 training scenes per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`. On Della with `WORKERS=6`, a 20-cycle run took 1.6 to 5.7 hours, belief coverage's the longest, so the whole comparison fits in one sweep with `hydra.launcher.timeout_min=450`.
 
 
 ## Della
