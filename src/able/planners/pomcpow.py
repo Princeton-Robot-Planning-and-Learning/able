@@ -775,8 +775,8 @@ class FrictionPOMCPOWPlanner(
     fails if no push is feasible, and times out if the budget runs out. The
     statistics are the number of simulations, searches, searches the model guided,
     fallbacks without it, and searches with a target value, the mean weight of the
-    value model's data at the leaves, and the time spent searching. The default parameters, if given, replace
-    POMCPOWParams().
+    value model's data at the leaves, and the time spent searching. The default
+    parameters, if given, replace POMCPOWParams().
     """
 
     def __init__(

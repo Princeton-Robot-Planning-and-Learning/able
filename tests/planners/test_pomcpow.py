@@ -317,10 +317,10 @@ class _FixedModel(ConditionalModel):
 class _FailingWithModel(FrictionPOMCPOWPlanner):
     """Finds no push whenever the model guides the search."""
 
-    def search(self, state, belief, config, rng, proposer=None, *args):
-        if proposer is not None:
+    def search(self, state, belief, config, rng, *args):
+        if args and args[0] is not None:
             return None, SearchStats()
-        return super().search(state, belief, config, rng, proposer, *args)
+        return super().search(state, belief, config, rng, *args)
 
 
 class _RecordingPlanner(FrictionPOMCPOWPlanner):
@@ -328,9 +328,9 @@ class _RecordingPlanner(FrictionPOMCPOWPlanner):
 
     widenings: list[tuple[float, float]] = []
 
-    def search(self, state, belief, config, rng, proposer=None, *args):
+    def search(self, state, belief, config, rng, *args):
         self.widenings.append(config.action_widening)
-        return super().search(state, belief, config, rng, proposer, *args)
+        return super().search(state, belief, config, rng, *args)
 
 
 def _make_failing(model: FrictionModel) -> FrictionPOMCPOWPlanner:
