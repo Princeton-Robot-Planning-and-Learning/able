@@ -15,9 +15,11 @@ import numpy as np
 import pandas as pd
 from omegaconf import DictConfig, OmegaConf
 
+from able.beliefs.base import Belief
 from able.cycle import CycleBudgets, CycleResult, run_cycles
 from able.envs.base import Domain, FiniteTaskDistribution, TaskDistribution
 from able.envs.simulated import SimulatedEnvironment
+from able.learners.belief_features import get_moments
 from able.parallel import ProcessPool, build_context
 from able.recording.video import VideoRecorder
 from able.robot import Robot
@@ -243,7 +245,9 @@ def _get_eval_rows(results: list[CycleResult]) -> list[dict[str, Any]]:
 
 def _get_cycle_rows(results: list[CycleResult]) -> list[dict[str, Any]]:
     """One row per cycle, with the wall time of each stage and of the whole cycle,
-    and what the robot did between sleeping and evaluation."""
+    what the robot did between sleeping and evaluation, and the belief it was
+    evaluated under. An executed task that timed out moved nothing, so it showed
+    nothing about the hidden parameters."""
     return [
         {
             "cycle": result.cycle,
@@ -254,9 +258,27 @@ def _get_cycle_rows(results: list[CycleResult]) -> list[dict[str, Any]]:
             "cycle_wall_time": result.cycle_wall_time,
             "num_queries": len(result.gathered_data),
             "num_executed_tasks": len(result.executions),
+            "num_executed_successes": sum(e.success for e in result.executions),
+            "num_executed_timeouts": sum(e.timed_out for e in result.executions),
+            **_get_belief_columns(result.belief),
         }
         for result in results
     ]
+
+
+def _get_belief_columns(belief: Belief[Any]) -> dict[str, float]:
+    """Each hidden parameter's mean and standard deviation under the belief, as
+    belief coverage measures them, or nothing for a belief without moments (the
+    two-link arm's intervals)."""
+    try:
+        mean, std = get_moments(belief)
+    except TypeError:
+        return {}
+    columns = {}
+    for i, (param_mean, param_std) in enumerate(zip(mean, std, strict=True)):
+        columns[f"belief_mean_{i}"] = float(param_mean)
+        columns[f"belief_std_{i}"] = float(param_std)
+    return columns
 
 
 if __name__ == "__main__":
