@@ -5,6 +5,7 @@ A robot pushes a puck over floors of unknown friction to a goal. The hidden para
 are the friction coefficients of the floors, named by color. Everything else is known.
 """
 
+import heapq
 import math
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -240,6 +241,12 @@ class PuckPhysics:
     position_obs_noise: float = 0.02
     # Drive-planning grid resolution (m).
     nav_resolution: float = 0.1
+    # Walls shed pucks: a puck that stops where fewer than this fraction of
+    # headings have a feasible push moves along the floor to the nearest cell
+    # center, on a grid of shed_resolution, where at least this fraction do. 0 lets
+    # pucks stop anywhere.
+    min_push_fraction: float = 0.15
+    shed_resolution: float = 0.05
 
 
 @dataclass
@@ -292,6 +299,10 @@ class PuckWorld:
         self._nav_puck_cache: OrderedDict[
             tuple[int, float, float], tuple[NDArray[np.float64], NDArray[np.int32]]
         ] = OrderedDict()
+        # Per shed grid cell: whether its center leaves the robot enough headings,
+        # and where a puck stopped in it without enough comes to rest.
+        self._room_cache: dict[tuple[int, int], bool] = {}
+        self._shed_cache: dict[tuple[int, int], NDArray[np.float64] | None] = {}
 
     # ------------------------------------------------------------------ surfaces
 
@@ -473,6 +484,92 @@ class PuckWorld:
                 if self.puck_position_free(candidate):
                     return candidate
         return point
+
+    def shed(self, point: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Where a puck that stops at `point` comes to rest.
+
+        It stays if its shed grid cell leaves the robot enough headings (see
+        PuckPhysics.min_push_fraction). Otherwise it moves along the floor, around
+        walls, holes, and the goal, to the center of the nearest cell that does,
+        or stays if there is none.
+        """
+        point = np.asarray(point, dtype=np.float64)
+        if self.physics.min_push_fraction <= 0:
+            return point
+        nx, ny = self._shed_grid_shape
+        res = self.physics.shed_resolution
+        i = min(max(int(point[0] // res), 0), nx - 1)
+        j = min(max(int(point[1] // res), 0), ny - 1)
+        if self._has_room(i, j):
+            return point
+        if (i, j) not in self._shed_cache:
+            self._shed_cache[(i, j)] = self._nearest_room(i, j)
+        rest = self._shed_cache[(i, j)]
+        return point if rest is None else rest.copy()
+
+    @cached_property
+    def _shed_grid_shape(self) -> tuple[int, int]:
+        res = self.physics.shed_resolution
+        return (
+            int(round(self.puck_map.width / res)),
+            int(round(self.puck_map.height / res)),
+        )
+
+    def _nearest_room(self, i: int, j: int) -> NDArray[np.float64] | None:
+        """The center of the shed grid cell with enough headings that is nearest
+        to (i, j) along the floor, through cells whose centers are clear of walls,
+        holes, and the goal, or None if there is none."""
+        nx, ny = self._shed_grid_shape
+        res = self.physics.shed_resolution
+
+        def center(ii: int, jj: int) -> NDArray[np.float64]:
+            return np.array([(ii + 0.5) * res, (jj + 0.5) * res])
+
+        def open_floor(ii: int, jj: int) -> bool:
+            point = center(ii, jj)
+            return (
+                self.puck_position_free(point)
+                and not self.over_hole(point)
+                and not self.in_goal(point)
+            )
+
+        distances = {(i, j): 0.0}
+        queue = [(0.0, i, j)]
+        while queue:
+            distance, ci, cj = heapq.heappop(queue)
+            if distance > distances[(ci, cj)]:
+                continue
+            if (ci, cj) != (i, j) and self._has_room(ci, cj):
+                return center(ci, cj)
+            for di in (-1, 0, 1):
+                for dj in (-1, 0, 1):
+                    ni, nj = ci + di, cj + dj
+                    if (di, dj) == (0, 0) or not (0 <= ni < nx and 0 <= nj < ny):
+                        continue
+                    step = distance + math.hypot(di, dj)
+                    if step < distances.get((ni, nj), math.inf) and open_floor(ni, nj):
+                        distances[(ni, nj)] = step
+                        heapq.heappush(queue, (step, ni, nj))
+        return None
+
+    def _has_room(self, i: int, j: int, num_headings: int = 36) -> bool:
+        """Whether at least min_push_fraction of evenly spaced headings have a
+        feasible push from the center of shed grid cell (i, j)."""
+        key = (i, j)
+        if key not in self._room_cache:
+            res = self.physics.shed_resolution
+            center = np.array([(i + 0.5) * res, (j + 0.5) * res])
+            needed = math.ceil(self.physics.min_push_fraction * num_headings - 1e-9)
+            found = 0
+            if self.puck_position_free(center):
+                angles = np.linspace(-math.pi, math.pi, num_headings, endpoint=False)
+                for angle in angles:
+                    if self.push_feasible(center, float(angle)):
+                        found += 1
+                        if found >= needed:
+                            break
+            self._room_cache[key] = found >= needed
+        return self._room_cache[key]
 
     def puck_position_free(self, point: NDArray[np.float64]) -> bool:
         """Whether the puck can rest at `point` without overlapping a wall."""

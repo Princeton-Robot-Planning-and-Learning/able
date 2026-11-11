@@ -69,6 +69,11 @@ class TrainablePlanner(
     ) -> PlannerParamsType:
         """New parameters with the model replaced."""
 
+    def get_training_params(self, params: PlannerParamsType) -> PlannerParamsType:
+        """The parameters to plan training tasks with while sleeping: by default
+        the parameters themselves."""
+        return params
+
     @abstractmethod
     def get_plan_examples(
         self,

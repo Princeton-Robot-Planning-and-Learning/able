@@ -208,3 +208,26 @@ def test_friction_prior_shuffles_the_levels():
     samples = prior.sample(rng, 50)
     assert samples.shape == (50, 3)
     assert np.all((low <= samples) & (samples <= high))
+
+
+def test_walls_shed_pucks():
+    """A puck that stops where the robot has too few headings to push it on moves
+    to the nearest spot with enough; elsewhere it stays."""
+    world = PuckWorld(THREE_ROUTES)
+    angles = np.linspace(-math.pi, math.pi, 36, endpoint=False)
+
+    def fraction(point) -> float:
+        return float(np.mean([world.push_feasible(point, float(a)) for a in angles]))
+
+    start = np.array(THREE_ROUTES.puck_start)
+    assert np.array_equal(world.shed(start), start)
+    # In the central block's slot, the robot cannot push at all.
+    in_slot = np.array([2.2, 2.2])
+    rest = world.shed(in_slot)
+    assert fraction(in_slot) == 0.0
+    assert fraction(rest) >= world.physics.min_push_fraction
+    assert world.puck_position_free(rest) and np.linalg.norm(rest - in_slot) < 0.5
+    assert np.array_equal(world.shed(rest), rest)
+    # Without a minimum fraction, pucks stop anywhere.
+    anywhere = PuckWorld(THREE_ROUTES, PuckPhysics(min_push_fraction=0.0))
+    assert np.array_equal(anywhere.shed(in_slot), in_slot)

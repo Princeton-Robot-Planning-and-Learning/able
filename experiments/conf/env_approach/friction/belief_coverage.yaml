@@ -4,12 +4,16 @@ _target_: able.approaches.make_friction_belief_coverage_robot
 num_candidates: 4
 # Training tasks rolled out under each training belief.
 num_training_tasks: 1
-# POMCPOW simulations per push, and the search depth in pushes.
-num_sims: 1000
+# POMCPOW simulations per push at evaluation and execution, and the search
+# depth in pushes.
+num_sims: 5
 max_depth: 8
+# Simulations per push when rolling out training tasks while sleeping. Searching
+# harder while sleeping gives the model better pushes to learn.
+training_num_sims: 100
 # The model that proposes pushes, refit once per sleep.
 model:
   _target_: able.models.flow_matching.FlowMatchingModel
   width: 128
   depth: 3
-  num_steps: 2000
+  num_steps: 4000

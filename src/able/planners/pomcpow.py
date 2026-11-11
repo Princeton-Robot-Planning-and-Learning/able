@@ -335,8 +335,7 @@ X_DIM, Y_DIM = 13, 4
 
 @dataclass(frozen=True)
 class ProposalConfig:
-    """How the model proposes pushes inside POMCPOW, and which root pushes become
-    its training labels.
+    """How the model proposes pushes inside POMCPOW.
 
     The first model_first pushes tried at each node come from the model while its
     draws for the node's puck cell last; later ones come from it with probability
@@ -348,7 +347,6 @@ class ProposalConfig:
     mix: float = 0.5  # chance a proposal comes from the model
     num_draws: int = 16  # model draws cached per puck cell
     cell: float = 0.05  # cache resolution (m)
-    min_visit_fraction: float = 0.2  # labels, relative to the most visited push
     model_first: int = 0
     action_widening: tuple[float, float] | None = None
 
@@ -358,12 +356,15 @@ class POMCPOWParams:
     """Parameters of the friction POMCPOW planner.
 
     The model proposes pushes from get_push_features(); an untrained model proposes
-    nothing, and POMCPOW then searches as without it.
+    nothing, and POMCPOW then searches as without it. Training tasks planned while
+    sleeping search training_num_sims simulations per push, if set, instead of
+    config.num_sims.
     """
 
     config: POMCPOWConfig = POMCPOWConfig(max_depth=8)
     model: ConditionalModel = field(default_factory=FlowMatchingModel)
     proposal: ProposalConfig = ProposalConfig()
+    training_num_sims: int | None = None
 
 
 def get_push_features(
@@ -458,10 +459,11 @@ class _ModelProposer:
 
 @dataclass(frozen=True)
 class PushSearch:
-    """One push's search: the state it planned from, the push it chose, and the root
-    actions with their visits and values, most visited first."""
+    """One push's search: the state and belief it planned from, the push it chose,
+    and the root actions with their visits and values, most visited first."""
 
     state: FrictionState
+    belief: ParticleBelief
     push: Push
     root_values: tuple[tuple[Push, int, float], ...]
 
@@ -545,7 +547,7 @@ class FrictionPOMCPOWPolicy(Policy[FrictionState, Push]):
             push, root_values = self._run(state, None)
         if push is None:
             raise PlanningFailure("No feasible push", self.get_planning_stats())
-        self.searches.append(PushSearch(state, push, root_values))
+        self.searches.append(PushSearch(state, self._belief, push, root_values))
         return push
 
     def _run(
@@ -606,8 +608,8 @@ class FrictionPOMCPOWPlanner(
     """Plans friction tasks with POMCPOW, one push at a time.
 
     The root states put each belief particle's frictions at the robot's view of the
-    puck and itself. Leaf values roll out greedy pushes whose speeds assume the
-    belief's mean frictions. plan() searches the first push, and the policy
+    puck and itself. Leaf values come from the shortest pushable path to the goal
+    (PuckPushingModel.value). plan() searches the first push, and the policy
     searches each later one after updating its belief. The model in the parameters
     proposes pushes. Planning fails if no push is feasible, and times out if the
     budget runs out. The statistics are the number of simulations, searches,
@@ -639,6 +641,12 @@ class FrictionPOMCPOWPlanner(
     def get_model(self, params: POMCPOWParams) -> ConditionalModel:
         return params.model
 
+    def get_training_params(self, params: POMCPOWParams) -> POMCPOWParams:
+        if params.training_num_sims is None:
+            return params
+        config = replace(params.config, num_sims=params.training_num_sims)
+        return replace(params, config=config)
+
     def set_model(
         self, params: POMCPOWParams, model: ConditionalModel
     ) -> POMCPOWParams:
@@ -650,32 +658,28 @@ class FrictionPOMCPOWPlanner(
         belief: Belief[NDArray[np.float64]],
         policy: Policy[FrictionState, Push],
     ) -> Dataset:
-        """Rows from each push the policy searched so far: the features under the
-        belief, and each root push visited at least min_visit_fraction as often as
-        the most visited one, plus the chosen push. A row's cost is the negative of
-        the push's value, and its group is the search."""
-        assert isinstance(belief, ParticleBelief), "Need a ParticleBelief"
+        """One row per push the policy searched so far: the features under the
+        belief that search planned from, and the push it chose. A row's cost is the
+        negative of the push's value, and its group is the search."""
+        del belief  # unused because each search keeps the belief it planned from
         assert isinstance(policy, FrictionPOMCPOWPolicy), "Need a plan from plan()"
-        fraction = policy.params.proposal.min_visit_fraction
-        x, y, costs, groups = [], [], [], []
-        for index, search in enumerate(policy.searches):
-            features = get_push_features(
-                search.state.puck_array, task.goal, self.pomdp.world, belief
+        x, y, costs = [], [], []
+        for search in policy.searches:
+            x.append(
+                get_push_features(
+                    search.state.puck_array, task.goal, self.pomdp.world, search.belief
+                )
             )
-            top = max(visits for _, visits, _ in search.root_values)
-            for push, visits, value in search.root_values:
-                if visits >= fraction * top or push == search.push:
-                    x.append(features)
-                    y.append(encode_push(push))
-                    costs.append(-value)
-                    groups.append(index)
+            y.append(encode_push(search.push))
+            values = [v for push, _, v in search.root_values if push == search.push]
+            costs.append(-values[0] if values else 0.0)
         if not x:
             return Dataset.empty(X_DIM, Y_DIM)
         return Dataset(
             x=np.array(x),
             y=np.array(y),
             costs=np.array(costs),
-            groups=np.array(groups, dtype=np.int64),
+            groups=np.arange(len(x), dtype=np.int64),
         )
 
     def search(
@@ -688,7 +692,6 @@ class FrictionPOMCPOWPlanner(
     ) -> tuple[Push | None, SearchStats]:
         """One POMCPOW search for the state's push under the belief."""
         pomdp = self.pomdp
-        pomdp.rollout_frictions = tuple(float(f) for f in belief.mean)
         particles = [
             pomdp.initial_state(state.puck_array, state.robot_array, f, state.pushes)
             for f in belief.particles

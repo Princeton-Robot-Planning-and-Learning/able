@@ -81,17 +81,17 @@ The limb environment evaluates 8 tasks per cycle and dreams 4 times per sleep, p
 
 The friction environment needs the `friction` extra (`pip install -e ".[friction]"`).
 
-A robot pushes a puck through a maze to a goal, over three floors (blue, tan, and green) whose friction coefficients are unknown. Each action is one push, planned with POMCPOW from a particle belief over the frictions. The puck fails the task if it passes over a hole. To run the robot that plans from scratch:
+A robot pushes a puck through a maze to a goal, over three floors (blue, tan, and green) whose friction coefficients are unknown. Each action is one push, planned with POMCPOW from a particle belief over the frictions. The puck fails the task if it passes over a hole. Walls shed pucks: a puck that stops where fewer than 15% of headings leave the robot room to push it moves along the floor to the nearest spot with room (`PuckPhysics.min_push_fraction`), so it does not stay stuck against a wall or inside the central block's slot. POMCPOW's leaf value is the goal reward minus one push per meter of the shortest pushable path to the goal. To run the robot that plans from scratch:
 
 ```
 python experiments/run_single_experiment.py env=friction approach=scratch
 ```
 
-`env.domain.num_holes` (0 to 9) and `env.domain.goal_radius` choose how hard the maze is, 4 and 0.3 m in the experiments. `env.domain.sim=3d` runs the pushes in PyBullet with a TidyBot holding a paddle instead of in 2D, with the same physics. Planning a push takes several seconds with the default 1000 simulations, and a task takes up to 15 pushes. As on the arm and the limb, the robot asks no queries by default; a query probes the floor the belief is least sure of.
+`env.domain.num_holes` (0 to 9) and `env.domain.goal_radius` choose how hard the maze is, 4 and 0.3 m in the experiments. `env.domain.sim=3d` runs the pushes in PyBullet with a TidyBot holding a paddle instead of in 2D, with the same physics. A push searches 5 simulations by default (`approach.num_sims`), and a task takes up to 15 pushes. As on the arm and the limb, the robot asks no queries by default; a query probes the floor the belief is least sure of.
 
-Planning stops after 15000 POMCPOW simulations per task (`budgets.planning.max_iterations`), shared by all its pushes, which caps the planner's work the same way on any machine and under any load. That is 15 pushes of 1000 simulations, all that planning from scratch can use, so a model-guided search that finds no push and falls back to a search without the model costs the task's later pushes simulations. With a smaller `approach.num_sims` the limit does not bind. A simulation takes about 0.014 s, so this binds before the 10-minute limit (`budgets.planning.max_wall_time`), which guards against a slow machine. Running out of either counts as a timeout.
+Planning stops after 15000 POMCPOW simulations per task (`budgets.planning.max_iterations`), shared by all its pushes, which caps the planner's work the same way on any machine and under any load. That is 15 pushes of 1000 simulations, so it binds only at 1000 or more simulations per push, where a model-guided search that finds no push and falls back to a search without the model costs the task's later pushes simulations. The 10-minute limit (`budgets.planning.max_wall_time`) guards against a slow machine. Running out of either counts as a timeout.
 
-The robots that learn guide POMCPOW with a flow-matching model of good pushes, used for half of its proposals. While they sleep they roll out sampled tasks under a training belief and learn the well-visited pushes of the rollouts that reach the goal. As on the arm and the limb, they differ only in the beliefs they train under: `current_belief`, `prior_only`, `dreaming`, and `belief_coverage`. To compare them with `scratch` over ten seeds:
+The robots that learn guide POMCPOW with a flow-matching model of good pushes, used for half of its proposals. While they sleep they roll out sampled tasks under a training belief, searching 100 simulations per push (`approach.training_num_sims`), and learn the push each search chose in the rollouts that reach the goal, with the belief that search planned from. As on the arm and the limb, they differ only in the beliefs they train under: `current_belief`, `prior_only`, `dreaming`, and `belief_coverage`. To compare them with `scratch` over ten seeds:
 
 ```
 ./experiments/run_comparison.sh env=friction
@@ -99,13 +99,13 @@ The robots that learn guide POMCPOW with a flow-matching model of good pushes, u
 
 The friction environment evaluates 8 tasks per cycle and dreams 4 times per sleep, rolling out 1 training task per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
 
-Every push runs a fixed number of POMCPOW simulations, so friction's planning time cannot fall with learning: a better model shows up as a higher success rate instead (#130). To show the speedup as the simulations per push a robot needs to reach a given success rate, run the comparison at several budgets:
+Every push runs a fixed number of POMCPOW simulations, so a better model shows up mostly as a higher success rate (#130); planning time falls only because the robot finishes in fewer pushes. To show the speedup as the simulations per push a robot needs to reach a given success rate, run the comparison at several budgets:
 
 ```
-./experiments/run_comparison.sh env=friction approach.num_sims=100,300,1000
+./experiments/run_comparison.sh env=friction approach.num_sims=3,5,20,100
 ```
 
-The plot against cycles then shows the largest budget, and `budget_results.png` shows each approach's success rate over the last 5 cycles against the budget, with scratch at the largest budget as a dotted line. `summary_table.md` adds each approach's success rate at every budget and the simulations per push it needs to match scratch at the largest budget, interpolated in the budget's logarithm. On Della, the smaller budgets add jobs (three times as many), but they are short.
+The plot against cycles then shows the largest budget, and `budget_results.png` shows each approach's success rate over the last 5 cycles against the budget, with scratch at the largest budget as a dotted line. `summary_table.md` adds each approach's success rate at every budget and the simulations per push it needs to match scratch at the largest budget, interpolated in the budget's logarithm. On Della, each budget adds a set of jobs, but evaluation at small budgets is short.
 
 ## Human reach
 

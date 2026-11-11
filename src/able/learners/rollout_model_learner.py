@@ -62,8 +62,10 @@ class RolloutModelLearner(
         params: PlannerParamsType,
         rng: np.random.Generator,
     ) -> Dataset:
-        """Run the plans for the training tasks in simulated environments and
-        return the rows of the ones that complete their task."""
+        """Run the plans for the training tasks, made with the planner's training
+        parameters, in simulated environments and return the rows of the ones that
+        complete their task."""
+        params = self._planner.get_training_params(params)
         examples = []
         for task in self._get_training_tasks(rng):
             env = SimulatedEnvironment(self._env_model, belief.sample(rng), rng)

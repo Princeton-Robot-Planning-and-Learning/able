@@ -54,6 +54,21 @@ def test_a_push_moves_the_puck_and_the_robot(model):
     assert not model.check_goal(task, next_state, FRICTIONS)
 
 
+def test_a_puck_stopped_in_the_slot_is_shed(model):
+    """A puck that stops where the robot cannot push it rests, as the robot sees,
+    at the nearest spot it can push from, while the record keeps the stop."""
+    state = model.get_initial_state()
+    push = Push(0.0, 0.9)
+    next_state = model.sample_next_state(
+        state, push, FRICTIONS, np.random.default_rng(0)
+    )
+    record = next_state.last_push
+    assert record is not None and record.stop[0] > 2.1  # inside the slot
+    assert next_state.puck == next_state.true_puck and next_state.puck[0] < 2.0
+    rest = np.array(next_state.puck)
+    assert np.array_equal(model.world.shed(rest), rest)
+
+
 def test_a_hole_ends_the_task(model):
     """Passing over a hole costs the penalty, and the state stays fixed after."""
     state = _state_at((1.6, 1.1))
