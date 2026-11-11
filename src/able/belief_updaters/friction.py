@@ -32,32 +32,24 @@ def push_log_likelihood(
     release = world.release_point(puck, angle)
     station = world.push_station(puck, angle, record.push.stance)
     robot = world.strike_end(station, puck, angle)
-    stop = np.array(record.stop)
     speed = max(record.release_speed, 1e-3)
-    out = np.empty(len(particles))
-    for k, frictions in enumerate(particles):
-        result = world.slide(
-            release, record.release_speed, angle, frictions, robot=robot
-        )
-        length, heading = result.distance, angle
-        if len(result.path) >= 2:
-            last = result.path[-1] - result.path[-2]
-            if np.linalg.norm(last) > 1e-9:
-                heading = math.atan2(last[1], last[0])
-        along_dir = np.array([math.cos(heading), math.sin(heading)])
-        error = stop - result.stop
-        along = float(error @ along_dir)
-        across = float(error[0] * along_dir[1] - error[1] * along_dir[0])
-        var_along = (
-            phys.position_obs_noise**2
-            + (2.0 * length * phys.speed_obs_noise / speed) ** 2
-        )
-        var_across = phys.position_obs_noise**2 + (length * phys.angle_noise) ** 2
-        out[k] = -0.5 * (
-            along**2 / var_along + across**2 / var_across
-        ) - 0.5 * math.log(var_along * var_across)
-        if (result.hole is not None) != record.fell_in_hole:
-            out[k] += math.log(_HOLE_MISMATCH)
+    slides = world.slide_many(
+        release, record.release_speed, angle, particles, robot=robot
+    )
+    along_dir = np.stack([np.cos(slides.headings), np.sin(slides.headings)], axis=1)
+    error = np.array(record.stop) - slides.stops
+    along = np.einsum("ij,ij->i", error, along_dir)
+    across = error[:, 0] * along_dir[:, 1] - error[:, 1] * along_dir[:, 0]
+    length = slides.distances
+    var_along = (
+        phys.position_obs_noise**2 + (2.0 * length * phys.speed_obs_noise / speed) ** 2
+    )
+    var_across = phys.position_obs_noise**2 + (length * phys.angle_noise) ** 2
+    out = -0.5 * (along**2 / var_along + across**2 / var_across) - 0.5 * np.log(
+        var_along * var_across
+    )
+    mismatch = (slides.holes >= 0) != record.fell_in_hole
+    out[mismatch] += math.log(_HOLE_MISMATCH)
     return out
 
 
