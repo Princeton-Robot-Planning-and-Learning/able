@@ -23,6 +23,7 @@ from numpy.typing import NDArray
 from pddlstream.algorithms.meta import solve
 from pddlstream.language.constants import AND, PDDLProblem, print_solution
 from pddlstream.language.generator import from_gen_fn, from_test
+from pddlstream.language.stream import StreamInfo
 from pddlstream.utils import read
 from pybullet_helpers.geometry import get_pose
 
@@ -196,6 +197,14 @@ def stream_map(
     return out | {n: from_test(counted(f, calls, n, False)) for n, f in tests.items()}
 
 
+# Tests whose certified facts the domain uses only negated. PDDLStream marks a
+# test negated on its own only when an action's precondition negates the axiom
+# that uses it, as with UnsafePose and UnsafeTraj. Blocked is negated only in the
+# goal's Delivered axiom, so without this PDDLStream never evaluates test-clear,
+# and plans ignore whether other items block the person's arm.
+NEGATED_STREAMS = ("test-clear",)
+
+
 def solve_problem(
     problem: PDDLProblem,
     max_time: float,
@@ -212,6 +221,7 @@ def solve_problem(
         solution = solve(
             problem,
             algorithm=algorithm,
+            stream_info={name: StreamInfo(negate=True) for name in NEGATED_STREAMS},
             unit_costs=True,
             max_time=max_time,
             search_sample_ratio=search_sample_ratio,
@@ -272,6 +282,47 @@ def build_stream_context(
     )
 
 
+def get_initial_placements(
+    sim: ObjectCentricBedsideStocking3DEnv,
+    state: BedsideStocking3DObjectCentricState,
+) -> dict[str, Placement]:
+    """Where each item, requested or clutter, is in the state, which the simulator
+    must be in."""
+    placements = {}
+    for name in state.requested_objects + state.clutter_objects:
+        body = sim._object_name_to_pybullet_id(name)  # pylint: disable=protected-access
+        pose = get_pose(body, sim.physics_client_id)
+        placements[name] = Placement(name, pose, _surface_of(sim, name))
+    return placements
+
+
+def get_undelivered(
+    ctx: BedsideStreamContext,
+    initial: dict[str, Placement],
+    plan: Sequence[ReachAction],
+) -> list[str]:
+    """The requested items that the plan leaves unusable or blocked, by the streams'
+    own tests at every item's final placement.
+
+    PDDLStream checks negated tests in action preconditions on the plan it returns,
+    but not the goal's: a plan can leave a requested item blocked by an item placed
+    at a pose bound late in the search.
+    """
+    final = dict(initial)
+    for name, args in plan:
+        if name == "place":
+            final[args[0]] = args[1]
+    undelivered = []
+    for o in ctx.requested:
+        p = final[o]
+        blocked = any(
+            not test_clear(ctx, o, p, o2, p2) for o2, p2 in final.items() if o2 != o
+        )
+        if blocked or not test_usable(ctx, o, p):
+            undelivered.append(o)
+    return undelivered
+
+
 def create_problem(
     sim: ObjectCentricBedsideStocking3DEnv,
     state: BedsideStocking3DObjectCentricState,
@@ -285,11 +336,7 @@ def create_problem(
     q0 = BaseConf(sim.robot.get_base())
     init: list[tuple] = [("BConf", q0), ("AtBConf", q0), ("HandEmpty",), ("CanMove",)]
     goal: list[tuple] = [("HandEmpty",)]
-    for name in state.requested_objects + state.clutter_objects:
-        body = sim._object_name_to_pybullet_id(name)  # pylint: disable=protected-access
-        p0 = Placement(
-            name, get_pose(body, sim.physics_client_id), _surface_of(sim, name)
-        )
+    for name, p0 in get_initial_placements(sim, state).items():
         init += [("Item", name), ("Pose", name, p0), ("AtPose", name, p0)]
         if name in ctx.requested:
             init.append(("Requested", name))
@@ -541,6 +588,7 @@ class ReachPDDLStreamPlanner(
         stats = {"stream_calls": 0.0, "seeded": float(proposal is not None)}
         stats["fell_back"] = 0.0
         stats["seeded_timed_out"] = 0.0
+        stats["rejected_plans"] = 0.0
         plan, stopped_by = self._solve(
             task, particles, params, budget, rng, proposal, stats, start_time
         )
@@ -601,7 +649,12 @@ class ReachPDDLStreamPlanner(
         """The plan or None, and what stopped a search without one: "time" for its
         time limit (PDDLStream only gives up once its time is used up), "calls" for
         the planning budget's stream calls, "memory" for its memory limit, or
-        None."""
+        None.
+
+        A plan that leaves a requested item undelivered (get_undelivered) is
+        rejected, and the search starts again with what is left of the try's time
+        and stream calls.
+        """
         max_time = params.max_time
         if budget.max_wall_time is not None:
             left = budget.max_wall_time - (time.perf_counter() - start_time)
@@ -622,34 +675,51 @@ class ReachPDDLStreamPlanner(
             if max_calls is not None and budget.max_iterations is not None:
                 max_calls = min(max_calls, int(fraction * budget.max_iterations))
         sim, scene = self.sim, task.initial_state.scene
-        sim.reset(options={"init_state": scene})
-        ctx = build_stream_context(
-            sim,
-            scene,
-            theta_particles=particles,
-            delta=params.delta,
-            seed=int(rng.integers(2**31 - 1)),
-            proposal=proposal,
-            placement=params.placement,
-        )
-        solve_start = time.perf_counter()
         max_growth = (
             None if params.max_memory_gb is None else int(params.max_memory_gb * 1e9)
         )
-        try:
-            with memory_limit(max_growth), call_limit(max_calls):
-                plan = solve_problem(
-                    create_problem(sim, scene, ctx=ctx), max_time, params.algorithm
-                )
-        except OutOfMemory:
-            stats["stream_calls"] += float(sum(ctx.calls.values()))
-            return None, "memory"
-        except OutOfStreamCalls:
-            stats["stream_calls"] += float(sum(ctx.calls.values()))
-            return None, "calls"
-        finally:
-            release_memory()
-        stats["stream_calls"] += float(sum(ctx.calls.values()))
-        if plan is None and time.perf_counter() - solve_start >= max_time:
-            return None, "time"
-        return plan, None
+        deadline = time.perf_counter() + max_time
+        while True:
+            sim.reset(options={"init_state": scene})
+            ctx = build_stream_context(
+                sim,
+                scene,
+                theta_particles=particles,
+                delta=params.delta,
+                seed=int(rng.integers(2**31 - 1)),
+                proposal=proposal,
+                placement=params.placement,
+            )
+            initial = get_initial_placements(sim, scene)
+            solve_start = time.perf_counter()
+            try:
+                with memory_limit(max_growth), call_limit(max_calls):
+                    plan = solve_problem(
+                        create_problem(sim, scene, ctx=ctx), max_time, params.algorithm
+                    )
+            except OutOfMemory:
+                stats["stream_calls"] += float(sum(ctx.calls.values()))
+                return None, "memory"
+            except OutOfStreamCalls:
+                stats["stream_calls"] += float(sum(ctx.calls.values()))
+                return None, "calls"
+            finally:
+                release_memory()
+            calls = sum(ctx.calls.values())
+            stats["stream_calls"] += float(calls)
+            if plan is None:
+                if time.perf_counter() - solve_start >= max_time:
+                    return None, "time"
+                return None, None
+            if not get_undelivered(ctx, initial, plan):
+                return plan, None
+            # The plan leaves an item undelivered: search again with what is left
+            # of this try's time and stream calls.
+            stats["rejected_plans"] += 1
+            max_time = deadline - time.perf_counter()
+            if max_time <= 0:
+                return None, "time"
+            if max_calls is not None:
+                max_calls -= calls
+                if max_calls <= 0:
+                    return None, "calls"
