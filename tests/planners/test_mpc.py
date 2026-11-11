@@ -350,7 +350,8 @@ class _RecordingModel(ConditionalModel):
 
 
 def test_features_and_labels():
-    """Tests the model's input and the padded control window."""
+    """Tests the model's input, whose belief moments follow a raised floor, and the
+    padded control window."""
     belief = _prior()
     coupled = CoupledState(
         SE2Pose(0.0, 0.0, 0.0),
@@ -362,6 +363,14 @@ def test_features_and_labels():
     x = get_mpc_features(coupled, np.ones(6), belief, 3, np.full(7, 2.0))
     assert x.shape == (6 + 7 + 6 + 3 + 3 + 1 + 6 + 7 + 7,)
     assert x[25] == 3.0 and np.all(x[-7:] == 2.0)
+    assert np.allclose(x[19:22], belief.truncated_mean)
+    assert np.allclose(x[22:25], belief.truncated_stddev)
+    # Seeing the person reach a scale safely raises the floor, which leaves the
+    # untruncated Gaussian as it was but moves its truncated moments.
+    raised = belief.with_floor(1, 1.0)
+    assert np.array_equal(raised.mean, belief.mean)
+    moved = get_mpc_features(coupled, np.ones(6), raised, 3, np.full(7, 2.0))
+    assert moved[20] > x[20] and moved[23] < x[23]
     controls = [np.full(7, float(i)) for i in range(3)]
     window = get_control_window(controls, 1, 4)
     assert window.shape == (4, 7)
@@ -370,12 +379,14 @@ def test_features_and_labels():
 
 def test_plan_examples_match_the_seeder(setup, plain):
     """Tests that the training rows are what the seeder saw, and the labels are the
-    controls that followed."""
+    controls that followed. The task starts beyond the prior's floor, so the plan
+    was made under the prior with that floor raised, and the rows use it."""
     _, task, planner = setup
     policy, inputs = plain
     assert isinstance(policy, LimbMPCPolicy)
     stats = policy.get_planning_stats()
     assert stats["num_seeded_steps"] == 0 and stats["fell_back"] == 0
+    assert np.any(policy.belief.floor > _prior().floor)
     examples = planner.get_plan_examples(task, _prior(), policy)
     assert len(examples) == len(policy.controls) == len(inputs)
     assert np.allclose(examples.x, np.array(inputs))
