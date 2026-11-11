@@ -175,8 +175,9 @@ class ModelLearner(
         params: PlannerParamsType,
         rng: np.random.Generator,
     ) -> Dataset:
-        """Plan for the training tasks under the belief and return the planner's
-        rows."""
+        """Plan for the training tasks under the belief, with the planner's
+        training parameters, and return the planner's rows."""
+        params = self._planner.get_training_params(params)
         examples = []
         for task in self._get_training_tasks(rng):
             try:

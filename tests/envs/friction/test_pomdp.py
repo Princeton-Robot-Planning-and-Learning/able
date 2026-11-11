@@ -1,8 +1,10 @@
 """Tests for envs/friction/pomdp.py."""
 
 import math
+from dataclasses import replace
 
 import numpy as np
+import pytest
 
 from able.envs.friction.pomdp import GOAL, HOLE, ONGOING, PuckPushingModel
 from able.envs.friction.world import THREE_ROUTES, PuckWorld, Push
@@ -82,13 +84,33 @@ def test_proposals_are_feasible():
                 assert np.isclose(model.stances, push.stance, atol=1e-4).any()
 
 
-def test_greedy_rollout_reaches_the_goal_with_known_frictions():
-    """With the true frictions, the rollout policy gets the puck to the goal."""
+def test_transitions_shed_pucks_from_walls():
+    """A push that stops the puck inside the slot leaves it where it can be pushed
+    on."""
     model = _model()
-    model.rollout_frictions = FRICTIONS
-    state = _start(model)
-    assert model.value(state) > 0
-    path = model.path_to_goal(state.puck_array)
-    assert np.allclose(path[-1], model.world.goal)
-    # The rollout paths avoid the slot, which the robot cannot push from.
-    assert not any(2.1 < p[0] < 3.1 and 2.0 < p[1] < 2.4 for p in path)
+    push = Push(0.0, 0.9)
+    nxt = model.transition(_start(model), push, push.angle, push.speed)
+    assert nxt.outcome == ONGOING and nxt.puck[0] < 2.0
+    assert np.allclose(model.world.shed(nxt.puck_array), nxt.puck, atol=1e-4)
+
+
+def test_leaf_values_follow_the_path_to_the_goal():
+    """A leaf is worth the goal reward minus a push cost per push_length of the
+    pushable path to the goal, or the stuck penalty without a path or with too few
+    pushes left."""
+    model = _model()
+    rewards = model.rewards
+    start = _start(model)
+    distance = model.distance_to_goal(start.puck_array)
+    assert distance > model.push_length
+    expected = rewards.goal_reward - rewards.push_cost * distance / model.push_length
+    assert model.value(start) == pytest.approx(expected)
+    below_goal = model.initial_state(
+        np.array([3.9, 1.8]), np.array([3.9, 1.2]), FRICTIONS
+    )
+    assert model.value(below_goal) == rewards.goal_reward - rewards.push_cost
+    # The robot cannot push from inside the slot, so no path starts there.
+    in_slot = model.initial_state(np.array([2.6, 2.2]), np.array([1.2, 2.2]), FRICTIONS)
+    assert model.value(in_slot) == -rewards.stuck_penalty
+    last_push = replace(start, pushes=model.max_pushes - 1)
+    assert model.value(last_push) == -rewards.stuck_penalty

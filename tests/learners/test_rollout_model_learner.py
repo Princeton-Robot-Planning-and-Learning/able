@@ -23,11 +23,13 @@ BLOCKED = WallTask(initial_state=np.zeros(1), goal=5.0)
 
 class _StraightPlanner(TrainablePlanner):
     """Moves straight to the goal, then waits, and records the tasks it gives rows
-    for and the policies it plans."""
+    for, the policies it plans, and the parameters it plans with."""
 
     def __init__(self) -> None:
         self.example_tasks: list = []
         self.policies: list = []
+        self.planned_params: list = []
+        self.training_params = ExactMatchCache()
 
     def get_default_params(self):
         return ExactMatchCache()
@@ -38,7 +40,11 @@ class _StraightPlanner(TrainablePlanner):
     def set_model(self, params, model):
         return model
 
+    def get_training_params(self, params):
+        return self.training_params
+
     def plan(self, task, belief, params, budget, rng):
+        self.planned_params.append(params)
         actions = [np.array([task.goal]), np.zeros(1), np.zeros(1)]
         policy = OpenLoopPolicy(actions)
         self.policies.append(policy)
@@ -55,8 +61,8 @@ class _StraightPlanner(TrainablePlanner):
 
 
 def test_only_completed_rollouts_give_rows():
-    """Each training plan runs for an episode, and only those that reach the goal
-    give rows."""
+    """Each training plan, made with the planner's training parameters, runs for
+    an episode, and only those that reach the goal give rows."""
     planner = _StraightPlanner()
     learner: RolloutModelLearner = RolloutModelLearner(
         planner,
@@ -70,6 +76,7 @@ def test_only_completed_rollouts_give_rows():
         BELIEF, params, Budget(max_iterations=1), np.random.default_rng(0)
     )
     assert planner.example_tasks == [REACHABLE]
+    assert planner.planned_params == [planner.training_params] * 2
     assert len(learner.dataset) == 1 and new_params is not params
     # Both plans ran to the end of their episodes.
     for policy in planner.policies:

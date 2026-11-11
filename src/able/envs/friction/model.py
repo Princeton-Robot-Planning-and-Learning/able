@@ -2,9 +2,10 @@
 
 The robot pushes a puck through the threeroutes maze to a goal. Each action is one
 push: the robot drives behind the puck and strikes it at a heading and speed, with a
-stance. The hidden parameters are the friction coefficients of the floors. The task
-ends when the puck stops in the goal or passes over a hole, and the state stays fixed
-afterwards.
+stance. The hidden parameters are the friction coefficients of the floors. A puck
+that stops too close to a wall for the robot to push it on is shed to the nearest
+spot it can push from (PuckWorld.shed). The task ends when the puck stops in the
+goal or passes over a hole, and the state stays fixed afterwards.
 """
 
 from dataclasses import dataclass
@@ -175,7 +176,12 @@ class FrictionModel(
             outcome = "hole" if record.fell_in_hole else "goal"
         # A noisy measurement can land the puck slightly inside a wall.
         puck = self.world.nearest_free_puck_position(np.array(record.stop))
-        true_puck, pose = sim.puck_position, sim.robot_pose
+        true_puck, pose = np.asarray(sim.puck_position), sim.robot_pose
+        if outcome is None:
+            rest = self.world.shed(true_puck)
+            if not np.array_equal(rest, true_puck):
+                # The robot sees where a shed puck comes to rest.
+                puck, true_puck = rest, rest
         return FrictionState(
             puck=(float(puck[0]), float(puck[1])),
             robot=robot,

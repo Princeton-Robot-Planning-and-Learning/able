@@ -307,24 +307,35 @@ def _make_failing(model: FrictionModel) -> FrictionPOMCPOWPlanner:
 
 
 def test_plan_examples(setup):
-    """Each search gives rows of its features and well-visited root pushes, with
-    the chosen push among them, costed by the negative of their values."""
+    """Each search gives one row: its features under the belief it planned from,
+    and the push it chose, costed by the negative of the push's value."""
     domain, planner, task = setup
     belief = domain.initial_belief
     policy = _plan(planner, task, belief)
     run_episode(domain.real_env, task, policy, max_steps=2)
     rows = planner.get_plan_examples(task, belief, policy)
-    assert rows.x.shape[1] == X_DIM and rows.y.shape[1] == Y_DIM
-    assert sorted(set(rows.groups)) == [0, 1]
-    for group, search in enumerate(policy.searches):
+    assert rows.x.shape == (2, X_DIM) and rows.y.shape == (2, Y_DIM)
+    assert list(rows.groups) == [0, 1]
+    first, second = policy.searches
+    assert first.belief is belief and second.belief is not belief
+    for row, search in enumerate(policy.searches):
         features = get_push_features(
-            search.state.puck_array, task.goal, planner.pomdp.world, belief
+            search.state.puck_array, task.goal, planner.pomdp.world, search.belief
         )
-        mine = rows.groups == group
-        assert np.allclose(rows.x[mine], features)
-        assert any(np.allclose(y, encode_push(search.push)) for y in rows.y[mine])
-        values = [value for _, _, value in search.root_values]
-        assert all(np.isclose(values, -cost).any() for cost in rows.costs[mine])
+        assert np.allclose(rows.x[row], features)
+        assert np.allclose(rows.y[row], encode_push(search.push))
+        value = next(v for p, _, v in search.root_values if p == search.push)
+        assert rows.costs[row] == pytest.approx(-value)
+
+
+def test_training_params_search_harder(setup):
+    """Training plans run training_num_sims simulations per push, if set."""
+    _, planner, _ = setup
+    assert planner.get_training_params(PARAMS) is PARAMS
+    params = replace(PARAMS, training_num_sims=100)
+    training = planner.get_training_params(params)
+    assert training.config == replace(PARAMS.config, num_sims=100)
+    assert training.model is params.model
 
 
 def test_a_trained_model_guides_the_search(setup):

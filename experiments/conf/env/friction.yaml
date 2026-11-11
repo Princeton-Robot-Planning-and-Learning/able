@@ -13,21 +13,19 @@ env:
   # Instantiated with the domain's environment model, only when recording videos.
   renderer:
     _target_: able.rendering.friction.FrictionRenderer
-# Planning a friction task takes about a minute, so dream less than on the arm. 8
-# evaluation tasks per cycle keep the per-cycle success rate steady; with
-# num_workers, they run at once.
+# A training rollout at 100 simulations per push takes several seconds, so dream
+# less than on the arm. 8 evaluation tasks per cycle keep the per-cycle success
+# rate steady; with num_workers, they run at once.
 num_eval_tasks: 8
 budgets:
   sleep:
     max_iterations: 4
   # Planning stops after 15000 POMCPOW simulations per task (iterations), which
   # caps the planner's work the same way on any machine and under any load. That
-  # is 15 pushes (the horizon) of 1000 simulations, all that planning from scratch
-  # can use, so a model-guided search that finds no push and falls back costs
-  # later pushes simulations. With a smaller approach.num_sims it does not bind. A
-  # simulation took about 0.014 s on Della, so 15000 is about 3.5 minutes; the 10
-  # minutes only guard against a slow machine. Running out of either counts as a
-  # timeout.
+  # is 15 pushes (the horizon) of 1000 simulations, so it binds only at 1000 or
+  # more simulations per push, where a model-guided search that finds no push and
+  # falls back costs later pushes simulations. The 10 minutes guard against a slow
+  # machine. Running out of either counts as a timeout.
   planning:
     max_wall_time: 600
     max_iterations: 15000
