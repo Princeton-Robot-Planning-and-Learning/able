@@ -2,7 +2,9 @@
 
 The hidden state includes the floor frictions, and transitions use the analytic
 slide. Observations are the noisy release speed and stop. Rewards are the
-environment's push rewards; a hole ends the episode.
+environment's push rewards; a hole ends the episode, and so does a stop from which
+the robot cannot push the puck on (stuck), at the cost of the stuck penalty, which
+running out of pushes also costs.
 """
 
 import math
@@ -23,8 +25,16 @@ from able.envs.friction.world import (
     Push,
 )
 
-# No STUCK outcome: a puck with no feasible push is valued by `value` (-stuck_penalty).
-ONGOING, GOAL, HOLE = 0, 1, 2
+# STUCK: the puck stopped where no push is feasible, which ends the real episode.
+ONGOING, GOAL, HOLE, STUCK = 0, 1, 2, 3
+# Evenly spaced headings that decide whether a stop is stuck, and that the proposer
+# sweeps when its random tries find no push; the sweep includes the check's
+# headings.
+STUCK_CHECK_HEADINGS = 32
+SWEEP_HEADINGS = 96
+# Stops are checked for being stuck on a grid of this spacing (m), and cached. The
+# stuck strips along walls are about 1 cm wide.
+STUCK_CHECK_RESOLUTION = 0.002
 
 
 @dataclass(frozen=True)
@@ -73,11 +83,16 @@ class PuckPushingModel:
     value_resolution: float = 0.1
     # Rollout clearance beyond the hole radius (m).
     hole_margin: float = 0.05
-    rollout_pushes: int = 6
+    # Greedy pushes per leaf rollout (None: until the episode ends), so that a
+    # rollout sees the goal, a hole, getting stuck or running out of pushes.
+    rollout_pushes: int | None = None
     # Path cells ahead checked so a rollout can push on from where it stops.
     onward_lookahead: int = 4
     # Frictions the rollout assumes when choosing speeds (None: prior mean).
     rollout_frictions: tuple[float, ...] | None = None
+    _stuck_cache: dict[tuple[int, int], bool] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     def initial_state(
         self,
@@ -95,25 +110,54 @@ class PuckPushingModel:
         )
 
     def is_terminal(self, state: PuckState) -> bool:
-        """Goal, hole, or out of pushes."""
+        """Goal, hole, stuck, or out of pushes."""
         return state.outcome != ONGOING or state.pushes >= self.max_pushes
 
     def step(
         self, state: PuckState, action: Push, rng: np.random.Generator
     ) -> tuple[PuckState, float]:
-        """Sample the push's execution noise and slide the puck."""
+        """Sample the push's execution noise and slide the puck.
+
+        The robot plans its next push from the measured stop, moved off any wall, as
+        the environment gives it. A puck that stops just clear of a wall can be
+        measured where no push is feasible, which ends the real episode, so the
+        stop is stuck if a sampled measurement of it is.
+        """
         phys = self.world.physics
         angle = action.angle + float(rng.normal(0.0, phys.angle_noise))
         speed = max(
             action.speed * (1.0 + float(rng.normal(0.0, phys.speed_noise))), 0.0
         )
         next_state = self.transition(state, action, angle, speed)
+        if not self.is_terminal(next_state) and next_state.release_speed > 0:
+            noise = rng.normal(0.0, phys.position_obs_noise, size=2)
+            measured = self.world.nearest_free_puck_position(
+                next_state.puck_array + noise
+            )
+            if self.is_stuck(measured):
+                next_state = replace(
+                    next_state,
+                    outcome=STUCK,
+                    last_reward=next_state.last_reward - self.rewards.stuck_penalty,
+                )
         return next_state, next_state.last_reward
 
     def transition(
         self, state: PuckState, action: Push, angle: float, speed: float
     ) -> PuckState:
         """Deterministic result of executing `action` as (angle, speed)."""
+        next_state = self._transition(state, action, angle, speed)
+        if next_state.outcome == ONGOING and next_state.pushes >= self.max_pushes:
+            # Running out of pushes fails the task, as getting stuck does.
+            penalty = self.rewards.stuck_penalty
+            next_state = replace(
+                next_state, last_reward=next_state.last_reward - penalty
+            )
+        return next_state
+
+    def _transition(
+        self, state: PuckState, action: Push, angle: float, speed: float
+    ) -> PuckState:
         world, rewards = self.world, self.rewards
         puck = state.puck_array
         if not world.push_feasible(puck, action.angle, action.stance):
@@ -140,16 +184,20 @@ class PuckPushingModel:
         )
         robot = strike_end.base
         reward = -rewards.push_cost - rewards.drive_cost * drive
+        stop = _round_point(result.stop)
         if result.hole is not None:
             outcome = HOLE
             reward -= rewards.hole_penalty
         elif world.in_goal(result.stop):
             outcome = GOAL
             reward += rewards.goal_reward
+        elif self.is_stuck(np.array(stop)):
+            outcome = STUCK
+            reward -= rewards.stuck_penalty
         else:
             outcome = ONGOING
         return PuckState(
-            puck=_round_point(result.stop),
+            puck=stop,
             robot=_round_point(robot),
             frictions=state.frictions,
             outcome=outcome,
@@ -157,6 +205,29 @@ class PuckPushingModel:
             release_speed=round(speed, 4),
             last_reward=reward,
         )
+
+    def is_stuck(self, puck: NDArray[np.float64]) -> bool:
+        """Whether no push is feasible from the puck, on STUCK_CHECK_HEADINGS evenly
+        spaced headings with the robot's own stance. The answer is cached on a grid
+        of STUCK_CHECK_RESOLUTION.
+
+        Before this check, a stuck stop was only valued by `value`. But POMCPOW
+        pools the stops of similar observations in one node, so a stuck stop drawn
+        from a node with pushes tried from other stops took those pushes, each
+        infeasible and costing only a push, and deeper searches undervalued getting
+        stuck.
+        """
+        res = STUCK_CHECK_RESOLUTION
+        key = (int(round(puck[0] / res)), int(round(puck[1] / res)))
+        if key not in self._stuck_cache:
+            point = np.array(key, dtype=np.float64) * res
+            angles = np.linspace(
+                -math.pi, math.pi, STUCK_CHECK_HEADINGS, endpoint=False
+            )
+            self._stuck_cache[key] = not any(
+                self.world.push_feasible(point, float(a)) for a in angles
+            )
+        return self._stuck_cache[key]
 
     def reward(self, state: PuckState, action: Push, next_state: PuckState) -> float:
         """Reward stored on `next_state` by its transition."""
@@ -195,25 +266,41 @@ class PuckPushingModel:
         self, state: PuckState, tried: Sequence[Push], rng: np.random.Generator
     ) -> Push | None:
         """Uniformly random feasible push: random heading, then a fitting stance, then
-        speed."""
+        speed. If max_proposal_tries random headings find none, the SWEEP_HEADINGS
+        evenly spaced headings are tried in a random order, so a push is found
+        wherever only a few headings are feasible."""
         del tried
-        phys = self.world.physics
         puck = state.puck_array
         for _ in range(self.max_proposal_tries):
-            angle = float(rng.uniform(-math.pi, math.pi))
-            if self.stance_mode == "auto":
-                if not self.world.push_feasible(puck, angle):
-                    continue
-                speed = float(rng.uniform(phys.min_speed, phys.max_speed))
-                return Push(round(angle, 4), round(speed, 4))
-            stance = self._sample_stance(puck, angle, rng)
-            if stance is not None:
-                speed = float(rng.uniform(phys.min_speed, phys.max_speed))
-                # Round for hashing but stay within the limit.
-                limit = phys.max_stance
-                stance = min(max(round(stance, 4), -limit), limit)
-                return Push(round(angle, 4), round(speed, 4), stance)
+            push = self._push_at(puck, float(rng.uniform(-math.pi, math.pi)), rng)
+            if push is not None:
+                return push
+        angles = np.linspace(-math.pi, math.pi, SWEEP_HEADINGS, endpoint=False)
+        for angle in rng.permutation(angles):
+            push = self._push_at(puck, float(angle), rng)
+            if push is not None:
+                return push
         return None
+
+    def _push_at(
+        self, puck: NDArray[np.float64], angle: float, rng: np.random.Generator
+    ) -> Push | None:
+        """A push along the heading with a fitting stance and a random speed, or None
+        if no stance fits."""
+        phys = self.world.physics
+        if self.stance_mode == "auto":
+            if not self.world.push_feasible(puck, angle):
+                return None
+            speed = float(rng.uniform(phys.min_speed, phys.max_speed))
+            return Push(round(angle, 4), round(speed, 4))
+        stance = self._sample_stance(puck, angle, rng)
+        if stance is None:
+            return None
+        speed = float(rng.uniform(phys.min_speed, phys.max_speed))
+        # Round for hashing but stay within the limit.
+        limit = phys.max_stance
+        stance = min(max(round(stance, 4), -limit), limit)
+        return Push(round(angle, 4), round(speed, 4), stance)
 
     @cached_property
     def stances(self) -> NDArray[np.float64]:
@@ -360,14 +447,16 @@ class PuckPushingModel:
         """Greedy-rollout return; speeds use `rollout_frictions` but slides use the
         state's, so misjudging costs."""
         rewards = self.rewards
-        if state.outcome in (GOAL, HOLE):
+        if state.outcome != ONGOING:
             return 0.0
         frictions = self.rollout_frictions or tuple(
             float(f) for f in self.friction_prior.mean
         )
         total = 0.0
         current = state
-        steps = min(self.rollout_pushes, self.max_pushes - state.pushes)
+        steps = self.max_pushes - state.pushes
+        if self.rollout_pushes is not None:
+            steps = min(self.rollout_pushes, steps)
         for _ in range(steps):
             push = self.greedy_push(current.puck_array, frictions)
             if push is None:

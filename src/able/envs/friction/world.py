@@ -224,8 +224,10 @@ class PuckPhysics:
         math.radians(60),
         -math.radians(60),
     )
-    # Just wider than the puck (0.24 m), narrow enough to push it along a wall.
-    paddle_width: float = 0.26
+    # Narrower than the puck (0.24 m), so it can push a puck resting near a wall
+    # along the wall. A paddle wider than the puck left a strip along every wall
+    # where no push was feasible.
+    paddle_width: float = 0.22
     paddle_thickness: float = 0.04
     # Paddle accelerates the puck over accel_distance, then brakes over brake_distance.
     accel_distance: float = 0.3

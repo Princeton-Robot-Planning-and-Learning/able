@@ -148,9 +148,10 @@ def test_driving_goes_around_the_puck():
 
 
 def test_paddle_must_clear_the_walls():
-    """A push that would sweep the paddle (wider than the puck) into a wall is
-    infeasible, even if the puck itself clears it."""
-    world = PuckWorld(THREE_ROUTES)
+    """A push that would sweep the paddle into a wall is infeasible, even if the
+    puck itself clears it: here a paddle wider than the puck. The default paddle is
+    narrower than the puck, so it pushes a puck near a wall along the wall."""
+    world = PuckWorld(THREE_ROUTES, PuckPhysics(paddle_width=0.26))
     phys = world.physics
     # Puck resting against the top wall of the blue corridor, pushed along it.
     top = THREE_ROUTES.height - THREE_ROUTES.cell_size
@@ -160,6 +161,7 @@ def test_paddle_must_clear_the_walls():
     assert not world.push_feasible(puck, 0.0)
     # Away from the wall the same push is fine.
     assert world.push_feasible(puck - np.array([0.0, gap]), 0.0)
+    assert PuckWorld(THREE_ROUTES).push_feasible(puck, 0.0)
 
 
 def test_push_stance():

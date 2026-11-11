@@ -34,10 +34,12 @@ class PuckRewards:
 
     push_cost: float = 1.0
     drive_cost: float = 0.5  # per m driven
-    goal_reward: float = 20.0
+    goal_reward: float = 50.0
     hole_penalty: float = 50.0
-    # Value of a state with no feasible push (e.g. inside the slot), for planners.
-    stuck_penalty: float = 30.0
+    # For planners: the cost of failing the task by getting stuck where no push is
+    # feasible (e.g. inside the slot) or by running out of pushes. The goal and
+    # failures outweigh many pushes, so planners trade pushes for success.
+    stuck_penalty: float = 50.0
 
     def get_reward(self, record: PushRecord) -> float:
         """The reward of a push."""
