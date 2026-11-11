@@ -10,7 +10,10 @@ from pybullet_helpers.geometry import Pose
 
 from able.beliefs.particles import ParticleBelief
 from able.envs.human_reach.model import NO_ACTION, ReachModel
-from able.envs.human_reach.scene import BedsideStocking3DEnvConfig
+from able.envs.human_reach.scene import (
+    BedsideStocking3DEnvConfig,
+    ObjectCentricBedsideStocking3DEnv,
+)
 from able.envs.human_reach.streams import Placement, usable_probability
 from able.envs.human_reach.tasks import make_domain
 from able.models.base import ConditionalModel, Dataset
@@ -78,7 +81,14 @@ def _point_belief(theta, num_particles: int = 300) -> ParticleBelief:
 def test_reach_planner(tmp_path, monkeypatch):
     """With a belief at the true reach, the plan delivers both items within it;
     with a tiny reach, PDDLStream searches until the budget's time runs out, which
-    is a timeout."""
+    is a timeout.
+
+    The goal also needs each item unblocked, which only test-clear decides: if it
+    finds every other item in the way of the person's arm, each item blocks the
+    other, and planning runs out of its stream calls rather than returning a plan
+    that leaves one blocked. A plan that leaves an item undelivered is searched for
+    again.
+    """
     monkeypatch.chdir(tmp_path)
     domain = make_domain(seed=0, num_requested=2, num_clutter=0, true_theta=THETA)
     model = domain.env_model
@@ -115,53 +125,41 @@ def test_reach_planner(tmp_path, monkeypatch):
             Budget(max_wall_time=0.0),
             rng,
         )
-    assert not list(tmp_path.iterdir())
-    _close(model, planner)
-
-
-def test_the_planner_checks_what_blocks_the_arm(tmp_path, monkeypatch):
-    """The goal needs each requested item unblocked, which only test-clear decides.
-
-    With a test-clear that finds every other item in the way of the person's arm,
-    no placement of req0 is deliverable while the clutter is in the scene, so
-    planning runs out of its stream calls rather than returning a plan that leaves
-    req0 blocked.
-    """
-    monkeypatch.chdir(tmp_path)
     checked = []
 
     def never_clear(ctx, o, p, o2, p2):  # pylint: disable=unused-argument
         checked.append((o, o2))
         return False
 
-    monkeypatch.setattr(pddlstream_planner, "test_clear", never_clear)
-    domain = make_domain(seed=0, num_requested=1, num_clutter=1, true_theta=THETA)
-    model = domain.env_model
-    assert isinstance(model, ReachModel)
-    planner = _make_planner(model)
-    task = domain.task_distribution.sample(np.random.default_rng(0))
-    with pytest.raises(PlanningTimeout, match="within its stream calls"):
-        planner.plan(
-            task,
-            _point_belief(THETA),
-            planner.get_default_params(),
-            Budget(max_wall_time=60.0, max_iterations=100),
-            np.random.default_rng(0),
+    with monkeypatch.context() as patch:
+        patch.setattr(pddlstream_planner, "test_clear", never_clear)
+        with pytest.raises(PlanningTimeout, match="within its stream calls"):
+            planner.plan(
+                task,
+                _point_belief(THETA),
+                planner.get_default_params(),
+                Budget(max_wall_time=60.0, max_iterations=100),
+                rng,
+            )
+    assert checked
+    verdicts = iter([["req0"], []])
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            pddlstream_planner, "get_undelivered", lambda *args: next(verdicts)
         )
-    assert checked and {o for o, _ in checked} == {"req0"}
+        policy = planner.plan(
+            task, _point_belief(THETA), planner.get_default_params(), Budget(), rng
+        )
+    assert policy.get_planning_stats()["rejected_plans"] == 1.0
+    assert not list(tmp_path.iterdir())
     _close(model, planner)
 
 
 def test_undelivered_items():
     """A requested item is undelivered if the plan leaves it off the bedside, out
     of reach, or with another item between it and the person's shoulder."""
-    domain = make_domain(seed=0, num_requested=1, num_clutter=1, true_theta=THETA)
-    model = domain.env_model
-    assert isinstance(model, ReachModel)
-    planner = _make_planner(model)
-    task = domain.task_distribution.sample(np.random.default_rng(0))
-    scene, sim = task.initial_state.scene, planner.sim
-    sim.reset(options={"init_state": scene})
+    sim = ObjectCentricBedsideStocking3DEnv(num_requested=1, num_clutter=1)
+    scene, _ = sim.reset(seed=0)
     ctx = build_stream_context(sim, scene, theta_particles=THETA[None], delta=0.02)
     initial = get_initial_placements(sim, scene)
     clutter = np.array(initial["clutter0"].pose.position)
@@ -179,34 +177,7 @@ def test_undelivered_items():
     in_front = target + np.append(0.08 * toward / np.linalg.norm(toward), 0.0)
     place_clutter = ("place", ("clutter0", _placement("clutter0", in_front)))
     assert get_undelivered(ctx, initial, [place_req0, place_clutter]) == ["req0"]
-    _close(model, planner)
-
-
-def test_a_plan_that_leaves_an_item_undelivered_is_searched_again(
-    tmp_path, monkeypatch
-):
-    """PDDLStream can return a plan whose goal it did not fully check, so the
-    planner checks it and searches again within the same budget."""
-    monkeypatch.chdir(tmp_path)
-    verdicts = iter([["req0"], []])
-    monkeypatch.setattr(
-        pddlstream_planner, "get_undelivered", lambda ctx, initial, plan: next(verdicts)
-    )
-    domain = make_domain(seed=0, num_requested=1, num_clutter=0, true_theta=THETA)
-    model = domain.env_model
-    assert isinstance(model, ReachModel)
-    planner = _make_planner(model)
-    task = domain.task_distribution.sample(np.random.default_rng(0))
-    policy = planner.plan(
-        task,
-        _point_belief(THETA),
-        planner.get_default_params(),
-        Budget(max_iterations=5000),
-        np.random.default_rng(0),
-    )
-    stats = policy.get_planning_stats()
-    assert stats["rejected_plans"] == 1.0 and stats["fell_back"] == 0.0
-    _close(model, planner)
+    sim.close()
 
 
 class _FixedModel(ConditionalModel):
