@@ -4,9 +4,9 @@ _target_: able.approaches.make_friction_belief_coverage_robot
 num_candidates: 4
 # Training tasks rolled out under each training belief.
 num_training_tasks: 1
-# POMCPOW simulations per push at evaluation and execution, and the search
-# depth in pushes.
-num_sims: 5
+# Most POMCPOW simulations per push at evaluation and execution, and the
+# search depth in pushes.
+num_sims: 100
 max_depth: 8
 # A push's search may stop before num_sims: from min_sims on, every check_every
 # simulations, it stops if the most visited push's lower confidence bound (z

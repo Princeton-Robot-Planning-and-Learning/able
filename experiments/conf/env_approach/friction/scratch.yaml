@@ -1,6 +1,6 @@
 _target_: able.approaches.make_friction_scratch_robot
-# POMCPOW simulations per push, and the search depth in pushes.
-num_sims: 5
+# Most POMCPOW simulations per push, and the search depth in pushes.
+num_sims: 100
 max_depth: 8
 # A push's search may stop before num_sims: from min_sims on, every check_every
 # simulations, it stops if the most visited push's lower confidence bound (z
