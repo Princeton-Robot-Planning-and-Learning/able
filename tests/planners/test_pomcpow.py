@@ -10,10 +10,13 @@ from able.belief_updaters.friction import FrictionBeliefUpdater
 from able.envs.friction.model import NO_PUSH, FrictionModel
 from able.envs.friction.tasks import make_domain
 from able.envs.friction.world import Push
+from able.envs.simulated import SimulatedEnvironment
 from able.episodes import run_episode
 from able.models.base import ConditionalModel, Dataset
+from able.models.kernel_regression import KernelRegressor
 from able.planners.pomcpow import (
     POMCPOW,
+    VALUE_X_DIM,
     X_DIM,
     Y_DIM,
     EarlyStopConfig,
@@ -22,11 +25,13 @@ from able.planners.pomcpow import (
     POMCPOWConfig,
     POMCPOWParams,
     ProposalConfig,
+    PushValueModel,
     SearchStats,
     _ActionNode,
     _ObservationNode,
     encode_push,
     get_push_features,
+    get_value_features,
 )
 from able.structs import Budget, PlanningFailure, PlanningTimeout, Task
 
@@ -110,6 +115,24 @@ def test_pomcpow_proposer_controls_the_actions():
     assert calls and calls[0][1] == 2
 
 
+def test_pomcpow_leaf_value_replaces_the_models():
+    """A leaf value, if given, scores the leaves in place of the model's value."""
+    scored = []
+
+    def leaf_value(state):
+        scored.append(state)
+        return 1.0
+
+    config = POMCPOWConfig(num_sims=20, max_depth=1)
+    _, stats = POMCPOW(_GuessModel(), config, leaf_value=leaf_value).plan(
+        [_State(0.0, 0.5)]
+    )
+    assert len(scored) == 20 and all(s.steps == 1 for s in scored)
+    # Each return is the move's reward plus the leaf's value of 1.
+    for action, _, value in stats.root_values:
+        assert value == pytest.approx(1.0 - abs(action - 0.5))
+
+
 def test_pomcpow_time_budget_and_dead_ends():
     """The time budget stops the search, and a root with no actions returns None."""
     solver = POMCPOW(_GuessModel(), POMCPOWConfig(num_sims=10**9, max_time=0.2))
@@ -163,6 +186,14 @@ def test_early_stop_rules():
         rule = EarlyStopConfig(**every_check, epsilon=epsilon)
         solver = _solver_with_root(1000, rule, [node(best), node(0.0)])
         assert solver.is_settled(100) == settled
+    # With a target, the most visited action settles the search once its lower
+    # bound (0.72 here) is at least the target minus the aspiration.
+    rule = EarlyStopConfig(**every_check, epsilon=-1e9, aspiration=0.5)
+    solver = _solver_with_root(1000, rule, [node(1.0)])
+    assert not solver.is_settled(100)
+    for target, settled in [(1.0, True), (1.5, False)]:
+        solver._target = target  # pylint: disable=protected-access
+        assert solver.is_settled(100) == settled
     # Without a rule, or at a sim that is not a check, the search goes on.
     solver = _solver_with_root(
         1000, EarlyStopConfig(min_sims=1, check_every=7), [node(10.0), node(0.0)]
@@ -179,7 +210,7 @@ def test_a_trained_model_proposes_first_and_widens_slowly(setup):
     )
     push = Push(1.5708, 0.6, 0.0)
     proposal = ProposalConfig(mix=0.0, model_first=1, action_widening=(1.0, 0.5))
-    params = planner.set_model(replace(PARAMS, proposal=proposal), _FixedModel(push))
+    params = replace(PARAMS, proposal=proposal, model=_FixedModel(push))
     policy = planner.plan(
         task, domain.initial_belief, params, Budget(), np.random.default_rng(0)
     )
@@ -286,10 +317,10 @@ class _FixedModel(ConditionalModel):
 class _FailingWithModel(FrictionPOMCPOWPlanner):
     """Finds no push whenever the model guides the search."""
 
-    def search(self, state, belief, config, rng, proposer=None):
+    def search(self, state, belief, config, rng, proposer=None, *args):
         if proposer is not None:
             return None, SearchStats()
-        return super().search(state, belief, config, rng, proposer)
+        return super().search(state, belief, config, rng, proposer, *args)
 
 
 class _RecordingPlanner(FrictionPOMCPOWPlanner):
@@ -297,9 +328,9 @@ class _RecordingPlanner(FrictionPOMCPOWPlanner):
 
     widenings: list[tuple[float, float]] = []
 
-    def search(self, state, belief, config, rng, proposer=None):
+    def search(self, state, belief, config, rng, proposer=None, *args):
         self.widenings.append(config.action_widening)
-        return super().search(state, belief, config, rng, proposer)
+        return super().search(state, belief, config, rng, proposer, *args)
 
 
 def _make_failing(model: FrictionModel) -> FrictionPOMCPOWPlanner:
@@ -307,32 +338,127 @@ def _make_failing(model: FrictionModel) -> FrictionPOMCPOWPlanner:
 
 
 def test_plan_examples(setup):
-    """Each search gives one row: its features under the belief it planned from,
-    and the push it chose, costed by the negative of the push's value."""
+    """Each search gives one row: its push and value features under the belief it
+    planned from, the push it chose, and no value, costed by the negative of the
+    push's value."""
     domain, planner, task = setup
     belief = domain.initial_belief
     policy = _plan(planner, task, belief)
     run_episode(domain.real_env, task, policy, max_steps=2)
     rows = planner.get_plan_examples(task, belief, policy)
-    assert rows.x.shape == (2, X_DIM) and rows.y.shape == (2, Y_DIM)
+    assert rows.x.shape == (2, X_DIM + VALUE_X_DIM) and rows.y.shape == (2, Y_DIM + 1)
     assert list(rows.groups) == [0, 1]
     first, second = policy.searches
     assert first.belief is belief and second.belief is not belief
     for row, search in enumerate(policy.searches):
+        state = search.state
         features = get_push_features(
-            search.state.puck_array, task.goal, planner.pomdp.world, search.belief
+            state.puck_array, task.goal, planner.pomdp.world, search.belief
         )
-        assert np.allclose(rows.x[row], features)
-        assert np.allclose(rows.y[row], encode_push(search.push))
+        assert np.allclose(rows.x[row, :X_DIM], features)
+        pushes_left = planner.pomdp.max_pushes - state.pushes
+        value_features = get_value_features(state.puck, pushes_left, search.belief)
+        assert np.allclose(rows.x[row, X_DIM:], value_features)
+        assert np.allclose(rows.y[row, :Y_DIM], encode_push(search.push))
+        assert np.isnan(rows.y[row, Y_DIM])
         value = next(v for p, _, v in search.root_values if p == search.push)
         assert rows.costs[row] == pytest.approx(-value)
 
 
+@pytest.mark.parametrize("solved", [True, False])
+def test_rollout_examples(setup, solved):
+    """A rollout gives a row per push, with the push only if the rollout solved
+    the task, and with how much the return from the push's state exceeded the
+    path-distance value there."""
+    domain, planner, task = setup
+    belief = domain.initial_belief
+    rng = np.random.default_rng(0)
+    env = SimulatedEnvironment(domain.env_model, belief.sample(rng), rng)
+    policy = _plan(planner, task, belief)
+    trajectory = run_episode(env, task, policy, max_steps=3)
+    rows = planner.get_rollout_examples(task, belief, policy, trajectory, solved)
+    assert len(rows) == len(policy.searches) == 3
+    pomdp = planner.pomdp
+    for row, search in enumerate(policy.searches):
+        state = search.state
+        assert np.all(np.isnan(rows.y[row, :Y_DIM])) != solved
+        root = pomdp.initial_state(
+            state.puck_array, state.robot_array, (), state.pushes
+        )
+        excess = -sum(trajectory.costs[row:]) - pomdp.value(root)
+        assert rows.y[row, Y_DIM] == pytest.approx(excess)
+
+
+def test_push_and_value_models_fit_their_rows(setup):
+    """Each model fits the rows that have its output, and the push model
+    proposes."""
+    _, planner, _ = setup
+    nan = np.nan
+    x = np.arange(3 * (X_DIM + VALUE_X_DIM), dtype=float).reshape(3, -1)
+    y = np.array([[1.0, 0.0, 0.5, 0.0, nan], [nan] * Y_DIM + [2.0], [0.0] * 5])
+    rows = Dataset(x, y, np.zeros(3), np.arange(3))
+    params = replace(PARAMS, value_model=KernelRegressor((1.0,) * VALUE_X_DIM))
+    model = planner.get_model(params).fit(rows)
+    assert isinstance(model, PushValueModel) and model.value is not None
+    assert model.value.x is not None and model.value.y is not None
+    assert np.array_equal(model.value.x, x[1:, X_DIM:])
+    assert np.array_equal(model.value.y, y[1:, Y_DIM:])
+    trained = planner.set_model(params, model)
+    assert trained.model is model.push and trained.value_model is model.value
+    draws = trained.model.sample(x[0, :X_DIM], 4, np.random.default_rng(0))
+    assert draws.shape == (4, Y_DIM)
+    # Without a value model, only the push model trains.
+    assert planner.get_model(PARAMS).fit(rows).value is None
+
+
+def test_a_trained_value_model_corrects_the_leaves(setup):
+    """Leaf values are the path-distance value plus the value model's prediction,
+    and the policy reports the weight the model's data had."""
+    domain, planner, task = setup
+    belief = domain.initial_belief
+    assert planner.make_leaf_value(belief, PARAMS) is None
+    state = planner.pomdp.initial_state(np.array([1.2, 2.2]), np.zeros(2), (0.1,) * 3)
+    x = get_value_features(state.puck, planner.pomdp.max_pushes, belief)
+    rows = Dataset(x[None], np.array([[-4.0]]), np.zeros(1), np.zeros(1, np.int64))
+    value_model = KernelRegressor((1.0,) * VALUE_X_DIM, prior_weight=1.0).fit(rows)
+    params = replace(PARAMS, value_model=value_model)
+    leaf_value = planner.make_leaf_value(belief, params)
+    assert leaf_value is not None
+    assert leaf_value(state) == pytest.approx(planner.pomdp.value(state) - 4.0)
+    assert leaf_value.num_leaves == 1 and leaf_value.data_weight == 0.5
+    stats = _plan(planner, task, belief).get_planning_stats()
+    assert stats["value_data_weight"] == 0.0
+    policy = planner.plan(task, belief, params, Budget(), np.random.default_rng(0))
+    assert 0.0 < policy.get_planning_stats()["value_data_weight"] <= 0.5
+
+
+def test_searches_aspire_where_the_value_model_has_data(setup):
+    """With an aspiring early-stop rule, a search aspires to the root's leaf value
+    if the value model's data has at least min_target_weight there."""
+    domain, planner, task = setup
+    belief = domain.initial_belief
+    start = task.initial_state
+    x = get_value_features(start.puck, planner.pomdp.max_pushes, belief)
+    rows = Dataset(x[None], np.array([[-4.0]]), np.zeros(1), np.zeros(1, np.int64))
+    # One row at the start state gives half of the weight there.
+    value_model = KernelRegressor((1.0,) * VALUE_X_DIM, prior_weight=1.0).fit(rows)
+    rule = EarlyStopConfig(min_sims=10, check_every=5, aspiration=3.0)
+    config = replace(PARAMS.config, early_stop=rule)
+    for min_weight, targeted in [(0.5, 1), (0.6, 0)]:
+        params = replace(
+            PARAMS, config=config, value_model=value_model, min_target_weight=min_weight
+        )
+        policy = planner.plan(task, belief, params, Budget(), np.random.default_rng(0))
+        assert policy.get_planning_stats()["num_targeted_searches"] == targeted
+
+
 def test_training_params_search_harder(setup):
-    """Training plans run training_num_sims simulations per push, if set."""
+    """Training plans run training_num_sims simulations per push, if set, and
+    never stop early."""
     _, planner, _ = setup
     assert planner.get_training_params(PARAMS) is PARAMS
-    params = replace(PARAMS, training_num_sims=100)
+    config = replace(PARAMS.config, early_stop=EarlyStopConfig())
+    params = replace(PARAMS, config=config, training_num_sims=100)
     training = planner.get_training_params(params)
     assert training.config == replace(PARAMS.config, num_sims=100)
     assert training.model is params.model
@@ -344,8 +470,7 @@ def test_a_trained_model_guides_the_search(setup):
     domain, planner, task = setup
     push = Push(1.5708, 0.6, 0.0)
     model = _FixedModel(push)
-    params = planner.set_model(replace(PARAMS, proposal=ProposalConfig(mix=1.0)), model)
-    assert planner.get_model(params) is model
+    params = replace(PARAMS, proposal=ProposalConfig(mix=1.0), model=model)
     rng = np.random.default_rng(0)
     policy = planner.plan(task, domain.initial_belief, params, Budget(), rng)
     assert push in [p for p, _, _ in policy.searches[0].root_values]

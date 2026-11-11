@@ -2,7 +2,8 @@
 friction environment.
 
 The search is domain-free for continuous actions and observations: a domain supplies
-a POMDPModel, and an optional ActionProposer replaces its action sampler.
+a POMDPModel, an optional ActionProposer replaces its action sampler, and an optional
+leaf value replaces its value estimate.
 """
 
 import bisect
@@ -18,13 +19,19 @@ from able.belief_updaters.friction import FrictionBeliefUpdater
 from able.beliefs.base import Belief
 from able.beliefs.particles import ParticleBelief
 from able.envs.friction.model import NO_PUSH, FrictionModel, FrictionState, FrictionTask
-from able.envs.friction.pomdp import PuckObservation, PuckPushingModel, PuckState
+from able.envs.friction.pomdp import (
+    ONGOING,
+    PuckObservation,
+    PuckPushingModel,
+    PuckState,
+)
 from able.envs.friction.world import SURFACE_NAMES, PuckWorld, Push
 from able.models.base import ConditionalModel, Dataset
 from able.models.flow_matching import FlowMatchingModel
+from able.models.kernel_regression import KernelRegressor
 from able.planners.base import TrainablePlanner
 from able.policies.base import Policy
-from able.structs import Budget, PlanningFailure, PlanningTimeout
+from able.structs import Budget, PlanningFailure, PlanningTimeout, Trajectory
 
 S = TypeVar("S")
 A = TypeVar("A", bound=Hashable)
@@ -63,6 +70,8 @@ class POMDPModel(Protocol[S, A, O]):
 ActionProposer = Callable[
     [S, Sequence[S], Sequence[A], np.random.Generator], "A | None"
 ]
+# Nonterminal state -> estimated value, in place of the model's.
+LeafValue = Callable[[S], float]
 
 
 @dataclass(frozen=True)
@@ -70,12 +79,15 @@ class EarlyStopConfig:
     """When a search may stop before num_sims.
 
     From min_sims simulations on, every check_every simulations, the search stops
-    if the most visited root action is settled in either of two ways:
+    if the most visited root action is settled in any of three ways:
     - its lead in visits over the runner-up exceeds the simulations left, so no
-      action could overtake it and the full search would return it too; or
+      action could overtake it and the full search would return it too;
     - its return's lower confidence bound (mean - z standard errors) is at least
       every other visited root action's upper bound minus epsilon, so it is
-      likely within epsilon of the best of them.
+      likely within epsilon of the best of them; or
+    - if aspiration is set and the search has a target value for the root, that
+      lower bound is at least the target minus aspiration, so the action is about
+      as good as the target expects of the best one.
     An action visited once takes the standard deviation of all root returns. The
     returns' distribution drifts as the tree below grows, so the bounds are
     approximate.
@@ -85,6 +97,7 @@ class EarlyStopConfig:
     check_every: int = 25
     epsilon: float = 1.0
     z: float = 2.0
+    aspiration: float | None = None
 
 
 @dataclass(frozen=True)
@@ -145,16 +158,22 @@ class POMCPOW(Generic[S, A, O]):
         config: POMCPOWConfig = POMCPOWConfig(),
         proposer: ActionProposer | None = None,
         rng: np.random.Generator | None = None,
+        leaf_value: LeafValue | None = None,
     ) -> None:
         self.model = model
         self.config = config
         self.proposer = proposer
         self.rng = rng if rng is not None else np.random.default_rng(0)
+        self.leaf_value = model.value if leaf_value is None else leaf_value
         self.root: _ObservationNode | None = None
         self._depth_reached = 0
+        self._target = math.inf
 
-    def plan(self, particles: Sequence[S]) -> tuple[A | None, SearchStats]:
-        """Search from equally weighted state particles; the action is None if none
+    def plan(
+        self, particles: Sequence[S], target: float | None = None
+    ) -> tuple[A | None, SearchStats]:
+        """Search from equally weighted state particles, aspiring to the target
+        value for the root if the early-stop rule does; the action is None if none
         could be proposed."""
         start = time.perf_counter()
         config = self.config
@@ -163,6 +182,7 @@ class POMCPOW(Generic[S, A, O]):
             states=particles, cumulative=list(range(1, len(particles) + 1))
         )
         self._depth_reached = 0
+        self._target = math.inf if target is None else target
         sims = 0
         while sims < config.num_sims:
             if config.max_time is not None and sims > 0:
@@ -201,11 +221,12 @@ class POMCPOW(Generic[S, A, O]):
         if sims < rule.min_sims or sims % rule.check_every != 0:
             return False
         visited = [n for n in self.root.actions.values() if n.visits > 0]
-        if len(visited) < 2:
+        aspires = rule.aspiration is not None and math.isfinite(self._target)
+        if len(visited) < (1 if aspires else 2):
             return False
         visited.sort(key=lambda n: (n.visits, n.value), reverse=True)
         best, others = visited[0], visited[1:]
-        if best.visits - others[0].visits > self.config.num_sims - sims:
+        if others and best.visits - others[0].visits > self.config.num_sims - sims:
             return True
         total = sum(n.visits for n in visited)
         mean = sum(n.visits * n.value for n in visited) / total
@@ -221,6 +242,11 @@ class POMCPOW(Generic[S, A, O]):
             return math.sqrt(node.squared_deviations / (node.visits - 1) / node.visits)
 
         lower = best.value - rule.z * standard_error(best)
+        if aspires and rule.aspiration is not None:
+            if lower >= self._target - rule.aspiration:
+                return True
+        if not others:
+            return False
         upper = max(n.value + rule.z * standard_error(n) for n in others)
         return lower >= upper - rule.epsilon
 
@@ -272,18 +298,18 @@ class POMCPOW(Generic[S, A, O]):
             scale *= config.discount
         if model.is_terminal(state):
             return total
-        return total + scale * model.value(state)
+        return total + scale * self.leaf_value(state)
 
     def _simulate(self, state: S, node: _ObservationNode, depth: int) -> float:
         model, config = self.model, self.config
         if model.is_terminal(state):
             return 0.0
         if depth == 0:
-            return model.value(state)
+            return self.leaf_value(state)
         self._depth_reached = max(self._depth_reached, config.max_depth - depth + 1)
         selected = self._select_action(state, node)
         if selected is None:
-            return model.value(state)
+            return self.leaf_value(state)
         action, child = selected
         next_state, reward = model.step(state, action, self.rng)
         observation = model.observe(next_state, action, self.rng)
@@ -329,8 +355,10 @@ class POMCPOW(Generic[S, A, O]):
         return total
 
 
-# The model's input and output sizes for a push.
-X_DIM, Y_DIM = 13, 4
+# The push model's input and output sizes, and the value model's input size. A
+# training row's input is the push model's input followed by the value model's, and
+# its output is a push followed by a value; NaN marks a missing push or value.
+X_DIM, Y_DIM, VALUE_X_DIM = 13, 4, 9
 
 
 @dataclass(frozen=True)
@@ -356,15 +384,59 @@ class POMCPOWParams:
     """Parameters of the friction POMCPOW planner.
 
     The model proposes pushes from get_push_features(); an untrained model proposes
-    nothing, and POMCPOW then searches as without it. Training tasks planned while
+    nothing, and POMCPOW then searches as without it. The value model, if set,
+    corrects the leaf values from get_value_features(): it predicts how much the
+    return from a state exceeds the path-distance value, and an untrained one
+    predicts nothing. If the early-stop rule aspires (EarlyStopConfig.aspiration),
+    a search aspires to the leaf value of its root where the value model's data has
+    at least min_target_weight of the weight there. Training tasks planned while
     sleeping search training_num_sims simulations per push, if set, instead of
-    config.num_sims.
+    config.num_sims, and never stop early.
     """
 
     config: POMCPOWConfig = POMCPOWConfig(max_depth=8)
     model: ConditionalModel = field(default_factory=FlowMatchingModel)
     proposal: ProposalConfig = ProposalConfig()
     training_num_sims: int | None = None
+    value_model: KernelRegressor | None = None
+    min_target_weight: float = 0.5
+
+
+@dataclass(frozen=True, eq=False)
+class PushValueModel(ConditionalModel):
+    """The push model and the value model trained together on rows laid out as
+    X_DIM, Y_DIM, and VALUE_X_DIM describe. Each model fits the rows that have its
+    output; sample() takes the push model's input and proposes pushes."""
+
+    push: ConditionalModel
+    value: KernelRegressor | None = None
+
+    def fit(self, dataset: Dataset) -> "PushValueModel":
+        push, value = self.push, self.value
+        rows = np.all(np.isfinite(dataset.y[:, :Y_DIM]), axis=1)
+        if rows.any():
+            push = push.fit(_select(dataset, rows, slice(0, X_DIM), slice(0, Y_DIM)))
+        rows = np.isfinite(dataset.y[:, Y_DIM])
+        if value is not None and rows.any():
+            value = value.fit(
+                _select(dataset, rows, slice(X_DIM, None), slice(Y_DIM, None))
+            )
+        return replace(self, push=push, value=value)
+
+    def sample(
+        self, x: NDArray[np.float64], num_samples: int, rng: np.random.Generator
+    ) -> NDArray[np.float64]:
+        return self.push.sample(x, num_samples, rng)
+
+
+def _select(dataset: Dataset, rows: NDArray[np.bool_], x: slice, y: slice) -> Dataset:
+    """The dataset's chosen rows, with the chosen input and output columns."""
+    return Dataset(
+        dataset.x[rows, x],
+        dataset.y[rows, y],
+        dataset.costs[rows],
+        dataset.groups[rows],
+    )
 
 
 def get_push_features(
@@ -380,6 +452,16 @@ def get_push_features(
     if surface >= 0:
         floor[surface] = 1.0
     return np.concatenate([puck, goal, floor, belief.mean, belief.std])
+
+
+def get_value_features(
+    puck: NDArray[np.float64] | tuple[float, float],
+    pushes_left: int,
+    belief: ParticleBelief,
+) -> NDArray[np.float64]:
+    """The value model's input for a state: puck, pushes left, and the belief's
+    mean and standard deviation."""
+    return np.concatenate([puck, [pushes_left], belief.mean, belief.std])
 
 
 def encode_push(push: Push) -> list[float]:
@@ -457,6 +539,43 @@ class _ModelProposer:
         return self._pomdp.propose(state, tried, rng)
 
 
+class LearnedLeafValue:
+    """Leaf values under a belief: the path-distance value plus the value model's
+    correction. It counts the leaves it scores and sums the weight the model's
+    data had at each."""
+
+    def __init__(
+        self,
+        pomdp: PuckPushingModel,
+        value_model: KernelRegressor,
+        belief: ParticleBelief,
+    ) -> None:
+        self._pomdp = pomdp
+        self._value_model = value_model
+        self._belief = belief
+        self.num_leaves = 0
+        self.data_weight = 0.0
+
+    def __call__(self, state: PuckState) -> float:
+        value, weight = self.estimate(state)
+        if state.outcome == ONGOING:
+            self.num_leaves += 1
+            self.data_weight += weight
+        return value
+
+    def estimate(self, state: PuckState) -> tuple[float, float]:
+        """The state's value, and the weight the model's data had there (0 for a
+        terminal state), without counting the state as a leaf."""
+        pomdp = self._pomdp
+        value = pomdp.value(state)
+        if state.outcome != ONGOING:
+            return value, 0.0
+        pushes_left = pomdp.max_pushes - state.pushes
+        x = get_value_features(state.puck, pushes_left, self._belief)
+        correction, weight = self._value_model.predict(x)
+        return value + float(correction[0]), weight
+
+
 @dataclass(frozen=True)
 class PushSearch:
     """One push's search: the state and belief it planned from, the push it chose,
@@ -496,8 +615,15 @@ class FrictionPOMCPOWPolicy(Policy[FrictionState, Push]):
         self._params = params
         self._budget = budget
         self._rng = rng
-        self._stats = {"num_sims": 0, "num_seeded_searches": 0, "num_fallbacks": 0}
+        self._stats = {
+            "num_sims": 0,
+            "num_seeded_searches": 0,
+            "num_fallbacks": 0,
+            "num_targeted_searches": 0,
+        }
         self._search_time = 0.0
+        self._num_value_leaves = 0
+        self._value_data_weight = 0.0
         self._previous: tuple[FrictionState, Push] | None = None
         self._planned: tuple[FrictionState, Push] | None = None
         self.searches: list[PushSearch] = []
@@ -535,7 +661,16 @@ class FrictionPOMCPOWPolicy(Policy[FrictionState, Push]):
         return push
 
     def get_planning_stats(self) -> dict[str, float]:
-        return {**self._stats, "num_searches": len(self.searches)}
+        """The statistics in the planner's description: the mean weight the value
+        model's data had at the leaves it scored (0 without a trained value model),
+        and the seconds spent searching, which leave out the belief updates."""
+        weight = self._value_data_weight / max(self._num_value_leaves, 1)
+        return {
+            **self._stats,
+            "num_searches": len(self.searches),
+            "value_data_weight": weight,
+            "search_time": self._search_time,
+        }
 
     def _search(self, state: FrictionState) -> Push:
         proposer = self._make_proposer(state)
@@ -559,12 +694,37 @@ class FrictionPOMCPOWPolicy(Policy[FrictionState, Push]):
             # A config file gives a list.
             k, alpha = widening
             config = replace(config, action_widening=(float(k), float(alpha)))
+        leaf_value = self._planner.make_leaf_value(self._belief, self._params)
+        target = self._get_target(state, config, leaf_value)
+        if target is not None:
+            self._stats["num_targeted_searches"] += 1
         push, stats = self._planner.search(
-            state, self._belief, config, self._rng, proposer
+            state, self._belief, config, self._rng, proposer, leaf_value, target
         )
+        if leaf_value is not None:
+            self._num_value_leaves += leaf_value.num_leaves
+            self._value_data_weight += leaf_value.data_weight
         self._stats["num_sims"] += stats.num_sims
         self._search_time += stats.seconds
         return push, tuple(stats.root_values)
+
+    def _get_target(
+        self,
+        state: FrictionState,
+        config: POMCPOWConfig,
+        leaf_value: LearnedLeafValue | None,
+    ) -> float | None:
+        """The value the search aspires to: the root's leaf value, if the early-stop
+        rule aspires and the value model's data has enough weight at the root."""
+        rule = config.early_stop
+        if leaf_value is None or rule is None or rule.aspiration is None:
+            return None
+        pomdp = self._planner.pomdp
+        root = pomdp.initial_state(
+            state.puck_array, state.robot_array, tuple(self._belief.mean), state.pushes
+        )
+        value, weight = leaf_value.estimate(root)
+        return value if weight >= self._params.min_target_weight else None
 
     def _make_proposer(self, state: FrictionState) -> _ModelProposer | None:
         """A proposer from the model, or None if it proposes nothing at the root."""
@@ -609,12 +769,14 @@ class FrictionPOMCPOWPlanner(
 
     The root states put each belief particle's frictions at the robot's view of the
     puck and itself. Leaf values come from the shortest pushable path to the goal
-    (PuckPushingModel.value). plan() searches the first push, and the policy
-    searches each later one after updating its belief. The model in the parameters
-    proposes pushes. Planning fails if no push is feasible, and times out if the
-    budget runs out. The statistics are the number of simulations, searches,
-    searches the model guided, and fallbacks without it. The default parameters, if
-    given, replace POMCPOWParams().
+    (PuckPushingModel.value), corrected by the value model if it is trained.
+    plan() searches the first push, and the policy searches each later one after
+    updating its belief. The model in the parameters proposes pushes. Planning
+    fails if no push is feasible, and times out if the budget runs out. The
+    statistics are the number of simulations, searches, searches the model guided,
+    fallbacks without it, and searches with a target value, the mean weight of the
+    value model's data at the leaves, and the time spent searching. The default parameters, if given, replace
+    POMCPOWParams().
     """
 
     def __init__(
@@ -638,19 +800,32 @@ class FrictionPOMCPOWPlanner(
     def get_default_params(self) -> POMCPOWParams:
         return self._default_params
 
-    def get_model(self, params: POMCPOWParams) -> ConditionalModel:
-        return params.model
-
     def get_training_params(self, params: POMCPOWParams) -> POMCPOWParams:
         if params.training_num_sims is None:
             return params
-        config = replace(params.config, num_sims=params.training_num_sims)
+        config = replace(
+            params.config, num_sims=params.training_num_sims, early_stop=None
+        )
         return replace(params, config=config)
+
+    def get_model(self, params: POMCPOWParams) -> PushValueModel:
+        return PushValueModel(params.model, params.value_model)
 
     def set_model(
         self, params: POMCPOWParams, model: ConditionalModel
     ) -> POMCPOWParams:
-        return replace(params, model=model)
+        assert isinstance(model, PushValueModel), "Need a push and value model"
+        return replace(params, model=model.push, value_model=model.value)
+
+    def make_leaf_value(
+        self, belief: ParticleBelief, params: POMCPOWParams
+    ) -> "LearnedLeafValue | None":
+        """The leaf values under the belief from the trained value model, or None
+        without one."""
+        value_model = params.value_model
+        if value_model is None or value_model.x is None:
+            return None
+        return LearnedLeafValue(self.pomdp, value_model, belief)
 
     def get_plan_examples(
         self,
@@ -659,22 +834,68 @@ class FrictionPOMCPOWPlanner(
         policy: Policy[FrictionState, Push],
     ) -> Dataset:
         """One row per push the policy searched so far: the features under the
-        belief that search planned from, and the push it chose. A row's cost is the
-        negative of the push's value, and its group is the search."""
+        belief that search planned from, the push it chose, and no value. A row's
+        cost is the negative of the push's value, and its group is the search."""
         del belief  # unused because each search keeps the belief it planned from
         assert isinstance(policy, FrictionPOMCPOWPolicy), "Need a plan from plan()"
+        return self._get_rows(task, policy.searches, None, True)
+
+    def get_rollout_examples(
+        self,
+        task: FrictionTask,
+        belief: Belief[NDArray[np.float64]],
+        policy: Policy[FrictionState, Push],
+        trajectory: Trajectory[FrictionState, Push],
+        solved: bool,
+    ) -> Dataset:
+        """The plan's rows for every push of the trajectory, with the pushes only
+        if it solved the task. Each row's value is how much the return from its
+        state exceeded the path-distance value there."""
+        del belief  # unused because each search keeps the belief it planned from
+        assert isinstance(policy, FrictionPOMCPOWPolicy), "Need a plan from plan()"
+        searches = policy.searches
+        assert all(
+            search.state == state for search, state in zip(searches, trajectory.states)
+        ), "Need the searches of the trajectory's pushes"
+        returns = -np.cumsum(np.asarray(trajectory.costs)[::-1])[::-1]
+        return self._get_rows(task, searches, returns, solved)
+
+    def _get_rows(
+        self,
+        task: FrictionTask,
+        searches: Sequence[PushSearch],
+        returns: NDArray[np.float64] | None,
+        with_pushes: bool,
+    ) -> Dataset:
+        """A row per search, with its push if with_pushes and the excess of its
+        return over the path-distance value if returns are given."""
+        pomdp = self.pomdp
         x, y, costs = [], [], []
-        for search in policy.searches:
+        for i, search in enumerate(searches):
+            state = search.state
+            pushes_left = pomdp.max_pushes - state.pushes
             x.append(
-                get_push_features(
-                    search.state.puck_array, task.goal, self.pomdp.world, search.belief
+                np.concatenate(
+                    [
+                        get_push_features(
+                            state.puck_array, task.goal, pomdp.world, search.belief
+                        ),
+                        get_value_features(state.puck, pushes_left, search.belief),
+                    ]
                 )
             )
-            y.append(encode_push(search.push))
-            values = [v for push, _, v in search.root_values if push == search.push]
+            push = encode_push(search.push) if with_pushes else [math.nan] * Y_DIM
+            value = math.nan
+            if returns is not None:
+                root = pomdp.initial_state(
+                    state.puck_array, state.robot_array, (), state.pushes
+                )
+                value = float(returns[i]) - pomdp.value(root)
+            y.append([*push, value])
+            values = [v for p, _, v in search.root_values if p == search.push]
             costs.append(-values[0] if values else 0.0)
         if not x:
-            return Dataset.empty(X_DIM, Y_DIM)
+            return Dataset.empty(X_DIM + VALUE_X_DIM, Y_DIM + 1)
         return Dataset(
             x=np.array(x),
             y=np.array(y),
@@ -689,17 +910,21 @@ class FrictionPOMCPOWPlanner(
         config: POMCPOWConfig,
         rng: np.random.Generator,
         proposer: ActionProposer | None = None,
+        leaf_value: LeafValue | None = None,
+        target: float | None = None,
     ) -> tuple[Push | None, SearchStats]:
-        """One POMCPOW search for the state's push under the belief."""
+        """One POMCPOW search for the state's push under the belief, with the leaf
+        values, if given, in place of the POMDP's, aspiring to the target value, if
+        given."""
         pomdp = self.pomdp
         particles = [
             pomdp.initial_state(state.puck_array, state.robot_array, f, state.pushes)
             for f in belief.particles
         ]
         solver: POMCPOW[PuckState, Push, PuckObservation] = POMCPOW(
-            pomdp, config, proposer=proposer, rng=rng
+            pomdp, config, proposer=proposer, rng=rng, leaf_value=leaf_value
         )
-        return solver.plan(particles)
+        return solver.plan(particles, target)
 
     def plan(
         self,
