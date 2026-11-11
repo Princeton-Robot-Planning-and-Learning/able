@@ -47,6 +47,7 @@ from able.planners.pomcpow import (
     FrictionPOMCPOWPolicy,
     POMCPOWConfig,
     POMCPOWParams,
+    ProposalConfig,
 )
 from able.structs import Budget, PlanningFailure
 
@@ -89,6 +90,7 @@ class Job:
     # A trained push model to guide the search, and whether a solved episode
     # returns its training rows (under "dataset", not written to the output).
     push_model: ConditionalModel | None = None
+    proposal: ProposalConfig | None = None
     collect_rows: bool = False
 
     @property
@@ -176,6 +178,8 @@ def run_job(job: Job) -> dict[str, Any]:
     )
     if job.push_model is not None:
         params = planner.set_model(params, job.push_model)
+    if job.proposal is not None:
+        params = dataclasses.replace(params, proposal=job.proposal)
     env = SimulatedEnvironment(model, frictions, rng)
     task = domain.task_distribution.sample(rng)
     start = time.perf_counter()
