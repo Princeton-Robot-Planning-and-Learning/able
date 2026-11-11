@@ -45,6 +45,7 @@ from able.learners.model_learner import ModelLearner
 from able.learners.rollout_model_learner import RolloutModelLearner
 from able.models.base import ConditionalModel
 from able.models.exact_match_cache import ExactMatchCache
+from able.models.kernel_regression import KernelRegressor
 from able.planners.mpc import LimbMPCPlanner, MPCParams
 from able.planners.pddlstream import PDDLStreamParams, ReachPDDLStreamPlanner
 from able.planners.pomcpow import (
@@ -560,6 +561,7 @@ def _make_friction_parts(
     early_stop: EarlyStopConfig | None = None,
     proposal: ProposalConfig | None = None,
     training_num_sims: int | None = None,
+    value_model: KernelRegressor | None = None,
 ) -> tuple[
     FrictionModel, FrictionPOMCPOWPlanner, FrictionBeliefUpdater, ProbeFloorGatherer
 ]:
@@ -567,13 +569,16 @@ def _make_friction_parts(
     gatherer. POMCPOW runs up to num_sims simulations per push, max_depth pushes
     deep, and stops early by the early_stop rule, if given. Training tasks planned
     while sleeping run training_num_sims simulations per push, if given, instead.
-    The model, if given, proposes pushes as the proposal config says."""
+    The model, if given, proposes pushes as the proposal config says, and the value
+    model, if given, corrects the leaf values."""
     env_model = domain.env_model
     assert isinstance(env_model, FrictionModel)
     config = POMCPOWConfig(
         num_sims=num_sims, max_depth=max_depth, early_stop=early_stop
     )
-    params = POMCPOWParams(config, training_num_sims=training_num_sims)
+    params = POMCPOWParams(
+        config, training_num_sims=training_num_sims, value_model=value_model
+    )
     if model is not None:
         params = dataclasses.replace(params, model=model)
     if proposal is not None:
@@ -619,13 +624,21 @@ def make_friction_current_belief_robot(
     early_stop: EarlyStopConfig | None = None,
     proposal: ProposalConfig | None = None,
     training_num_sims: int | None = None,
+    value_model: KernelRegressor | None = None,
     recorder: CycleRecorder[FrictionState, FrictionTask, ArmArray] | None = None,
 ) -> FrictionRobot:
     """A friction robot whose model, while it sleeps, learns the pushes of solved
     rollouts under its current belief. It never anticipates belief updates."""
     del recorder  # unused because the robot imagines nothing while it sleeps
     env_model, planner, belief_updater, gatherer = _make_friction_parts(
-        domain, num_sims, max_depth, model, early_stop, proposal, training_num_sims
+        domain,
+        num_sims,
+        max_depth,
+        model,
+        early_stop,
+        proposal,
+        training_num_sims,
+        value_model,
     )
     return Robot(
         planner=planner,
@@ -654,13 +667,21 @@ def make_friction_prior_only_robot(
     early_stop: EarlyStopConfig | None = None,
     proposal: ProposalConfig | None = None,
     training_num_sims: int | None = None,
+    value_model: KernelRegressor | None = None,
     recorder: CycleRecorder[FrictionState, FrictionTask, ArmArray] | None = None,
 ) -> FrictionRobot:
     """A friction robot whose model learns the pushes of solved rollouts under the
     prior in its first sleep, and never learns again."""
     del recorder  # unused because the robot imagines nothing while it sleeps
     env_model, planner, belief_updater, gatherer = _make_friction_parts(
-        domain, num_sims, max_depth, model, early_stop, proposal, training_num_sims
+        domain,
+        num_sims,
+        max_depth,
+        model,
+        early_stop,
+        proposal,
+        training_num_sims,
+        value_model,
     )
     return Robot(
         planner=planner,
@@ -692,6 +713,7 @@ def make_friction_dreaming_robot(
     early_stop: EarlyStopConfig | None = None,
     proposal: ProposalConfig | None = None,
     training_num_sims: int | None = None,
+    value_model: KernelRegressor | None = None,
     recorder: CycleRecorder[FrictionState, FrictionTask, ArmArray] | None = None,
 ) -> FrictionRobot:
     """A friction robot that dreams while it sleeps: its model learns the pushes of
@@ -701,7 +723,14 @@ def make_friction_dreaming_robot(
     execution, and planning.
     """
     env_model, planner, belief_updater, gatherer = _make_friction_parts(
-        domain, num_sims, max_depth, model, early_stop, proposal, training_num_sims
+        domain,
+        num_sims,
+        max_depth,
+        model,
+        early_stop,
+        proposal,
+        training_num_sims,
+        value_model,
     )
     belief_source: ImaginedNextBeliefSource = ImaginedNextBeliefSource(
         env_model,
@@ -744,6 +773,7 @@ def make_friction_belief_coverage_robot(
     early_stop: EarlyStopConfig | None = None,
     proposal: ProposalConfig | None = None,
     training_num_sims: int | None = None,
+    value_model: KernelRegressor | None = None,
     recorder: CycleRecorder[FrictionState, FrictionTask, ArmArray] | None = None,
 ) -> FrictionRobot:
     """A friction robot whose model learns, while it sleeps, under dreamed beliefs
@@ -751,7 +781,14 @@ def make_friction_belief_coverage_robot(
     farthest of num_candidates dreams. The model is refit once per sleep, as for
     dreaming."""
     env_model, planner, belief_updater, gatherer = _make_friction_parts(
-        domain, num_sims, max_depth, model, early_stop, proposal, training_num_sims
+        domain,
+        num_sims,
+        max_depth,
+        model,
+        early_stop,
+        proposal,
+        training_num_sims,
+        value_model,
     )
     dreamer = _make_dreamer(
         domain,
