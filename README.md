@@ -87,6 +87,13 @@ A robot pushes a puck through a maze to a goal, over three floors (blue, tan, an
 python experiments/run_single_experiment.py env=friction approach=scratch
 ```
 
+The task also fails if the puck stops where the robot cannot push it on, such as inside the slot or against a wall ("No feasible push"), or if 15 pushes do not reach the goal. The planner counts both as failures that cost as much as the goal pays (`stuck_penalty` and `goal_reward` in `PuckRewards`), and it judges whether a stop is stuck from a sampled measurement of it, since the robot plans its next push from the measured stop. To see how episodes end at several budgets, under the prior or a belief near the true frictions (#130):
+
+```
+python experiments/analysis/diagnose_friction.py --out logs/diagnose/budgets.jsonl --grid budgets --workers 24
+python experiments/analysis/diagnose_friction.py --out logs/diagnose/budgets.jsonl --summarize
+```
+
 `env.domain.num_holes` (0 to 9) and `env.domain.goal_radius` choose how hard the maze is, 4 and 0.3 m in the experiments. `env.domain.sim=3d` runs the pushes in PyBullet with a TidyBot holding a paddle instead of in 2D, with the same physics. Planning a push takes several seconds with the default 1000 simulations, and a task takes up to 15 pushes. As on the arm and the limb, the robot asks no queries by default; a query probes the floor the belief is least sure of.
 
 Planning stops after 15000 POMCPOW simulations per task (`budgets.planning.max_iterations`), shared by all its pushes, which caps the planner's work the same way on any machine and under any load. That is 15 pushes of 1000 simulations, all that planning from scratch can use, so a model-guided search that finds no push and falls back to a search without the model costs the task's later pushes simulations. With a smaller `approach.num_sims` the limit does not bind. A simulation takes about 0.014 s, so this binds before the 10-minute limit (`budgets.planning.max_wall_time`), which guards against a slow machine. Running out of either counts as a timeout.

@@ -51,7 +51,15 @@ from able.planners.pomcpow import (
 from able.structs import Budget, PlanningFailure
 
 OUTCOMES = ("goal", "hole", "stuck", "out_of_pushes", "other_failure")
-SETTING_KEYS = ("belief", "num_sims", "noise", "horizon", "num_holes")
+SETTING_KEYS = (
+    "belief",
+    "num_sims",
+    "noise",
+    "horizon",
+    "num_holes",
+    "goal_radius",
+    "rollout_pushes",
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -63,6 +71,9 @@ class Setting:
     noise: bool = True
     horizon: int = 15
     num_holes: int = 4
+    goal_radius: float = 0.3
+    # Greedy pushes per leaf rollout (0: the planner's default).
+    rollout_pushes: int = 0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -101,6 +112,21 @@ def make_grid(name: str) -> list[Setting]:
     if name == "budgets":
         budgets = (20, 50, 100, 300, 1000, 5000)
         return [Setting(b, n) for b in ("prior", "near") for n in budgets]
+    if name == "harder":
+        harder = (
+            {"goal_radius": 0.2},
+            {"horizon": 10},
+            {"num_holes": 6},
+            {"goal_radius": 0.2, "horizon": 10},
+        )
+        return [Setting("near", n, **h) for h in harder for n in (20, 1000)]
+    if name == "short_rollouts":
+        few_budgets = (20, 100, 1000, 5000)
+        return [
+            Setting(b, n, rollout_pushes=6)
+            for b in ("prior", "near")
+            for n in few_budgets
+        ]
     if name == "smoke":
         return [Setting("near", 20), Setting("prior", 20, noise=False, horizon=30)]
     raise ValueError(f"Unknown grid {name!r}")
@@ -123,6 +149,7 @@ def run_job(job: Job) -> dict[str, Any]:
     domain = make_domain(
         seed=job.seed,
         num_holes=setting.num_holes,
+        goal_radius=setting.goal_radius,
         horizon=setting.horizon,
         num_particles=job.num_particles,
     )
@@ -142,6 +169,8 @@ def run_job(job: Job) -> dict[str, Any]:
         belief = _near_belief(frictions, job.near_spread, job.num_particles, rng)
     assert isinstance(belief, ParticleBelief)
     planner = FrictionPOMCPOWPlanner(model, FrictionBeliefUpdater(model.world))
+    if setting.rollout_pushes:
+        planner.pomdp.rollout_pushes = setting.rollout_pushes
     params = POMCPOWParams(
         POMCPOWConfig(num_sims=setting.num_sims, max_depth=job.max_depth)
     )
@@ -200,6 +229,7 @@ def _done_keys(out: Path) -> set[tuple[Any, ...]]:
     keys = set()
     for line in out.read_text().splitlines():
         row = json.loads(line)
+        row = {**dataclasses.asdict(Setting("", 0)), **row}  # older lines
         keys.add((*(row[k] for k in SETTING_KEYS), row["seed"], row["episode"]))
     return keys
 
@@ -230,6 +260,8 @@ def _main() -> None:
     args = parser.parse_args()
     if args.summarize:
         rows = pd.read_json(args.out, lines=True)
+        for key, default in dataclasses.asdict(Setting("", 0)).items():
+            rows[key] = rows[key].fillna(default) if key in rows else default
         with pd.option_context("display.width", 200, "display.max_rows", None):
             print(summarize(rows).to_string(index=False))
         return
