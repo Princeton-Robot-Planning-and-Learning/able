@@ -81,6 +81,39 @@ def test_passing_over_a_hole_ends_the_slide():
     assert world.over_hole(result.stop + np.array([0.01, 0.0]))
 
 
+def test_slide_many_matches_each_slide():
+    """Sliding many particles at once gives each one's stop, distance, last
+    heading, and hole, through bounces off walls and the robot and into holes."""
+    world = PuckWorld(THREE_ROUTES)
+    rng = np.random.default_rng(0)
+    frictions = FrictionPrior().sample(rng, 50)
+    hole = world.holes[1]
+    face = np.array([1.5, 3.0])
+    robot = StrikeEnd(base=face - np.array([0.4, 0.0]), face=face, angle=0.0)
+    cases = [
+        # Into a hole for slippery particles, short of it for sticky ones.
+        (np.array([hole[0] - 0.8, hole[1] + 0.1]), 1.0, 0.0, None),
+        # Off the top wall and back.
+        (np.array([1.0, 3.4]), 1.2, math.pi / 2, None),
+        # Back into the paddle, then off walls at an angle.
+        (np.array([2.0, 3.0]), 1.5, math.pi - 0.3, robot),
+    ]
+    for start, speed, angle, strike in cases:
+        batch = world.slide_many(start, speed, angle, frictions, robot=strike)
+        for k, row in enumerate(frictions):
+            result = world.slide(start, speed, angle, row, robot=strike)
+            last = result.path[-1] - result.path[-2]
+            assert np.allclose(batch.stops[k], result.stop, atol=1e-9)
+            assert math.isclose(batch.distances[k], result.distance, abs_tol=1e-9)
+            assert math.isclose(
+                batch.headings[k], math.atan2(last[1], last[0]), abs_tol=1e-9
+            )
+            assert batch.holes[k] == (-1 if result.hole is None else result.hole)
+    # Particles that differ only off the path all stop together.
+    batch = world.slide_many(np.array([1.0, 3.4]), 0.0, 0.0, frictions)
+    assert np.allclose(batch.stops, [1.0, 3.4]) and np.all(batch.distances == 0.0)
+
+
 def test_push_feasibility_and_driving():
     """The robot needs room behind the puck, and drives around walls."""
     world = PuckWorld(THREE_ROUTES)
