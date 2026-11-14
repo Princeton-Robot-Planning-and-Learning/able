@@ -4,9 +4,10 @@ Predictive sampling chooses controls one step at a time: it samples candidates
 around the shifted previous plan, scores them with rollouts, and commits the start
 of the best one. The limb planner samples limits from the belief, moves a goal
 beyond them to just inside, and runs predictive sampling in its own copy of the
-simulator, with rollouts in a second copy. The physics does not depend on the
-person, so the controls MPC commits are replayed open loop. The planner replays them
-first to check that the plan reaches the goal and breaks no constraint.
+simulator, with rollouts in a second copy. Its person has the believed limits.
+Inside the person's limits the physics does not depend on them, so the controls MPC
+commits are replayed open loop. The planner replays them first to check that the
+plan reaches the goal and breaks no constraint.
 """
 
 import dataclasses
@@ -427,7 +428,8 @@ def _with_start_reach(
 
 
 class _Checker:
-    """Checks the constraints after a simulator step, under the believed limits."""
+    """Steps the simulator with a person whose limits are the quantile the goal is
+    retargeted under, and checks the constraints under the believed limits."""
 
     def __init__(
         self,
@@ -438,6 +440,9 @@ class _Checker:
         self._model = model
         self._limits = limits
         self._resting = resting_penetration
+        self._person_limits = model.variant.get_joint_limits(
+            limits.get_quantile_theta()
+        )
 
     def step(self, sim: LimbSim, correction: NDArray[np.float64]) -> str:
         """Step once under the correction and return the broken constraint, if
@@ -445,7 +450,8 @@ class _Checker:
         commanded = sim.get_commanded_torque(correction)
         if exceeds_robot_torque_limits(sim, commanded):
             return "robot torque limits"
-        if self._model.torque_limits.are_exceeded(sim.advance(commanded)):
+        torques = sim.advance(commanded, self._person_limits)
+        if self._model.torque_limits.are_exceeded(torques):
             return "human torque limits"
         violation = get_robot_motion_violation(sim, self._model.max_robot_velocity)
         if violation:

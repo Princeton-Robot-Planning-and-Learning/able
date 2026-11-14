@@ -31,10 +31,13 @@ def test_torque_limits(sim):
     limits = HumanTorqueLimits.for_limb("human-left-arm")
     assert limits == HumanTorqueLimits(50.0, 25.0)
     assert HumanTorqueLimits.for_limb("human-right-leg").total == 100.0
-    static = np.full(6, 10.0)
-    assert not limits.are_exceeded(HumanTorques(static, np.zeros(6), static))
-    assert limits.are_exceeded(HumanTorques(static + 30.0, np.zeros(6), static))
-    assert limits.are_exceeded(HumanTorques(np.full(6, 60.0), np.zeros(6), static))
+    static, none = np.full(6, 10.0), np.zeros(6)
+    assert not limits.are_exceeded(HumanTorques(static, none, static, none))
+    assert limits.are_exceeded(HumanTorques(static + 30.0, none, static, none))
+    assert limits.are_exceeded(HumanTorques(np.full(6, 60.0), none, static, none))
+    # Holding the limb still against the person's walls loads their joints.
+    walls = np.full(6, -30.0)
+    assert limits.are_exceeded(HumanTorques(static, none, static, walls))
 
     _, upper = sim.robot_torque_limits
     assert not exceeds_robot_torque_limits(sim, upper)

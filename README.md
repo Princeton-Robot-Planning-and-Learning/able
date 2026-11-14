@@ -65,6 +65,8 @@ python experiments/run_single_experiment.py env=limb approach=scratch
 
 As on the arm, the robot asks no queries by default (`budgets.information_gathering.max_iterations=0`): one settled query nearly pins that motion's range, so every approach would learn the range at once.
 
+The person's joints are motors, as Sprout's are on hardware (`src/able/envs/limb/person.py`). While the robot moves the limb, the person relaxes: their joints hold up the limb and put stiff walls past their active range of motion, the range a query measures. In a query, the person moves the joint themselves and stops a short fall before their limit.
+
 `env.domain.variant` chooses the scene and limb, for example `env.domain.variant=bed-right-leg`. `env.domain.min_separation` and `env.domain.max_separation` bound the joint-space distance between a task's start and goal, 0.5 to 0.8 rad in the experiments. Planning a task takes a few minutes with the default 32 MPC rollouts per step.
 
 Planning stops after 2000 MPC rollouts per task (`budgets.planning.max_iterations`), which caps the planner's work the same way on any machine and under any load. Without a limit, planning from scratch took about 2000 rollouts per task on average and almost always succeeded, so the robots that learn could only show their speedup as planning time; with the limit, a robot that plans faster also succeeds more often. A rollout takes about 0.12 s, so this binds before the 10-minute limit (`budgets.planning.max_wall_time`), which guards against a slow machine. A retry without the model shares both, and running out of either counts as a timeout. The limit also applies to the plans the robots learn from while they sleep.
