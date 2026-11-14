@@ -43,7 +43,7 @@ def test_update_from_queries():
     assert after.stddev[0] < belief.stddev[0]
     assert np.array_equal(after.stddev[1:], belief.stddev[1:])
     expected = (0.8 * MAGNITUDES[0] + MODEL.short_fall) / MAGNITUDES[0]
-    exact = RangeOfMotionBeliefUpdater(VARIANT, QueryModel(effort_stddev=1e-6))
+    exact = RangeOfMotionBeliefUpdater(VARIANT, QueryModel(short_fall_stddev=1e-6))
     exact_after = exact.update_from_queries(belief, [_response(0, 0.8 * MAGNITUDES[0])])
     assert exact_after.mean[0] == pytest.approx(expected, abs=1e-6)
 
@@ -62,7 +62,7 @@ def test_update_from_queries():
 
 def test_update_from_transition():
     """Tests that reach raises the floor and a signal measures the limit once."""
-    updater = RangeOfMotionBeliefUpdater(VARIANT, QueryModel(effort_stddev=1e-6))
+    updater = RangeOfMotionBeliefUpdater(VARIANT, QueryModel(short_fall_stddev=1e-6))
     belief = _prior()
     start = _state([0.2, 0.0, 0.0])
     inside = _state([0.75, 0.0, 0.0])

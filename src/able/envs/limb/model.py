@@ -3,11 +3,13 @@
 The robot holds the person's limb and moves it to a goal configuration. Each action
 is a robot torque correction (on top of the torque that holds the system still),
 applied for action_repeat simulator steps. The hidden parameters theta scale the
-person's range of motion. They do not change the physics: moving the limb past the
-person's limit fails the task, and the person signals where it happened. As in
-kinder's environment, the task ends when the limb reaches the goal. A broken
-safety constraint, or the robot stopping (the STOP action) before the goal, fails
-the task. Either way the state stays fixed afterwards.
+person's active range of motion. While the robot moves the limb, the person relaxes:
+their joints hold up the limb and put stiff walls past their limits (see person.py),
+so theta changes the physics only past the limits. Moving the limb past the person's
+limit fails the task, and the person signals where it happened. As in kinder's
+environment, the task ends when the limb reaches the goal. A broken safety
+constraint, or the robot stopping (the STOP action) before the goal, fails the task.
+Either way the state stays fixed afterwards.
 """
 
 import dataclasses
@@ -111,7 +113,7 @@ class LimbModel(
         self._horizon = horizon
         self._sim: LimbSim | None = None
         self._sim_state: LimbState | None = None
-        self._queries = QuerySimulator(variant, query_model)
+        self._queries = QuerySimulator(variant, query_model, settings.person)
 
     @property
     def horizon(self) -> int:
@@ -174,6 +176,7 @@ class LimbModel(
             sim.restore(state.coupled)
         resting: Mapping[int, float] = dict(state.resting_penetration)
         limits = np.abs(self.variant.get_bounds(hidden_params))
+        person_limits = self.variant.get_joint_limits(hidden_params)
         magnitudes = self.variant.default_magnitudes
         max_reach = np.array(state.max_reach)
         signalled = list(state.signalled)
@@ -183,7 +186,7 @@ class LimbModel(
             if exceeds_robot_torque_limits(sim, commanded):
                 failure = "robot torque limits"
                 break
-            if self.torque_limits.are_exceeded(sim.advance(commanded)):
+            if self.torque_limits.are_exceeded(sim.advance(commanded, person_limits)):
                 failure = "human torque limits"
             failure = failure or get_robot_motion_violation(
                 sim, self.max_robot_velocity

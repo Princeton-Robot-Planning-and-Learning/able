@@ -1,8 +1,11 @@
 """Queries about the person's range of motion.
 
-The robot asks the person to push one motion toward a target near its limit. The
-person pushes with a constant effort, the end of their range resists, and where they
-stop is the response. Each query runs in its own PyBullet world with only the limb.
+The robot asks the person to move one motion toward a target near its limit. The
+person moves it with their own joint torques (see person.py) at a comfortable
+speed, toward the target or, if the target lies beyond their reach, to a random
+short fall before their limit. Where they stop is the response. Each query runs in
+its own PyBullet world with only the limb, without gravity, since the person holds
+up their own limb.
 """
 
 from dataclasses import dataclass
@@ -15,11 +18,12 @@ from numpy.typing import NDArray
 from pybullet_helpers.geometry import Pose
 
 from able.envs.limb.human import LimbVariant
+from able.envs.limb.person import PersonModel
 
 
 @dataclass(frozen=True)
 class LimbQuery:
-    """Push an active motion toward a target magnitude (rad)."""
+    """Move an active motion toward a target magnitude (rad)."""
 
     motion: int
     target: float
@@ -30,73 +34,65 @@ class QueryOutcome:
     """Where the person stopped, and why.
 
     The answer is the magnitude of the final joint angle. If reached_target, the
-    person reached the target before their limit. If not settled, the joint never
-    came to rest. A peak velocity at the joint's speed cap means the push was not
-    passive.
+    person reached the target before their limit; short_fall is how far short of
+    their limit they would stop. If not settled, the joint never came to rest. A
+    peak velocity at the joint's speed cap means the motion was not the person's
+    own.
     """
 
     motion: int
     target: float
     answer: float
     reached_target: bool
-    effort: float
+    short_fall: float
     settled: bool
     peak_velocity: float
 
 
 @dataclass(frozen=True)
 class QueryModel:
-    """How the person pushes and how the end of their range resists.
+    """How the person moves in a query.
 
-    Within zone_width of the limit, a spring of the given stiffness resists, and past
-    the limit a stiffer wall does. The effort is drawn from a normal distribution and
-    stays below stiffness * zone_width, so the person stops short of the limit. The
-    constants are placeholders.
+    The person stops a short fall before their limit, drawn from a normal
+    distribution truncated to (0, max_short_fall). They aim at the target or that
+    point, whichever comes first, and move their aim toward it at speed; the joint
+    follows the aim with the given stiffness and damping. The constants are
+    placeholders, chosen so that the short fall matches the earlier model, which
+    pushed with a constant effort against a spring near the limit.
     """
 
-    zone_width: float = 0.3
-    stiffness: float = 40.0
-    wall_stiffness: float = 400.0
-    effort_mean: float = 4.0
-    effort_stddev: float = 2.0
-    # Overdamps the spring; below about 8, the joint overshoots the limit.
-    joint_damping: float = 15.0
+    short_fall_mean: float = 0.2
+    short_fall_stddev: float = 0.05
+    max_short_fall: float = 0.3
+    stiffness: float = 50.0
+    damping: float = 10.0
+    speed: float = 0.5
     max_velocity: float = 2.0
     moving_velocity: float = 1e-2
     settle_velocity: float = 1e-3
     settle_steps: int = 100
-    max_steps: int = 150000
+    max_steps: int = 20000
 
     def __post_init__(self) -> None:
-        if self.effort_mean >= self.stiffness * self.zone_width:
-            raise ValueError("effort_mean must be below stiffness * zone_width")
+        if not 0.0 < self.short_fall_mean < self.max_short_fall:
+            raise ValueError("short_fall_mean must lie in (0, max_short_fall)")
 
     @property
     def short_fall(self) -> float:
         """The mean distance short of the limit where the person stops (rad)."""
-        return self.zone_width - self.effort_mean / self.stiffness
+        return self.short_fall_mean
 
     @property
     def noise_stddev(self) -> float:
         """The standard deviation of where the person stops (rad)."""
-        return self.effort_stddev / self.stiffness
+        return self.short_fall_stddev
 
-    def sample_effort(self, rng: np.random.Generator) -> float:
-        """One push's effort, redrawn until in (0, stiffness * zone_width)."""
-        ceiling = self.stiffness * self.zone_width
+    def sample_short_fall(self, rng: np.random.Generator) -> float:
+        """One query's short fall, redrawn until in (0, max_short_fall)."""
         while True:
-            effort = float(rng.normal(self.effort_mean, self.effort_stddev))
-            if 0.0 < effort < ceiling:
-                return effort
-
-    def get_restoring_torque(self, reach: float, limit: float) -> float:
-        """The end-of-range torque, where the person pushes in the positive
-        direction."""
-        if reach <= limit - self.zone_width:
-            return 0.0
-        if reach < limit:
-            return -self.stiffness * (reach - (limit - self.zone_width))
-        return -self.stiffness * self.zone_width - self.wall_stiffness * (reach - limit)
+            short_fall = float(rng.normal(self.short_fall_mean, self.short_fall_stddev))
+            if 0.0 < short_fall < self.max_short_fall:
+                return short_fall
 
 
 class QueryLimb:
@@ -107,10 +103,13 @@ class QueryLimb:
         variant: LimbVariant,
         theta: NDArray[np.float64],
         model: QueryModel = QueryModel(),
+        person: PersonModel = PersonModel(),
     ) -> None:
         self.variant = variant
         self.model = model
+        self.person = person
         self.limits = np.abs(variant.get_bounds(theta))
+        self.joint_limits = variant.get_joint_limits(theta)
         self.client = p.connect(p.DIRECT)
         p.setPhysicsEngineParameter(
             fixedTimeStep=PYBULLET_TIMESTEP, physicsClientId=self.client
@@ -134,7 +133,8 @@ class QueryLimb:
             physicsClientId=self.client,
         )
         for joint in joints:
-            # One combined call drops the damping.
+            # One combined call drops the damping. The person's torque damps the
+            # joint instead.
             p.changeDynamics(
                 self.limb.robot_id,
                 joint,
@@ -142,20 +142,23 @@ class QueryLimb:
                 physicsClientId=self.client,
             )
             p.changeDynamics(
-                self.limb.robot_id,
-                joint,
-                jointDamping=model.joint_damping,
-                physicsClientId=self.client,
+                self.limb.robot_id, joint, jointDamping=0.0, physicsClientId=self.client
             )
 
     def ask(self, query: LimbQuery, rng: np.random.Generator) -> QueryOutcome:
-        """Push from the neutral pose until the person stops or reaches the
-        target."""
+        """Move from the neutral pose until the person stops at their aim."""
         model, robot_id = self.model, self.limb.robot_id
-        joint = self.limb.arm_joints[self.variant.active_joints[query.motion]]
+        index = self.variant.active_joints[query.motion]
+        joint = self.limb.arm_joints[index]
         sign = self.variant.active_signs[query.motion]
         limit = float(self.limits[query.motion])
-        effort = model.sample_effort(rng)
+        short_fall = model.sample_short_fall(rng)
+        reached_target = query.target <= limit - short_fall
+        aim = query.target if reached_target else limit - short_fall
+        limits = (
+            self.joint_limits[0][index : index + 1],
+            self.joint_limits[1][index : index + 1],
+        )
 
         self.limb.set_joints(
             [0.0] * NUM_LIMB_JOINTS, joint_velocities=[0.0] * NUM_LIMB_JOINTS
@@ -174,23 +177,32 @@ class QueryLimb:
             robot_id, joint, p.VELOCITY_CONTROL, force=0.0, physicsClientId=self.client
         )
 
-        num_settled, peak, moving, reached_target = 0, 0.0, False, False
+        num_settled, peak, moving, intent = 0, 0.0, False, 0.0
+        step_size = model.speed * PYBULLET_TIMESTEP
         for _ in range(model.max_steps):
             position, velocity = p.getJointState(
                 robot_id, joint, physicsClientId=self.client
             )[:2]
-            reach, velocity = sign * position, sign * velocity
-            if reach >= query.target:
-                reached_target = True
-                break
-            peak = max(peak, abs(velocity))
-            moving = moving or abs(velocity) > model.moving_velocity
-            torque = effort + model.get_restoring_torque(reach, limit)
+            speed = abs(velocity)
+            peak = max(peak, speed)
+            moving = moving or speed > model.moving_velocity
+            # The person's aim moves toward where they want to stop.
+            intent = intent + float(np.clip(aim - intent, -step_size, step_size))
+            effort = model.stiffness * (sign * intent - position)
+            effort -= model.damping * velocity
+            torque = self.person.get_torque(
+                np.array([position]),
+                np.array([velocity]),
+                np.zeros(1),
+                limits,
+                self.variant.limb_name,
+                effort=np.array([effort]),
+            )
             p.setJointMotorControl2(
                 robot_id,
                 joint,
                 p.TORQUE_CONTROL,
-                force=sign * torque,
+                force=float(torque[0]),
                 physicsClientId=self.client,
             )
             p.stepSimulation(physicsClientId=self.client)
@@ -200,10 +212,11 @@ class QueryLimb:
                 p.resetJointState(
                     robot_id, other, 0.0, 0.0, physicsClientId=self.client
                 )
-            # Settling only counts once the joint has started moving.
+            # Settling only counts once the joint has started moving and the
+            # person's aim has arrived.
             num_settled = (
                 num_settled + 1
-                if moving and abs(velocity) < model.settle_velocity
+                if moving and intent == aim and speed < model.settle_velocity
                 else 0
             )
             if num_settled >= model.settle_steps:
@@ -215,7 +228,7 @@ class QueryLimb:
             target=query.target,
             answer=abs(final),
             reached_target=reached_target,
-            effort=effort,
+            short_fall=short_fall,
             settled=moving and num_settled >= model.settle_steps,
             peak_velocity=peak,
         )
@@ -230,9 +243,15 @@ class QuerySimulator:
     """Answers queries for one person at a time, rebuilding the limb when the
     person changes."""
 
-    def __init__(self, variant: LimbVariant, model: QueryModel = QueryModel()) -> None:
+    def __init__(
+        self,
+        variant: LimbVariant,
+        model: QueryModel = QueryModel(),
+        person: PersonModel = PersonModel(),
+    ) -> None:
         self.variant = variant
         self.model = model
+        self.person = person
         self._key: bytes | None = None
         self._limb: QueryLimb | None = None
 
@@ -243,7 +262,7 @@ class QuerySimulator:
         key = np.asarray(theta, dtype=np.float64).tobytes()
         if self._limb is None or key != self._key:
             self.close()
-            self._limb = QueryLimb(self.variant, theta, self.model)
+            self._limb = QueryLimb(self.variant, theta, self.model, self.person)
             self._key = key
         return self._limb.ask(query, rng)
 
