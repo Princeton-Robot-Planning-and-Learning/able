@@ -56,6 +56,9 @@ METRICS = [
     ("success", "Success rate"),
 ]
 TIMEOUT_METRIC = ("timed_out", "Timeout rate")
+# Environments whose rows also plot the planner's work per task, which does not
+# depend on the machine: limb's MPC rollouts.
+WORK_PANEL_ENVS = ("limb",)
 RATE_METRICS = ("success", "timed_out")
 
 CAPTION = "Lines show the mean over seeds; shaded bands show one standard error."
@@ -102,6 +105,18 @@ def _has_timeouts(df: pd.DataFrame) -> bool:
     return "timed_out" in df.columns
 
 
+def _get_env_panels(
+    env: str, env_df: pd.DataFrame, metrics: list[tuple[str, str]]
+) -> tuple[pd.DataFrame, list[tuple[str, str]]]:
+    """One environment's rows and panels: the shared metrics, plus the planner's
+    work per task in WORK_PANEL_ENVS when the runs record it."""
+    work = _get_planner_work(env, env_df) if env in WORK_PANEL_ENVS else None
+    if work is None:
+        return env_df, list(metrics)
+    label, values = work
+    return env_df.assign(planner_work=values), [*metrics, ("planner_work", label)]
+
+
 def _main(results_dir: Path, outfile: Path) -> None:
     all_df = combine_results_csvs(results_dir, "eval_results.csv")
     budget_envs = _get_budget_envs(all_df)
@@ -116,19 +131,23 @@ def _main(results_dir: Path, outfile: Path) -> None:
     envs = sorted(df["env"].unique())
     approaches = sorted(df["approach"].unique())
     colors = _get_colors(approaches)
+    panels = {env: _get_env_panels(env, df[df["env"] == env], metrics) for env in envs}
+    num_cols = max(len(env_metrics) for _, env_metrics in panels.values())
 
     fig, axes = plt.subplots(
         len(envs),
-        len(metrics),
-        figsize=(5.5 * len(metrics), 4.0 * len(envs)),
+        num_cols,
+        figsize=(5.5 * num_cols, 4.0 * len(envs)),
         squeeze=False,
     )
     for row, env in enumerate(envs):
-        env_df = df[df["env"] == env]
+        env_df, env_metrics = panels[env]
         num_seeds = env_df["seed"].nunique()
         # Every panel spans every cycle, so a cycle without results leaves a gap.
         cycles = np.sort(env_df["cycle"].unique())
-        for col, (metric, label) in enumerate(metrics):
+        for col in range(len(env_metrics), num_cols):
+            axes[row, col].axis("off")
+        for col, (metric, label) in enumerate(env_metrics):
             scale, unit = 1.0, ""
             if metric == "planning_wall_time":
                 scale, unit = _get_time_scale(env_df[metric])
