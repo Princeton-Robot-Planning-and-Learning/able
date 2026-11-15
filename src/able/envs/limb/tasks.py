@@ -174,7 +174,9 @@ class TaskBox:
     motion so far, rises a little with each task: the farthest of n goals lies
     about n * goal_lean / (n * goal_lean + 1) of the way. No goal lies at a limit,
     which would raise the floor to it in one execution. goal_lean = 1 and
-    max_goal_fraction = 1 make goals uniform, as starts are.
+    max_goal_fraction = 1 make goals uniform, as starts are. Where the robot
+    cannot hold the limb near a limit, few leaning goals are reachable; if none of
+    max_start_draws starts has one, the goal is drawn uniformly instead.
     """
 
     min_separation: float = 0.5
@@ -237,6 +239,19 @@ class LimbTaskDistribution(TaskDistribution[LimbTask]):
             self._sim = None
 
     def sample(self, rng: np.random.Generator) -> LimbTask:
+        """A task with a goal that leans toward the limits or, if no start draw
+        has one, a uniform goal."""
+        for draw_goal in (self.draw_limb_goal, self.draw_limb_configuration):
+            task = self._sample_with(draw_goal, rng)
+            if task is not None:
+                return task
+        raise RuntimeError("No reachable task found")
+
+    def _sample_with(
+        self,
+        draw_goal: Callable[[np.random.Generator], NDArray[np.float64]],
+        rng: np.random.Generator,
+    ) -> LimbTask | None:
         sim, box = self.sim, self._box
         assert self._grasp is not None
         for _ in range(box.max_start_draws):
@@ -246,14 +261,14 @@ class LimbTaskDistribution(TaskDistribution[LimbTask]):
             if start is None:
                 continue
             for _ in range(box.max_goal_draws):
-                limb_goal = self.draw_limb_goal(rng)
+                limb_goal = draw_goal(rng)
                 separation = sim.get_limb_error(limb_init, limb_goal)
                 if not box.min_separation <= separation <= box.max_separation:
                     continue
                 if self._can_carry(limb_init, limb_goal, start, rng):
                     initial_state = self._model.get_initial_state(start, limb_goal)
                     return LimbTask(initial_state=initial_state, goal=limb_goal)
-        raise RuntimeError("No reachable task found")
+        return None
 
     def _in_furniture(self, limb_positions: NDArray[np.float64]) -> bool:
         sim = self.sim
