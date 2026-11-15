@@ -400,7 +400,9 @@ class PDDLStreamParams:
     model proposes num_draws placements per item, requested or clutter, from
     get_place_features(). With "slots" placement, they rank the item's candidate
     slots; with "continuous", they are the placements tried first, anywhere on a
-    surface, before uniform samples. An untrained model proposes nothing.
+    surface, before uniform samples, and a requested item tries only the usable
+    ones, those the fewest particles reach first (edge_first). An untrained model
+    proposes nothing.
     """
 
     max_time: float = 300.0

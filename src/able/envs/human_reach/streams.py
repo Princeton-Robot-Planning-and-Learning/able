@@ -7,7 +7,8 @@ and grasp waypoints and unchecked base moves, which execution refines.
 Placements come from one of two streams. With "slots", items try the centers of a
 grid of slots on each surface, jittered, so a model can only rank the slots. With
 "continuous", items are placed anywhere on a surface: the model's draws are the
-placements, and uniform samples follow them.
+placements, and uniform samples follow them. A requested item tries only usable
+placements, those the fewest particles reach first (edge_first).
 """
 
 from collections import Counter
@@ -47,6 +48,9 @@ MAX_PLACE_POSE_ATTEMPTS = 100_000
 MAX_WITHIN_REACH_DRAWS = 1000
 # How placements are sampled; see the module docstring.
 PLACEMENTS = ("slots", "continuous")
+# Uniform placements a requested item draws at once, whose usable ones it tries in
+# edge_first's order.
+EDGE_FIRST_BATCH = 256
 
 
 @dataclass(eq=False)
@@ -197,6 +201,29 @@ def usable_probability(ctx: BedsideStreamContext, o: str, pose: Pose) -> float:
     return float(np.mean(m >= 0))
 
 
+def edge_first(
+    ctx: BedsideStreamContext, o: str, placements: list[Placement]
+) -> list[Placement]:
+    """The usable placements of `o`, those the fewest particles reach first.
+
+    Whether the person reaches an item rules out the particles that disagree. An
+    item that nearly every particle reaches rules out almost none if reached, and
+    the person nearly always reaches it, so the belief learns most from items near
+    its edge, just above 1 - delta (#163).
+    """
+    if not placements:
+        return []
+    points = np.array([ctx.sim.grasp_point(o, p.pose) for p in placements])
+    m = reach_margin(points[:, None], ctx.theta_particles[None], ctx.sim.shoulder)
+    probability = np.mean(m >= 0, axis=1)
+    return [
+        placements[k]
+        for k in np.argsort(probability, kind="stable")
+        if probability[k] >= 1 - ctx.delta
+        and placements[k].surface in ctx.bedside_surfaces
+    ]
+
+
 NOMINAL_HALF_HEIGHT = 0.04
 _CANDIDATE_CACHE: dict[tuple, list[tuple[str, NDArray]]] = {}
 
@@ -328,14 +355,28 @@ def sample_uniform_placement(ctx: BedsideStreamContext, o: str) -> Placement:
 
 def sample_continuous_place_pose(
     ctx: BedsideStreamContext, o: str
-) -> Iterator[tuple[Placement]]:
+) -> Iterator[tuple[Placement] | None]:
     """psi's draws for `o`, each snapped onto its nearest surface, then uniform
     samples over its surfaces (the bedside for requested items, every surface for
-    clutter)."""
-    for point in ctx.proposed_points(o):
-        yield (snap_placement(ctx, o, point),)
-    for _ in range(MAX_PLACE_POSE_ATTEMPTS):
-        yield (sample_uniform_placement(ctx, o),)
+    clutter).
+
+    A requested item tries only the usable ones in edge_first's order: psi's draws,
+    then each batch of EDGE_FIRST_BATCH uniform samples. A batch with none usable
+    yields None, no placement, so PDDLStream can go on.
+    """
+    draws = [snap_placement(ctx, o, point) for point in ctx.proposed_points(o)]
+    if o not in ctx.requested:
+        yield from ((p,) for p in draws)
+        for _ in range(MAX_PLACE_POSE_ATTEMPTS):
+            yield (sample_uniform_placement(ctx, o),)
+        return
+    yield from ((p,) for p in edge_first(ctx, o, draws))
+    for _ in range(MAX_PLACE_POSE_ATTEMPTS // EDGE_FIRST_BATCH):
+        batch = [sample_uniform_placement(ctx, o) for _ in range(EDGE_FIRST_BATCH)]
+        usable = edge_first(ctx, o, batch)
+        if not usable:
+            yield None
+        yield from ((p,) for p in usable)
 
 
 def sample_grasp(ctx: BedsideStreamContext, o: str) -> Iterator[tuple[Grasp]]:
