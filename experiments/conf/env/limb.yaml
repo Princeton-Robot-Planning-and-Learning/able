@@ -26,6 +26,11 @@ num_eval_tasks: 8
 budgets:
   sleep:
     max_iterations: 4
+  # Queries are off by default (information_gathering.max_iterations: 0). With
+  # one per cycle, the belief is learned within about 4 cycles and then stops
+  # moving; with one every 5 cycles, it keeps narrowing until about cycle 15
+  # (#162).
+  query_every: 5
   # Planning stops after 2000 MPC rollouts per task (iterations), which caps the
   # planner's work the same way on any machine and under any load. Without a
   # limit, planning from scratch took 1990 rollouts per task on average, and a

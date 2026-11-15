@@ -63,7 +63,7 @@ The robot holds a person's limb and moves it to a goal configuration with MPC, w
 python experiments/run_single_experiment.py env=limb approach=scratch
 ```
 
-As on the arm, the robot asks no queries by default (`budgets.information_gathering.max_iterations=0`): one settled query nearly pins that motion's range, so every approach would learn the range at once.
+As on the arm, the robot asks no queries by default (`budgets.information_gathering.max_iterations=0`). One settled query nearly pins that motion's range, so with one query per cycle the belief is learned within about 4 cycles and then stops moving. When queries are on, the robot asks only every 5 cycles (`budgets.query_every`), and the belief keeps narrowing until about cycle 15 (#162). Dreams still imagine a query in every cycle. `env.domain.query_model.short_fall_stddev` sets how far an answer may miss the person's limit, 0.05 rad by default; noisier answers, up to 0.1 rad, spread the learning out less.
 
 The person's joints are motors, as Sprout's are on hardware (`src/able/envs/limb/person.py`). While the robot moves the limb, the person relaxes: their joints hold up the limb and put stiff walls past their active range of motion, the range a query measures. In a query, the person moves the joint themselves and stops a short fall before their limit.
 
