@@ -82,6 +82,21 @@ def test_resample_only_some_parameters():
     assert np.array_equal(new.particles[:, 1], belief.particles[:, 1])
 
 
+def test_reweight_steps_through_a_sharp_likelihood():
+    """A likelihood sharper than the particles' spacing pins plain resampling to the
+    nearest particle, but reweighting in steps finds its peak."""
+    belief = _belief()
+
+    def log_likelihood(particles):
+        return -0.5 * ((particles[:, 0] - 0.3037) / 0.0005) ** 2
+
+    resampled = belief.resample(log_likelihood(belief.particles))
+    assert abs(resampled.mean[0] - 0.3037) > 0.002
+    new = belief.reweight(log_likelihood, dims=[0])
+    assert abs(new.mean[0] - 0.3037) < 0.0005 and new.std[0] < 0.002
+    assert np.array_equal(new.particles[:, 1], belief.particles[:, 1])
+
+
 def test_resample_without_finite_weights_keeps_the_belief():
     """If nothing explains the data, the belief is unchanged."""
     belief = _belief()

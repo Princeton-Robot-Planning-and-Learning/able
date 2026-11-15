@@ -1,6 +1,6 @@
 """A belief made of equally weighted particles of the hidden parameters."""
 
-from typing import Sequence
+from typing import Callable, Sequence
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -18,8 +18,8 @@ class ParticleBelief(Belief[NDArray[np.float64]]):
     onto a few values. Each parameter's noise is bandwidth times its standard
     deviation under the weights, and at least min_jitter times high - low, so the
     noise shrinks as the belief narrows. It widens the belief by a factor of
-    sqrt(1 + bandwidth**2) per update, so evidence fades over about
-    1 / bandwidth**2 updates. This keeps the belief from growing more confident
+    sqrt(1 + bandwidth**2) per resampling, so evidence fades over about
+    1 / bandwidth**2 resamplings. This keeps the belief from growing more confident
     than an imperfect likelihood warrants.
     """
 
@@ -110,8 +110,57 @@ class ParticleBelief(Belief[NDArray[np.float64]]):
             self._seed + 1,
         )
 
+    def reweight(
+        self,
+        log_likelihood: Callable[[NDArray[np.float64]], NDArray[np.float64]],
+        dims: Sequence[int] | None = None,
+        min_ess: float = 0.5,
+        max_steps: int = 20,
+    ) -> "ParticleBelief":
+        """Resamples by the likelihood in steps, each by the largest power of it that
+        keeps the effective sample size at least min_ess of the particles.
+
+        Each step's noise moves the particles before the next, so a sharp likelihood
+        narrows the belief gradually instead of onto the few particles nearest its peak.
+        dims is as in resample.
+        """
+        belief, remaining = self, 1.0
+        for step in range(max_steps):
+            log_weights = log_likelihood(belief.particles)
+            power = remaining
+            if step < max_steps - 1:
+                power = _tempering_power(log_weights, remaining, min_ess)
+            belief = belief.resample(power * log_weights, dims)
+            remaining -= power
+            if remaining <= 0.0:
+                break
+        return belief
+
     def __repr__(self) -> str:
         return (
             f"ParticleBelief({len(self._particles)} particles, "
             f"mean={self.mean.round(4).tolist()}, std={self.std.round(4).tolist()})"
         )
+
+
+def _tempering_power(
+    log_weights: NDArray[np.float64], most: float, min_ess: float
+) -> float:
+    """The largest power up to most at which the weights keep an effective sample size
+    of min_ess of the particles, or most if no power does."""
+    finite = log_weights[np.isfinite(log_weights)]
+    if len(finite) == 0:
+        return most
+    centered = finite - finite.max()
+
+    def ess(power: float) -> float:
+        weights = np.exp(power * centered)
+        return float(weights.sum() ** 2 / (weights**2).sum() / len(log_weights))
+
+    if ess(most) >= min_ess or ess(1e-9 * most) < min_ess:
+        return most
+    low, high = 1e-9 * most, most
+    for _ in range(40):
+        mid = 0.5 * (low + high)
+        low, high = (mid, high) if ess(mid) >= min_ess else (low, mid)
+    return low
