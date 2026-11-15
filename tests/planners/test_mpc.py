@@ -221,8 +221,8 @@ def _setup():
     distribution = domain.task_distribution
     assert isinstance(distribution, LimbTaskDistribution)
     # Sampled tasks hold the grasp along the line to the goal, so a goal 30% of
-    # the way is reachable, and fast MPC solves it in about 11 steps.
-    task = _with_goal(model, distribution.sample(np.random.default_rng(3)), 0.3)
+    # the way is reachable, and fast MPC solves it in about 10 steps.
+    task = _with_goal(model, distribution.sample(np.random.default_rng(20)), 0.3)
     planner = LimbMPCPlanner(model)
     yield domain, task, planner
     planner.close()
@@ -320,11 +320,11 @@ def test_the_start_raises_the_believed_limits(setup):
     reach = np.array(task.initial_state.max_reach)
     prior = RangeOfMotionPrior()
     # Every sample allows about 0.72 of each motion's range, short of the start's
-    # third motion.
+    # second motion.
     belief = RangeOfMotionBelief.from_prior(0.72, 0.005, prior.low, prior.high, 3)
-    assert reach[2] > 0.75
+    assert reach[1] > 0.75
     raised = _with_start_reach(belief, task.initial_state)
-    assert np.allclose(raised.floor, [prior.low, prior.low, reach[2]])
+    assert np.allclose(raised.floor, [prior.low, reach[1], prior.low])
     # Planning gets past the first step and runs out of its rollouts.
     budget = Budget(max_iterations=2 * FAST.config.sampling.num_rollouts)
     with pytest.raises(PlanningTimeout, match="rollouts") as failure:

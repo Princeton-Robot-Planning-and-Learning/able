@@ -10,6 +10,10 @@ env:
     # under the prior takes 50-250 s per task in this band.
     min_separation: 0.5
     max_separation: 0.8
+    # How far goals lean toward the person's limits: each active joint of a goal
+    # lies a Beta(goal_lean, 1) fraction of the way to its limit, short of it. 1 is
+    # uniform.
+    goal_lean: 4.0
     # The population the person is drawn from and the robot's initial belief:
     # each motion's scale of its normal range is N(0.9, 0.15) truncated to
     # [0.7, 1.2], with all four multiplied by the motion's entry of scales. For the
