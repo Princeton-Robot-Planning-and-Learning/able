@@ -24,8 +24,8 @@ class ProbeFloorGatherer(
     Each floor has one probe pose, searched for the belief's lowest possible
     friction. Each query is chosen under the belief updated with the earlier
     responses, and gathering stops early once every floor's standard deviation is
-    within min_std (about the resampling jitter). One iteration of the budget is one
-    query.
+    within min_std (about a tenth of the prior's). One iteration of the budget is
+    one query.
     """
 
     def __init__(

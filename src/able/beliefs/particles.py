@@ -11,6 +11,14 @@ class ParticleBelief(Belief[NDArray[np.float64]]):
 
     Resampling draws from the belief's own seed, so belief updaters stay
     deterministic and need no random stream.
+
+    Resampling adds Gaussian noise to the particles, so that they do not collapse
+    onto a few values. Each parameter's noise is bandwidth times its standard
+    deviation under the weights, and at least min_jitter times high - low, so the
+    noise shrinks as the belief narrows. It widens the belief by a factor of
+    sqrt(1 + bandwidth**2) per update, so evidence fades over about
+    1 / bandwidth**2 updates. This keeps the belief from growing more confident
+    than an imperfect likelihood warrants.
     """
 
     def __init__(
@@ -18,7 +26,8 @@ class ParticleBelief(Belief[NDArray[np.float64]]):
         particles: ArrayLike,
         low: ArrayLike,
         high: ArrayLike,
-        jitter: float = 0.02,
+        bandwidth: float = 0.1,
+        min_jitter: float = 0.001,
         seed: int = 0,
     ) -> None:
         particles = np.array(particles, dtype=np.float64)
@@ -27,7 +36,8 @@ class ParticleBelief(Belief[NDArray[np.float64]]):
         self._particles = particles
         self._low = np.array(low, dtype=np.float64)
         self._high = np.array(high, dtype=np.float64)
-        self._jitter = jitter  # resampling noise, as a fraction of high - low
+        self._bandwidth = bandwidth
+        self._min_jitter = min_jitter
         self._seed = seed
 
     @property
@@ -60,7 +70,7 @@ class ParticleBelief(Belief[NDArray[np.float64]]):
         return self._particles[rng.integers(len(self._particles))].copy()
 
     def resample(self, log_weights: NDArray[np.float64]) -> "ParticleBelief":
-        """Systematic resampling by the weights, plus jitter.
+        """Systematic resampling by the weights, plus noise.
 
         Returns this belief if no particle has a finite weight.
         """
@@ -74,10 +84,20 @@ class ParticleBelief(Belief[NDArray[np.float64]]):
         n = len(self._particles)
         positions = (rng.random() + np.arange(n)) / n
         index = np.searchsorted(np.cumsum(weights), positions).clip(max=n - 1)
-        span = self._high - self._low
-        noise = rng.normal(0.0, self._jitter, self._particles.shape) * span
-        new = np.clip(self._particles[index] + noise, self._low, self._high)
-        return ParticleBelief(new, self._low, self._high, self._jitter, self._seed + 1)
+        mean = weights @ self._particles
+        std = np.sqrt(weights @ (self._particles - mean) ** 2)
+        scale = np.maximum(
+            self._bandwidth * std, self._min_jitter * (self._high - self._low)
+        )
+        noise = rng.normal(0.0, 1.0, self._particles.shape) * scale
+        return ParticleBelief(
+            np.clip(self._particles[index] + noise, self._low, self._high),
+            self._low,
+            self._high,
+            self._bandwidth,
+            self._min_jitter,
+            self._seed + 1,
+        )
 
     def __repr__(self) -> str:
         return (
