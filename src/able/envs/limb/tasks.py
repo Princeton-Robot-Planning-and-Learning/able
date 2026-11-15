@@ -40,7 +40,7 @@ from able.envs.limb.constraints import (
 )
 from able.envs.limb.human import LimbVariant, RangeOfMotionPrior, get_variant
 from able.envs.limb.model import LimbModel, LimbState, LimbTask
-from able.envs.limb.query import LimbQuery, QueryOutcome
+from able.envs.limb.query import LimbQuery, QueryModel, QueryOutcome
 from able.envs.limb.sim import CoupledState, LimbSim, LimbSimSettings
 from able.envs.simulated import SimulatedEnvironment
 
@@ -354,17 +354,18 @@ def make_domain(
     prior: RangeOfMotionPrior = RangeOfMotionPrior(),
     true_theta: NDArray[np.float64] | None = None,
     settings: LimbSimSettings = LimbSimSettings(),
+    query_model: QueryModel = QueryModel(),
 ) -> LimbDomain:
     """A limb domain for the variant, with a person drawn from the prior unless
     true_theta is given. Tasks lie within the person's range, with start and goal
     min_separation to max_separation apart, and the robot's initial belief is the
-    prior."""
+    prior. The person answers queries as the query model says."""
     limb_variant: LimbVariant = get_variant(variant)
     num_motions = len(limb_variant.active_motions)
     rng = np.random.default_rng(seed)
     if true_theta is None:
         true_theta = prior.sample(num_motions, rng)
-    model = LimbModel(limb_variant, settings, horizon=horizon)
+    model = LimbModel(limb_variant, settings, horizon=horizon, query_model=query_model)
     return Domain(
         env_model=model,
         task_distribution=LimbTaskDistribution(

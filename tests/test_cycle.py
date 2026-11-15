@@ -56,22 +56,35 @@ class _CountingLearner(Learner[np.ndarray, RandomShootingParams]):
         return params
 
 
-def _make_robot(domain, learner=None):
+class _CountingGatherer(NullInformationGatherer):
+    """Counts the times it gathers and asks nothing."""
+
+    def __init__(self) -> None:
+        self.num_calls = 0
+
+    def gather(self, belief, env, budget, rng):
+        """Count the call and return no data."""
+        self.num_calls += 1
+        return super().gather(belief, env, budget, rng)
+
+
+def _make_robot(domain, learner=None, gatherer=None):
     return Robot(
         planner=RandomShootingPlanner(TwoLinkArmModel()),
         learner=NullLearner() if learner is None else learner,
         belief_updater=JointLimitBeliefUpdater(),
-        info_gatherer=NullInformationGatherer(),
+        info_gatherer=NullInformationGatherer() if gatherer is None else gatherer,
         initial_belief=domain.initial_belief,
     )
 
 
-def _budgets(num_executions: int | None) -> CycleBudgets:
+def _budgets(num_executions: int | None, query_every: int = 1) -> CycleBudgets:
     return CycleBudgets(
         sleep=Budget(),
         information_gathering=Budget(max_iterations=0),
         execution=Budget(max_iterations=num_executions),
         planning=Budget(),
+        query_every=query_every,
     )
 
 
@@ -237,6 +250,27 @@ def test_run_cycles_reports_each_cycle():
         assert result.execution_wall_time > 0
         assert result.evaluation_wall_time > 0
         assert result.cycle_wall_time >= sum(stage_times)
+
+
+def test_run_cycles_queries_every_few_cycles():
+    """Tests that the robot gathers information only in every query_every-th
+    cycle, starting with the first."""
+    domain = make_domain(seed=0, true_limits=TRUE_LIMITS)
+    gatherer = _CountingGatherer()
+    num_calls = []
+    run_cycles(
+        _make_robot(domain, gatherer=gatherer),
+        domain.real_env,
+        domain.task_distribution,
+        eval_tasks=[],
+        num_cycles=5,
+        budgets=_budgets(num_executions=1, query_every=2),
+        rng=np.random.default_rng(0),
+        on_cycle_end=lambda result: num_calls.append(gatherer.num_calls),
+    )
+    assert num_calls == [1, 1, 2, 2, 3]
+    with pytest.raises(ValueError):
+        _budgets(num_executions=1, query_every=0)
 
 
 def test_executed_tasks_do_not_depend_on_planning():

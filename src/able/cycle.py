@@ -82,13 +82,20 @@ class CycleBudgets:
     """Budgets for each phase of a cycle.
 
     One iteration of the execution budget is one task. The planning budget
-    applies to each executed task and each evaluation task.
+    applies to each executed task and each evaluation task. The robot gathers
+    information only in every query_every-th cycle, starting with the first, so
+    that what it learns from queries is spread over more cycles.
     """
 
     sleep: Budget
     information_gathering: Budget
     execution: Budget
     planning: Budget
+    query_every: int = 1
+
+    def __post_init__(self) -> None:
+        if self.query_every < 1:
+            raise ValueError("query_every must be at least 1")
 
 
 class _TimedPolicy(Policy[StateType, ActType]):
@@ -300,10 +307,11 @@ def run_cycles(
 ]:
     """Run the robot for a number of cycles.
 
-    In each cycle, the robot sleeps, asks queries and updates its belief with the
-    responses, and then executes tasks sampled from the task distribution,
-    updating its belief during execution. It is then evaluated on every
-    evaluation task under the resulting belief, which it has not slept on yet.
+    In each cycle, the robot sleeps, asks queries (only in every query_every-th
+    cycle of the budgets) and updates its belief with the responses, and then
+    executes tasks sampled from the task distribution, updating its belief during
+    execution. It is then evaluated on every evaluation task under the resulting
+    belief, which it has not slept on yet.
 
     Sleep, information gathering, task sampling, execution, and evaluation each
     draw from their own random stream. Robots that plan differently therefore
@@ -335,7 +343,11 @@ def run_cycles(
 
         recorder.start_stage(cycle, Stage.QUERIES)
         start_time = time.perf_counter()
-        data = robot.gather_information(env, budgets.information_gathering, gather_rng)
+        data: list[QueryResponse[QueryType, ResponseType]] = []
+        if cycle % budgets.query_every == 0:
+            data = robot.gather_information(
+                env, budgets.information_gathering, gather_rng
+            )
         robot.update_belief_from_queries(data)
         gathering_wall_time = time.perf_counter() - start_time
         recorder.record_queries(data, robot.belief)

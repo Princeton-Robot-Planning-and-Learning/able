@@ -363,7 +363,10 @@ def _make_limb_parts(
         model=default.model if model is None else model,
         seed=dataclasses.replace(default.seed, tolerance=seed_tolerance),
     )
-    belief_updater = RangeOfMotionBeliefUpdater(env_model.variant)
+    # The robot knows how noisy the person's answers are.
+    belief_updater = RangeOfMotionBeliefUpdater(
+        env_model.variant, env_model.query_model
+    )
     return (
         env_model,
         LimbMPCPlanner(env_model, params),

@@ -10,6 +10,12 @@ env:
     # under the prior takes 50-250 s per task in this band.
     min_separation: 0.5
     max_separation: 0.8
+    # In a query, the person stops short of their limit by a distance drawn
+    # from a normal distribution with this standard deviation (rad), which is
+    # how far an answer may miss. The robot's belief updater assumes the same.
+    query_model:
+      _target_: able.envs.limb.query.QueryModel
+      short_fall_stddev: 0.05
   # Instantiated with the domain's environment model, only when recording videos.
   renderer:
     _target_: able.rendering.limb.LimbRenderer

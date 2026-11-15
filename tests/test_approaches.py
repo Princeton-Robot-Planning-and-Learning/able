@@ -4,6 +4,7 @@ import dataclasses
 from unittest import mock
 
 import numpy as np
+import pytest
 
 from able.approaches import (
     get_cache_key_features,
@@ -29,11 +30,14 @@ from able.approaches import (
     make_scratch_robot,
 )
 from able.beliefs.interval import IntervalBelief
+from able.beliefs.range_of_motion import RangeOfMotionBelief
 from able.cycle import CycleBudgets, run_cycles
 from able.envs.base import FiniteTaskDistribution
 from able.envs.friction.tasks import make_domain as make_friction_domain
 from able.envs.human_reach.tasks import make_domain as make_reach_domain
+from able.envs.limb.human import RangeOfMotionPrior, get_variant
 from able.envs.limb.model import LimbTask
+from able.envs.limb.query import LimbQuery, QueryModel, QueryOutcome
 from able.envs.limb.tasks import LimbTaskDistribution
 from able.envs.limb.tasks import make_domain as make_limb_domain
 from able.envs.two_link_arm import make_domain
@@ -41,7 +45,7 @@ from able.models.exact_match_cache import ExactMatchCache
 from able.models.neural import MLPRegressor
 from able.planners.random_shooting import RandomShootingParams, get_plan_features
 from able.robot import Robot
-from able.structs import Budget
+from able.structs import Budget, QueryResponse
 
 TRUE_LIMITS = np.array([-1.2, 1.4, -2.0, 0.9])
 
@@ -258,6 +262,28 @@ def test_make_limb_scratch_robot():
     assert robot.belief is domain.initial_belief
     robot.sleep(Budget(max_iterations=1), np.random.default_rng(0))
     assert robot.planner_params is params
+
+
+def test_limb_robot_assumes_the_query_model():
+    """Tests that the limb robot weighs an answer with the noise of the person's
+    query model."""
+    domain = make_limb_domain(seed=0, query_model=QueryModel(short_fall_stddev=0.1))
+    robot = make_limb_scratch_robot(domain)
+    outcome = QueryOutcome(
+        motion=0,
+        target=3.0,
+        answer=2.5,
+        reached_target=False,
+        short_fall=0.2,
+        settled=True,
+        peak_velocity=0.5,
+    )
+    robot.update_belief_from_queries([QueryResponse(LimbQuery(0, 3.0), outcome)])
+    belief = robot.belief
+    assert isinstance(belief, RangeOfMotionBelief)
+    noise = 0.1 / get_variant("human-left-arm").default_magnitudes[0]
+    expected = (RangeOfMotionPrior().stddev ** -2 + noise**-2) ** -0.5
+    assert belief.stddev[0] == pytest.approx(expected)
 
 
 def _draw_once(distribution: LimbTaskDistribution) -> LimbTask:

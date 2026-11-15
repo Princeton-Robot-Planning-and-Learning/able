@@ -24,6 +24,9 @@ budgets:
   information_gathering:
     _target_: able.structs.Budget
     max_iterations: 0
+  # Queries are asked only in every query_every-th cycle, starting with the first.
+  # Dreams still imagine them in every cycle.
+  query_every: 1
   # One iteration is one executed task.
   execution:
     _target_: able.structs.Budget
