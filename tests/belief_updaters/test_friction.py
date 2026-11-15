@@ -5,7 +5,11 @@ import math
 import numpy as np
 import pytest
 
-from able.belief_updaters.friction import FrictionBeliefUpdater, push_log_likelihood
+from able.belief_updaters.friction import (
+    FrictionBeliefUpdater,
+    crossed_floors,
+    push_log_likelihood,
+)
 from able.beliefs.particles import ParticleBelief
 from able.envs.friction.layout import make_world
 from able.envs.friction.model import FrictionState
@@ -118,6 +122,22 @@ def test_three_probes_narrow_each_floor():
     assert np.all(belief.std < 0.3 * before.std)
     assert np.all(np.abs(belief.mean - frictions) < 0.2 * frictions)
     simulator.close()
+
+
+def test_pushes_resample_only_the_floors_they_cross():
+    """A push along blue leaves the other floors' particles as they were, and a push
+    from tan up into blue crosses both."""
+    belief = _prior()
+    record = _record((1.0, 3.4), Push(0.0, 0.5), 0.5, (1.45, 3.41))
+    assert crossed_floors(WORLD, record, belief.low) == [0]
+    posterior = FrictionBeliefUpdater(WORLD).update_from_transition(
+        belief, *_transition(record)[:1], record.push, _transition(record)[1]
+    )
+    assert isinstance(posterior, ParticleBelief)
+    assert np.array_equal(posterior.particles[:, 1:], belief.particles[:, 1:])
+    assert not np.array_equal(posterior.particles[:, 0], belief.particles[:, 0])
+    up = _record((1.0, 2.0), Push(math.pi / 2, 1.0), 1.0, (1.0, 3.5))
+    assert crossed_floors(WORLD, up, belief.low) == [0, 1]
 
 
 def test_steps_without_a_new_feasible_push_show_nothing():

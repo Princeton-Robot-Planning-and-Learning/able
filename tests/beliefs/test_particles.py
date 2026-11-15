@@ -72,6 +72,16 @@ def test_resample_onto_one_particle_keeps_some_spread():
     assert np.allclose(new.std, 0.001, rtol=0.2)
 
 
+def test_resample_only_some_parameters():
+    """Resampling the parameters the weights depend on leaves the others' particles as
+    they were."""
+    belief = _belief()
+    log_weights = -0.5 * ((belief.particles[:, 0] - 0.2) / 0.05) ** 2
+    new = belief.resample(log_weights, dims=[0])
+    assert abs(new.mean[0] - 0.2) < 0.05 and new.std[0] < belief.std[0]
+    assert np.array_equal(new.particles[:, 1], belief.particles[:, 1])
+
+
 def test_resample_without_finite_weights_keeps_the_belief():
     """If nothing explains the data, the belief is unchanged."""
     belief = _belief()

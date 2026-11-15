@@ -1,5 +1,7 @@
 """A belief made of equally weighted particles of the hidden parameters."""
 
+from typing import Sequence
+
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
@@ -69,8 +71,14 @@ class ParticleBelief(Belief[NDArray[np.float64]]):
         """Draw one particle."""
         return self._particles[rng.integers(len(self._particles))].copy()
 
-    def resample(self, log_weights: NDArray[np.float64]) -> "ParticleBelief":
+    def resample(
+        self, log_weights: NDArray[np.float64], dims: Sequence[int] | None = None
+    ) -> "ParticleBelief":
         """Systematic resampling by the weights, plus noise.
+
+        If dims is given, the weights depend on those parameters alone, and only they
+        are resampled. The others keep their particles, as if independent of them, so
+        that resampling for unrelated evidence does not narrow them.
 
         Returns this belief if no particle has a finite weight.
         """
@@ -84,14 +92,17 @@ class ParticleBelief(Belief[NDArray[np.float64]]):
         n = len(self._particles)
         positions = (rng.random() + np.arange(n)) / n
         index = np.searchsorted(np.cumsum(weights), positions).clip(max=n - 1)
-        mean = weights @ self._particles
-        std = np.sqrt(weights @ (self._particles - mean) ** 2)
-        scale = np.maximum(
-            self._bandwidth * std, self._min_jitter * (self._high - self._low)
-        )
-        noise = rng.normal(0.0, 1.0, self._particles.shape) * scale
+        cols = slice(None) if dims is None else list(dims)
+        old = self._particles[:, cols]
+        low, high = self._low[cols], self._high[cols]
+        mean = weights @ old
+        std = np.sqrt(weights @ (old - mean) ** 2)
+        scale = np.maximum(self._bandwidth * std, self._min_jitter * (high - low))
+        noise = rng.normal(0.0, 1.0, old.shape) * scale
+        new = self._particles.copy()
+        new[:, cols] = np.clip(old[index] + noise, low, high)
         return ParticleBelief(
-            np.clip(self._particles[index] + noise, self._low, self._high),
+            new,
             self._low,
             self._high,
             self._bandwidth,

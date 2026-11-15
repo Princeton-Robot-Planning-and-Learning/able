@@ -53,11 +53,31 @@ def push_log_likelihood(
     return out
 
 
+def crossed_floors(
+    world: PuckWorld, record: PushRecord, lowest: NDArray[np.float64]
+) -> list[int]:
+    """The floors under a push's slide, as far as the lowest frictions would carry it.
+
+    Every slide follows the same path and stops along it (see slide_many), so the push
+    says nothing about the other floors.
+    """
+    puck, angle = np.array(record.puck), record.push.angle
+    release = world.release_point(puck, angle)
+    station = world.push_station(puck, angle, record.push.stance)
+    robot = world.strike_end(station, puck, angle)
+    slide = world.slide(release, record.release_speed, angle, lowest, robot=robot)
+    floors = {world.surface_at(release)}
+    for a, b in zip(slide.path[:-1], slide.path[1:]):
+        for t in np.linspace(0.0, 1.0, int(np.linalg.norm(b - a) / 0.02) + 2):
+            floors.add(world.surface_at(a + t * (b - a)))
+    return sorted(floors - {-1})
+
+
 class FrictionBeliefUpdater(
     BeliefUpdater[FrictionState, Push, NDArray[np.float64], FrictionQuery, PushRecord]
 ):
     """Reweights friction particles by how well they explain each push, and
-    resamples.
+    resamples the floors the push crossed.
 
     A probe is a real push too, so queries and executed pushes share the push
     model. An infeasible push, or a step after the task ended, shows nothing.
@@ -92,4 +112,5 @@ class FrictionBeliefUpdater(
     ) -> ParticleBelief:
         assert isinstance(belief, ParticleBelief), "Need a ParticleBelief"
         log_weights = push_log_likelihood(self._world, belief.particles, record)
-        return belief.resample(log_weights)
+        floors = crossed_floors(self._world, record, belief.low)
+        return belief.resample(log_weights, floors)
