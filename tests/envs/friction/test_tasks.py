@@ -81,6 +81,36 @@ def test_tasks_vary_and_stay_within_reach(num_floors):
     assert start_floors == goal_floors == set(range(num_floors))
 
 
+def test_tasks_vary_and_stay_within_reach():
+    """Tasks start and end all over the maze, each with a pushable path between its
+    start and goal of the configured length, clear of the holes, with the robot clear of
+    the walls and the puck."""
+    domain = make_domain(seed=0, task_distances=(1.5, 3.5))
+    model, _, _, distribution = _get_parts(domain)
+    world = model.world
+    paths = PuckPushingModel(world)
+    phys = world.physics
+    rng = np.random.default_rng(1)
+    start_floors, goal_floors = set(), set()
+    for _ in range(100):
+        task = distribution.sample(rng)
+        state = task.initial_state
+        puck, robot = np.array(state.puck), np.array(state.robot)
+        distance = paths.distance_to_goal(puck, task.goal)
+        assert 1.5 - 1e-9 <= distance <= 3.5 + 1e-9
+        assert world.has_room(puck) and not world.in_goal(puck, task.goal)
+        gaps = np.linalg.norm(world.holes - puck, axis=1)
+        assert np.all(gaps > phys.hole_radius + phys.puck_radius)
+        goal_gaps = np.linalg.norm(world.holes - np.array(task.goal), axis=1)
+        assert np.all(goal_gaps > phys.hole_radius + phys.goal_radius)
+        assert world.robot_position_free(robot)
+        assert world.robot_clear_of_puck(robot, puck)
+        assert state.robot_pose == (*state.robot, 0.0)
+        start_floors.add(world.surface_at(puck))
+        goal_floors.add(world.surface_at(np.array(task.goal)))
+    assert start_floors == goal_floors == {0, 1, 2}
+
+
 def test_seeds_and_given_frictions():
     """Seeds draw different people, and given frictions override the prior."""
     frictions = [_get_parts(make_domain(seed=s))[1].hidden_params for s in range(3)]
