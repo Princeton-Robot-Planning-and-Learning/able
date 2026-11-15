@@ -134,3 +134,15 @@ def test_goals_lean_toward_the_limits(arm_domain):
     assert np.all(0.0 < starts) and np.all(starts < 1.0)
     assert np.all(0.0 < goals) and np.all(goals <= TaskBox().max_goal_fraction)
     assert goals.mean() > starts.mean() + 0.2
+
+
+def test_uniform_goals_when_no_goal_leans(domain, monkeypatch):
+    """Tests that a draw falls back to uniform goals when no start has a reachable
+    goal that leans toward the limits."""
+    distribution = domain.task_distribution
+    assert isinstance(distribution, LimbTaskDistribution)
+    monkeypatch.setattr(distribution, "_box", TaskBox(max_start_draws=30))
+    # Every leaning goal is too far from the start.
+    monkeypatch.setattr(distribution, "draw_limb_goal", lambda _: np.full(6, 100.0))
+    task = distribution.sample(np.random.default_rng(0))
+    assert np.all(np.abs(task.goal) < 10.0)
