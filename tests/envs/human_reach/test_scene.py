@@ -45,6 +45,19 @@ def test_reset_puts_requested_items_far_and_clutter_at_the_bedside(sim):
     assert not sim.goal_reached()
 
 
+def test_requested_items_stand_at_different_heights(sim):
+    """Requested items alternate between books and taller small items, so their
+    grasp points on one surface sit at different heights."""
+    sim.reset(seed=0)
+    (x0, x1), (y0, y1), _ = sim.config.bedside_regions["nightstand"]
+    xy = ((x0 + x1) / 2, (y0 + y1) / 2)
+    book, small = (
+        sim.grasp_point(name, sim.resting_pose(name, xy, "nightstand"))[2]
+        for name in ("req0", "req1")
+    )
+    assert small - book == pytest.approx(0.04)
+
+
 def test_reachable_items_and_obstruction(sim):
     """An item on the nightstand is reachable by a long reach, until clutter sits
     between it and the shoulder."""
