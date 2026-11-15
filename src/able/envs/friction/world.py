@@ -261,6 +261,19 @@ class SlideResult:
     distance: float = 0.0
 
 
+@dataclass
+class SlideBatch:
+    """Outcomes of slides that differ only in their frictions, one row each."""
+
+    stops: NDArray[np.float64]
+    distances: NDArray[np.float64]
+    # Heading of each slide's last straight segment, or the release heading if it
+    # has none.
+    headings: NDArray[np.float64]
+    # Hole each slide ended in, or -1.
+    holes: NDArray[np.int64]
+
+
 @dataclass(frozen=True)
 class StrikeEnd:
     """Robot rest pose after a strike (base disc, paddle face square to the push)."""
@@ -726,6 +739,125 @@ class PuckWorld:
         if not np.allclose(path[-1], point):
             path.append(point.copy())
         return SlideResult(point, path, hole=None, distance=total)
+
+    def slide_many(
+        self,
+        start: NDArray[np.float64],
+        speed: float,
+        angle: float,
+        frictions: NDArray[np.float64],
+        max_events: int = 1000,
+        robot: StrikeEnd | None = None,
+    ) -> "SlideBatch":
+        """slide() for each row of frictions, sharing the work.
+
+        A bounce turns the puck by the same amount at any speed, so every slide
+        follows the same path and stops somewhere along it. The path is traced once,
+        while any slide still moves.
+        """
+        phys = self.physics
+        h = self.puck_map.cell_size
+        frictions = np.asarray(frictions, dtype=np.float64)
+        num = len(frictions)
+        point = np.array(start, dtype=np.float64)
+        direction = np.array([math.cos(angle), math.sin(angle)])
+        batch = SlideBatch(
+            stops=np.tile(point, (num, 1)),
+            distances=np.zeros(num),
+            headings=np.full(num, float(angle)),
+            holes=np.full(num, -1, dtype=np.int64),
+        )
+        v = np.full(num, float(speed))
+        moving = v > 1e-6
+        # The path's last two corners: the start, then each bounce.
+        corner: NDArray[np.float64] = point.copy()
+        previous_corner: NDArray[np.float64] | None = None
+        total = 0.0
+
+        def finish(
+            rows: NDArray[np.bool_],
+            ends: NDArray[np.float64],
+            lengths: NDArray[np.float64] | float,
+            origin: NDArray[np.float64] | None,
+        ) -> None:
+            """End the slides in rows at ends (one point, or one per row), after
+            lengths, with the last segment from origin, as slide()'s path has it."""
+            ends = np.broadcast_to(ends, (int(rows.sum()), 2))
+            batch.stops[rows] = ends
+            batch.distances[rows] = lengths
+            if origin is not None:
+                last = ends - origin
+                long = np.linalg.norm(last, axis=1) > 1e-9
+                batch.headings[np.flatnonzero(rows)[long]] = np.arctan2(
+                    last[long, 1], last[long, 0]
+                )
+            moving[rows] = False
+
+        for _ in range(max_events):
+            if not moving.any():
+                break
+            probe = point + 1e-7 * direction
+            surface = self.surface_at(probe)
+            friction = frictions[:, surface] if surface >= 0 else frictions.max(axis=1)
+            decel = friction * GRAVITY
+            s_cell = math.inf
+            for axis in range(2):
+                d = direction[axis]
+                if abs(d) < 1e-12:
+                    continue
+                idx = math.floor(probe[axis] / h)
+                boundary = (idx + 1) * h if d > 0 else idx * h
+                s_cell = min(s_cell, (boundary - point[axis]) / d)
+            s_cell = max(s_cell, 0.0)
+            s_wall, axes = self._ray_hit(self.walls, point, direction, phys.puck_radius)
+            s_robot, normal = (
+                self._robot_hit(robot, point, direction)
+                if robot is not None
+                else (math.inf, None)
+            )
+            step = min(s_cell, s_wall, s_robot)
+            s_stop = np.full(num, math.inf)
+            s_stop[moving] = v[moving] ** 2 / (2.0 * decel[moving])
+            hole = self._segment_hole(point, point + step * direction, phys.hole_radius)
+            if hole is not None:
+                index, frac = hole
+                entry = frac * step
+                falls = moving & (entry <= np.minimum(s_stop, step))
+                if falls.any():
+                    batch.holes[falls] = index
+                    finish(falls, point + entry * direction, total + entry, corner)
+            stopping = moving & (s_stop <= step)
+            if stopping.any():
+                lengths = s_stop[stopping]
+                ends = point + lengths[:, None] * direction
+                finish(stopping, ends, total + lengths, corner)
+            v[moving] = np.sqrt(
+                np.maximum(v[moving] ** 2 - 2.0 * decel[moving] * step, 0.0)
+            )
+            point = point + step * direction
+            total += step
+            if s_wall == step < s_cell + 1e-12:
+                turned = np.where(
+                    axes > 0, -phys.wall_restitution * direction, direction
+                )
+            elif s_robot == step < s_cell + 1e-12:
+                assert normal is not None
+                bounce = (1.0 + phys.wall_restitution) * float(direction @ normal)
+                turned = direction - bounce * normal
+            else:
+                continue
+            factor = float(np.linalg.norm(turned))
+            v[moving] *= factor
+            previous_corner, corner = corner, point.copy()
+            halted = moving & (v <= 1e-6)
+            if halted.any():
+                finish(halted, point, total, previous_corner)
+            if not moving.any():
+                break
+            direction = turned / factor
+        if moving.any():
+            finish(moving.copy(), point, total, corner)
+        return batch
 
     # ------------------------------------------------------------------ pushes
 

@@ -15,6 +15,7 @@ from able.structs import (
     PlannerParamsType,
     StateType,
     TaskType,
+    Trajectory,
 )
 
 
@@ -83,3 +84,20 @@ class TrainablePlanner(
     ) -> Dataset:
         """Training rows from a policy that plan() returned for the task under the
         belief."""
+
+    def get_rollout_examples(
+        self,
+        task: TaskType,
+        belief: Belief[HiddenParamsType],
+        policy: Policy[StateType, ActType],
+        trajectory: Trajectory[StateType, ActType],
+        solved: bool,
+    ) -> Dataset:
+        """Training rows from a policy that plan() returned for the task under the
+        belief, after it ran for the trajectory in an environment simulated from
+        the belief: by default the plan's rows if the trajectory solved the task,
+        and none otherwise."""
+        del trajectory  # unused because the plan's rows describe the trajectory
+        if not solved:
+            return Dataset.empty()
+        return self.get_plan_examples(task, belief, policy)

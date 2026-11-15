@@ -29,9 +29,10 @@ class RolloutModelLearner(
 
     A closed-loop policy plans while it runs, so plan() alone holds only its first
     decision. Each training task's policy therefore runs in an environment
-    simulated with hidden parameters sampled from the training belief, and only
-    episodes that complete the task give training rows, which describe the
-    training belief. The learner still never sees the real environment.
+    simulated with hidden parameters sampled from the training belief, and the
+    planner turns the episode into training rows, which describe the training
+    belief. By default only episodes that complete the task give rows. The learner
+    still never sees the real environment.
     """
 
     def __init__(
@@ -63,8 +64,8 @@ class RolloutModelLearner(
         rng: np.random.Generator,
     ) -> Dataset:
         """Run the plans for the training tasks, made with the planner's training
-        parameters, in simulated environments and return the rows of the ones that
-        complete their task."""
+        parameters, in simulated environments and return the planner's rows for
+        each episode."""
         params = self._planner.get_training_params(params)
         examples = []
         for task in self._get_training_tasks(rng):
@@ -76,6 +77,10 @@ class RolloutModelLearner(
                 trajectory = run_episode(env, task, policy)
             except PlanningFailure:
                 continue
-            if env.check_goal(task, trajectory.states[-1]):
-                examples.append(self._planner.get_plan_examples(task, belief, policy))
+            solved = env.check_goal(task, trajectory.states[-1])
+            examples.append(
+                self._planner.get_rollout_examples(
+                    task, belief, policy, trajectory, solved
+                )
+            )
         return Dataset.concatenate(examples)

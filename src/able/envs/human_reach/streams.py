@@ -164,6 +164,32 @@ def _scratch_pose(sim: ObjectCentricBedsideStocking3DEnv, name: str, pose: Pose)
         set_pose(body, original, sim.physics_client_id)
 
 
+# Far from the scene: where _alone() puts every body it moves out of the way.
+_AWAY = (50.0, 50.0, -50.0)
+
+
+@contextmanager
+def _alone(sim: ObjectCentricBedsideStocking3DEnv, keep: str) -> Iterator[None]:
+    """Every item but `keep`, and the robot, out of the scene.
+
+    The ray tests of segment_blocked report only the first body each ray hits. In
+    the planner's simulator, the other items sit where the scene starts and the
+    robot where the last IK test left it, not where the plan puts them, so either
+    could hide `keep`.
+    """
+    away = Pose(_AWAY)
+    with ExitStack() as stack:
+        for name in sim.requested_objects + sim.clutter_objects:
+            if name != keep:
+                stack.enter_context(_scratch_pose(sim, name, away))
+        base = sim.robot.get_base()
+        sim.robot.set_base(SE2Pose(_AWAY[0], _AWAY[1], 0.0))
+        try:
+            yield
+        finally:
+            sim.robot.set_base(base)
+
+
 def usable_probability(ctx: BedsideStreamContext, o: str, pose: Pose) -> float:
     """P_b(m(grasp point, theta) >= 0) under the particle belief."""
     point = ctx.sim.grasp_point(o, pose)
@@ -428,12 +454,13 @@ def test_usable(ctx: BedsideStreamContext, o: str, p: Placement) -> bool:
 def test_clear(
     ctx: BedsideStreamContext, o: str, p: Placement, o2: str, p2: Placement
 ) -> bool:
-    """Whether `o2` at `p2` leaves the path from the shoulder to `o` at `p` clear."""
+    """Whether `o2` at `p2` leaves the path from the shoulder to `o` at `p` clear,
+    whatever the other items and the robot are doing."""
     if o == o2:
         return True
     sim = ctx.sim
     other = sim._object_name_to_pybullet_id(o2)  # pylint: disable=protected-access
-    with _scratch_pose(sim, o2, p2.pose):
+    with _alone(sim, o2), _scratch_pose(sim, o2, p2.pose):
         return not segment_blocked(
             sim.shoulder,
             sim.grasp_point(o, p.pose),

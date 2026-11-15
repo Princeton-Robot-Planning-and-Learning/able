@@ -91,3 +91,41 @@ def test_limb_directed_torque(sim):
         sim.advance_corrected(sim.get_limb_directed_torque(goal, gain=2.0))
     assert sim.get_limb_error(sim.capture().limb_positions, goal) < initial
     sim.restore(start)
+
+
+def test_person_holds_up_their_limb(sim):
+    """Tests that without the grasp, the person holds their limb still against
+    gravity, where a limp limb would fall."""
+    start = sim.capture()
+    with sim.saved_state():
+        sim.release_grasp()
+        assert _hold_still(sim, 200) < 0.02
+    sim.restore(start)
+
+
+def test_walls_push_back_and_load_the_person(sim):
+    """Tests that the person's walls act only past their limits, and that holding
+    the limb past them counts as the robot loading the person's joints."""
+    start = sim.capture()
+    positions = np.array(start.limb_positions)
+    wide = (positions - 1.0, positions + 1.0)
+    torque = np.array([2.0, -1.0, 0.5, 0.0, 0.3, 0.0, 0.0])
+    trajectories = []
+    for limits in (None, wide):
+        sim.restore(start)
+        for _ in range(50):
+            torques = sim.advance_corrected(torque, limits)
+            assert not torques.resistance.any()
+        trajectories.append(np.array(sim.capture().limb_positions))
+    assert np.allclose(trajectories[0], trajectories[1])
+
+    sim.restore(start)
+    narrow = (positions - 1.0, positions + 1.0)
+    narrow[1][3] = positions[3] - 0.05
+    torques = sim.advance_corrected(np.zeros(7), narrow)
+    assert torques.resistance[3] == pytest.approx(-20.0, abs=1.0)
+    assert torques.robot[3] == pytest.approx(20.0, abs=5.0)
+    for _ in range(100):
+        sim.advance_corrected(np.zeros(7), narrow)
+    assert sim.capture().limb_positions[3] < positions[3]
+    sim.restore(start)

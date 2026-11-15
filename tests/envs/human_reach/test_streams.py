@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from pybullet_helpers.geometry import Pose, set_pose
 
 from able.envs.human_reach import streams
 from able.envs.human_reach.scene import ObjectCentricBedsideStocking3DEnv, reach_margin
@@ -46,6 +47,31 @@ def test_candidate_slots_and_usable_poses(sim):
     probability = streams.usable_probability(ctx, "req0", pose)
     reached = reach_margin(sim.grasp_point("req0", pose), THETA, sim.shoulder) >= 0
     assert probability == (0.9 if reached else 0.0)
+
+
+def test_clear_sees_only_the_item_it_tests(sim):
+    """An item in front of req0 blocks it, even when another body stands on the
+    path from the shoulder in the planner's simulator.
+
+    The rays report only the first body they hit, and in the planner's simulator
+    the other items sit where the scene starts and the robot where the last IK test
+    left it, not where the plan puts them.
+    """
+    obs, _ = sim.reset(seed=0)
+    ctx = build_stream_context(sim, obs, theta_particles=THETA[None])
+    target = ctx.slot_points("req0")[0]
+    req0 = streams.Placement("req0", Pose(tuple(target)), "nightstand")
+    toward = sim.shoulder[:2] - target[:2]
+    in_front = target + np.append(0.08 * toward / np.linalg.norm(toward), 0.0)
+    blocker = streams.Placement("req1", Pose(tuple(in_front)), "nightstand")
+    assert not streams.test_clear(ctx, "req0", req0, "req1", blocker)
+    # req0's own body, left on the path nearer the shoulder, does not hide req1.
+    grasp = sim.grasp_point("req0", req0.pose)
+    body = sim._object_name_to_pybullet_id("req0")  # pylint: disable=protected-access
+    on_path = Pose(tuple(sim.shoulder + 0.3 * (grasp - sim.shoulder)))
+    set_pose(body, on_path, sim.physics_client_id)
+    assert not streams.test_clear(ctx, "req0", req0, "req1", blocker)
+    sim.reset(seed=0)
 
 
 def test_place_order_follows_the_proposal(sim):

@@ -2,8 +2,10 @@
 
 LimbSim wraps kinder's limb repositioning environment. The robot grasps the limb with
 a weld, and actions are torque corrections on top of the torque that holds the
-coupled system still. The limb's joint limits are the widest range the prior allows,
-so the person's true range of motion never changes the physics.
+coupled system still. The person holds up their own limb with their joint torques
+(see person.py), so the robot holds only its arm. The limb's joint limits are the
+widest range the prior allows; the person's range of motion enters the physics only
+through the walls their joints put past it, when a step is given the limits.
 """
 
 import dataclasses
@@ -23,6 +25,7 @@ from numpy.typing import NDArray
 from pybullet_helpers.geometry import Pose, SE2Pose, matrix_from_quat
 
 from able.envs.limb.human import LimbVariant
+from able.envs.limb.person import JointLimits, PersonModel
 
 # Kinova Gen3 joint torque limits (N m); the environment ships with +-1.
 ROBOT_TORQUE_LIMITS = (200.0, 200.0, 200.0, 200.0, 100.0, 100.0, 100.0)
@@ -37,7 +40,8 @@ TORQUE_FEASIBILITY_MARGIN = 1.0
 
 @dataclass(frozen=True)
 class LimbSimSettings:
-    """Physics settings. The body mass is the 50th percentile adult female."""
+    """Physics settings. The body mass is the 50th percentile adult female, and the
+    person's joints act as the person model says."""
 
     gravity: tuple[float, float, float] = (0.0, 0.0, -9.81)
     muscle_tone: str = "none"
@@ -46,6 +50,7 @@ class LimbSimSettings:
     body_mass_kg: float = 62.5
     # The widest range-of-motion scale, used as the limb's physical limits.
     envelope_scale: float = 1.2
+    person: PersonModel = PersonModel()
 
 
 @dataclass(frozen=True)
@@ -72,16 +77,21 @@ class CoupledState:
 
 @dataclass(frozen=True)
 class HumanTorques:
-    """The torque on the limb's joints over one step, and the static loads in it."""
+    """The torque on the limb's joints over one step, the static loads in it, and
+    the person's resistance: their joint torque beyond holding up the limb, such as
+    the walls past their limits."""
 
     total: NDArray[np.float64]
     tone: NDArray[np.float64]
     gravity: NDArray[np.float64]
+    resistance: NDArray[np.float64]
 
     @property
     def robot(self) -> NDArray[np.float64]:
-        """The torque the motion adds over the static load."""
-        return self.total - self.gravity
+        """The torque the robot adds over the static load. Where the robot pushes
+        against the person's resistance, it loads the joint by that much even if
+        the limb stays still."""
+        return self.total - self.gravity - self.resistance
 
 
 class LimbSim:
@@ -322,27 +332,44 @@ class LimbSim:
 
     # Torques and stepping.
 
-    def advance(self, torque: NDArray[np.float64]) -> HumanTorques:
-        """Step once under the robot torque, clipped to the limits, and return the
-        torque on the limb."""
+    def advance(
+        self, torque: NDArray[np.float64], person_limits: JointLimits | None = None
+    ) -> HumanTorques:
+        """Step once under the robot torque, clipped to the limits, with the
+        person's joint torque, and return the torque on the limb. The person's
+        joints put walls past person_limits, if given."""
         env = self.env
         space = env.torque_action_space
         positions, velocities = self._get_limb_state()
         tone = np.asarray(env.limb.get_muscle_tone_torque(), dtype=np.float64)
         gravity = self._get_gravity_torque(env.limb)
+        person = self.settings.person
+        limb_name = self.variant.limb_name
+        person_torque = person.get_torque(
+            np.asarray(positions),
+            np.asarray(velocities),
+            gravity,
+            person_limits,
+            limb_name,
+        )
         # The environment adds muscle tone itself.
         clipped = list(np.clip(torque, space.low, space.high))
-        env._apply_torques(clipped)  # pylint: disable=protected-access
+        # pylint: disable-next=protected-access
+        env._apply_torques(clipped, extra_limb_torque=list(person_torque))
         _, new_velocities = self._get_limb_state()
         accelerations = (np.array(new_velocities) - np.array(velocities)) / self.dt
         total = self._inverse_dynamics(
             env.limb.robot_id, positions, velocities, list(accelerations)
         )
-        return HumanTorques(total=total, tone=tone, gravity=gravity)
+        resistance = person_torque - person.get_support_torque(gravity, limb_name)
+        return HumanTorques(
+            total=total, tone=tone, gravity=gravity, resistance=resistance
+        )
 
     def get_hold_torque(self) -> NDArray[np.float64]:
         """The robot torque that holds the coupled system still: the arm's weight
-        plus the limb's, clipped to the limits."""
+        plus whatever of the limb's the person does not hold, clipped to the
+        limits."""
         space = self.env.torque_action_space
         coupling = np.clip(self._get_limb_coupling_torque(), space.low, space.high)
         return self._get_arm_gravity_torque() + coupling
@@ -353,17 +380,24 @@ class LimbSim:
         """The correction plus the hold torque: what the robot is asked for."""
         return np.asarray(correction, dtype=np.float64) + self.get_hold_torque()
 
-    def advance_corrected(self, correction: NDArray[np.float64]) -> HumanTorques:
+    def advance_corrected(
+        self,
+        correction: NDArray[np.float64],
+        person_limits: JointLimits | None = None,
+    ) -> HumanTorques:
         """Step once under the correction on top of the hold torque."""
-        return self.advance(self.get_commanded_torque(correction))
+        return self.advance(self.get_commanded_torque(correction), person_limits)
 
     def get_control_saturation(self) -> float:
         """The torque needed to hold still as a fraction of the robot's limits,
-        less a margin; infinite near a singular grasp."""
+        less a margin; infinite near a singular grasp. The robot carries the limb's
+        weight here, so it can hold the limb if the person lets go."""
         limb_jacobian = self._get_tool_jacobian(self.env.limb)
         if np.linalg.svd(limb_jacobian, compute_uv=False)[-1] < SINGULARITY_THRESHOLD:
             return float("inf")
-        hold = self._get_arm_gravity_torque() + self._get_limb_coupling_torque()
+        hold = self._get_arm_gravity_torque() + self._get_limb_coupling_torque(
+            supported=False
+        )
         if not hold.any():
             return 0.0
         space = self.env.torque_action_space
@@ -430,10 +464,15 @@ class LimbSim:
             return np.zeros(NUM_ROBOT_JOINTS)
         return self._get_gravity_torque(self.env.robot.arm)[:NUM_ROBOT_JOINTS]
 
-    def _get_limb_coupling_torque(self) -> NDArray[np.float64]:
-        """The robot torque that carries the limb's weight, net of muscle tone."""
+    def _get_limb_coupling_torque(self, supported: bool = True) -> NDArray[np.float64]:
+        """The robot torque that carries the limb's weight, net of muscle tone and,
+        if supported, of the person holding up their own limb."""
         tone = np.asarray(self.env.limb.get_muscle_tone_torque(), dtype=np.float64)
-        load = self._get_gravity_torque(self.env.limb) - tone
+        gravity = self._get_gravity_torque(self.env.limb)
+        load = gravity - tone
+        if supported:
+            person = self.settings.person
+            load = load - person.get_support_torque(gravity, self.variant.limb_name)
         return self._get_robot_torque_for_limb_load(load)
 
     def _get_tool_jacobian(self, body: Any) -> NDArray[np.float64]:

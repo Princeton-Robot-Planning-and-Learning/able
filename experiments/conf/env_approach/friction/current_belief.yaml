@@ -1,10 +1,22 @@
 _target_: able.approaches.make_friction_current_belief_robot
 # Training tasks rolled out under each training belief.
 num_training_tasks: 1
-# POMCPOW simulations per push at evaluation and execution, and the search
-# depth in pushes.
-num_sims: 5
+# Most POMCPOW simulations per push at evaluation and execution, and the
+# search depth in pushes.
+num_sims: 100
 max_depth: 8
+# A push's search may stop before num_sims: from min_sims on, every check_every
+# simulations, it stops if the most visited push's lower confidence bound (z
+# standard errors) is at least every other push's upper bound minus epsilon, or
+# at least the value model's estimate for the root minus aspiration, where the
+# model has enough data there.
+early_stop:
+  _target_: able.planners.pomcpow.EarlyStopConfig
+  min_sims: 10
+  check_every: 5
+  epsilon: 1.0
+  z: 2.0
+  aspiration: 3.0
 # Simulations per push when rolling out training tasks while sleeping. Searching
 # harder while sleeping gives the model better pushes to learn.
 training_num_sims: 100
@@ -14,3 +26,11 @@ model:
   width: 128
   depth: 3
   num_steps: 4000
+# Corrects the leaf values with the returns of the rollouts while sleeping, by
+# kernel regression on the puck, pushes left, and the belief's mean and standard
+# deviation, with these bandwidths. Where the data are sparse, the correction falls
+# back to its mean over all rollouts, with the weight of prior_weight rollouts.
+value_model:
+  _target_: able.models.kernel_regression.KernelRegressor
+  bandwidths: [0.25, 0.25, 2.0, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03]
+  prior_weight: 2.0

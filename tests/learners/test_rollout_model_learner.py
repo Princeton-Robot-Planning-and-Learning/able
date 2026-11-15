@@ -82,3 +82,40 @@ def test_only_completed_rollouts_give_rows():
     for policy in planner.policies:
         with pytest.raises(PlanningFailure):
             policy.get_action(np.zeros(1))
+
+
+class _AllRolloutsPlanner(_StraightPlanner):
+    """Gives a row for every rollout, recording whether it solved its task."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.rollouts: list = []
+
+    def get_rollout_examples(self, task, belief, policy, trajectory, solved):
+        self.rollouts.append((task, len(trajectory.actions), solved))
+        return self.get_plan_examples(task, belief, policy)
+
+
+def test_the_planner_can_take_rows_from_every_rollout():
+    """Every rollout goes to the planner with its trajectory and whether it solved
+    its task."""
+    planner = _AllRolloutsPlanner()
+    learner: RolloutModelLearner = RolloutModelLearner(
+        planner,
+        FiniteTaskDistribution([REACHABLE, BLOCKED]),
+        CurrentBeliefSource(),
+        Budget(),
+        WallModel(),
+    )
+    learner.learn(
+        BELIEF,
+        planner.get_default_params(),
+        Budget(max_iterations=1),
+        np.random.default_rng(0),
+    )
+    assert [(t, s) for t, _, s in planner.rollouts] == [
+        (REACHABLE, True),
+        (BLOCKED, False),
+    ]
+    assert all(steps > 0 for _, steps, _ in planner.rollouts)
+    assert len(learner.dataset) == 2

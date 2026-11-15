@@ -56,6 +56,18 @@ def test_steps_are_deterministic(model, start):
     assert not np.allclose(first.limb_positions, state.limb_positions)
 
 
+def test_range_changes_the_physics_only_past_it(model, start):
+    """Tests that two people whose ranges cover the motion move the same way."""
+    rng = np.random.default_rng(0)
+    state = _make_task(model, start, 0.5).initial_state
+    action = np.array([1.0, -1.0, 0.5, 0.0, 0.2, 0.0, 0.0])
+    narrow, wide = THETA, 1.15 * THETA
+    first = model.sample_next_state(state, action, narrow, rng)
+    second = model.sample_next_state(state, action, wide, rng)
+    assert not first.violated
+    assert np.allclose(first.limb_positions, second.limb_positions)
+
+
 def test_reaching_the_goal_ends_the_task(model, start):
     """Tests that the state stays fixed once the limb reaches the goal, which
     completes the task."""

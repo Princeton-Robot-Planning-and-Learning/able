@@ -1,4 +1,13 @@
 _target_: able.approaches.make_friction_scratch_robot
-# POMCPOW simulations per push, and the search depth in pushes.
-num_sims: 5
+# Most POMCPOW simulations per push, and the search depth in pushes.
+num_sims: 100
 max_depth: 8
+# A push's search may stop before num_sims: from min_sims on, every check_every
+# simulations, it stops if the most visited push's lower confidence bound (z
+# standard errors) is at least every other push's upper bound minus epsilon.
+early_stop:
+  _target_: able.planners.pomcpow.EarlyStopConfig
+  min_sims: 10
+  check_every: 5
+  epsilon: 1.0
+  z: 2.0
