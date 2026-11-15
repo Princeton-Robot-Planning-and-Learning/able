@@ -405,7 +405,7 @@ class PDDLStreamParams:
 
     max_time: float = 300.0
     num_particles: int = 256
-    delta: float = 0.02
+    delta: float = 0.1
     # The most a solve may grow this process's resident memory (GB), or None.
     max_memory_gb: float | None = None
     # The share of the time limit and of the stream calls the model-guided try may
