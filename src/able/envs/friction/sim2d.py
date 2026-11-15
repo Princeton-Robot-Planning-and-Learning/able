@@ -162,6 +162,8 @@ class ObjectCentricDynPuckPushing2DEnv(
         self.world = PuckWorld(puck_map, config.physics)
         # Puck (x, y) and robot (x, y, heading) at reset.
         self._start = (puck_map.puck_start, (*puck_map.robot_start, 0.0))
+        # Center of the goal circle.
+        self._goal: tuple[float, float] = puck_map.goal
         super().__init__(config, **kwargs)
         self._frictions: tuple[float, ...] = tuple(
             float(f) for f in config.friction_prior.mean
@@ -259,8 +261,8 @@ class ObjectCentricDynPuckPushing2DEnv(
         )
         goal = Object("goal", GoalMarkerType)
         state[goal] = _circle_features(
-            float(self.world.goal[0]),
-            float(self.world.goal[1]),
+            float(self._goal[0]),
+            float(self._goal[1]),
             phys.goal_radius,
             GOAL_RGB,
             ZOrder.SURFACE,
@@ -429,13 +431,15 @@ class ObjectCentricDynPuckPushing2DEnv(
     def reset(
         self, *, seed: int | None = None, options: dict | None = None
     ) -> tuple[ObjectCentricState, dict]:
-        """Reset; `options` may fix "frictions", and the "puck" (x, y) and "robot"
-        (x, y, heading) start."""
+        """Reset; `options` may fix "frictions", the "puck" (x, y) and "robot"
+        (x, y, heading) start, and the "goal" (x, y). Each defaults to the map's."""
         opts, puck_map = options or {}, self.world.puck_map
         self._start = (
             opts.get("puck", puck_map.puck_start),
             opts.get("robot", (*puck_map.robot_start, 0.0)),
         )
+        goal = opts.get("goal", puck_map.goal)
+        self._goal = (float(goal[0]), float(goal[1]))
         obs, info = super().reset(seed=seed, options=options)
         if options is not None and "frictions" in options:
             frictions = tuple(float(f) for f in options["frictions"])
@@ -470,7 +474,7 @@ class ObjectCentricDynPuckPushing2DEnv(
         stop = np.array([self._puck_body.position.x, self._puck_body.position.y])
         if info["fell_in_hole"]:
             self._outcome = "hole"
-        elif self.world.in_goal(stop):
+        elif self.world.in_goal(stop, self._goal):
             self._outcome = "goal"
         info["goal_reached"] = self._outcome == "goal"
         self._last_info = info

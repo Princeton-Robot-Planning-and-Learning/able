@@ -6,10 +6,12 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from able.envs.friction.pomdp import GOAL, HOLE, ONGOING, PuckPushingModel
+from able.envs.friction.pomdp import GOAL as REACHED
+from able.envs.friction.pomdp import HOLE, ONGOING, PuckPushingModel
 from able.envs.friction.world import THREE_ROUTES, PuckWorld, Push
 
 FRICTIONS = (0.03, 0.07, 0.15)
+GOAL = THREE_ROUTES.goal
 
 
 def _model() -> PuckPushingModel:
@@ -18,7 +20,10 @@ def _model() -> PuckPushingModel:
 
 def _start(model: PuckPushingModel):
     return model.initial_state(
-        np.array(THREE_ROUTES.puck_start), np.array(THREE_ROUTES.robot_start), FRICTIONS
+        np.array(THREE_ROUTES.puck_start),
+        np.array(THREE_ROUTES.robot_start),
+        FRICTIONS,
+        GOAL,
     )
 
 
@@ -37,18 +42,22 @@ def test_transition_rewards_and_outcomes():
     assert nxt.last_reward < -rewards.push_cost  # it also drove
     # Into the green hole on a slippery green floor.
     near_hole = model.initial_state(
-        np.array([1.6, 1.1]), np.array([1.0, 1.1]), (0.03, 0.07, 0.05)
+        np.array([1.6, 1.1]), np.array([1.0, 1.1]), (0.03, 0.07, 0.05), GOAL
     )
     fell = model.transition(near_hole, Push(0.0, 1.0), 0.0, 1.0)
     assert fell.outcome == HOLE and model.is_terminal(fell)
     assert fell.last_reward < -rewards.hole_penalty
     # Up into the goal from just below it.
     below_goal = model.initial_state(
-        np.array([3.9, 1.8]), np.array([3.9, 1.2]), FRICTIONS
+        np.array([3.9, 1.8]), np.array([3.9, 1.2]), FRICTIONS, GOAL
     )
     speed = math.sqrt(2 * FRICTIONS[1] * 9.81 * 0.1)
     won = model.transition(below_goal, Push(math.pi / 2, speed), math.pi / 2, speed)
-    assert won.outcome == GOAL and won.last_reward > 0
+    assert won.outcome == REACHED and won.last_reward > 0
+    # The same push misses a goal elsewhere.
+    elsewhere = replace(below_goal, goal=(1.2, 3.4))
+    missed = model.transition(elsewhere, Push(math.pi / 2, speed), math.pi / 2, speed)
+    assert missed.outcome == ONGOING and missed.goal == (1.2, 3.4)
 
 
 def test_observation_likelihood_prefers_the_true_state():
@@ -91,7 +100,7 @@ def test_transitions_shed_pucks_from_walls():
     push = Push(0.0, 0.9)
     nxt = model.transition(_start(model), push, push.angle, push.speed)
     assert nxt.outcome == ONGOING and nxt.puck[0] < 2.0
-    assert np.allclose(model.world.shed(nxt.puck_array), nxt.puck, atol=1e-4)
+    assert np.allclose(model.world.shed(nxt.puck_array, GOAL), nxt.puck, atol=1e-4)
 
 
 def test_leaf_values_follow_the_path_to_the_goal():
@@ -101,16 +110,35 @@ def test_leaf_values_follow_the_path_to_the_goal():
     model = _model()
     rewards = model.rewards
     start = _start(model)
-    distance = model.distance_to_goal(start.puck_array)
+    distance = model.distance_to_goal(start.puck_array, GOAL)
     assert distance > model.push_length
     expected = rewards.goal_reward - rewards.push_cost * distance / model.push_length
     assert model.value(start) == pytest.approx(expected)
     below_goal = model.initial_state(
-        np.array([3.9, 1.8]), np.array([3.9, 1.2]), FRICTIONS
+        np.array([3.9, 1.8]), np.array([3.9, 1.2]), FRICTIONS, GOAL
     )
     assert model.value(below_goal) == rewards.goal_reward - rewards.push_cost
     # The robot cannot push from inside the slot, so no path starts there.
-    in_slot = model.initial_state(np.array([2.6, 2.2]), np.array([1.2, 2.2]), FRICTIONS)
+    in_slot = model.initial_state(
+        np.array([2.6, 2.2]), np.array([1.2, 2.2]), FRICTIONS, GOAL
+    )
     assert model.value(in_slot) == -rewards.stuck_penalty
     last_push = replace(start, pushes=model.max_pushes - 1)
     assert model.value(last_push) == -rewards.stuck_penalty
+    # The path leads to the state's own goal.
+    near = replace(start, goal=(1.2, 3.4))
+    assert model.distance_to_goal(start.puck_array, near.goal) < distance
+    assert model.value(near) > model.value(start)
+
+
+def test_path_distances_cover_the_pushable_cells():
+    """Every pushable cell has a finite path to a goal on one, and the path distances
+    are zero at the goal's cell and grow away from it."""
+    model = _model()
+    pushable = model.pushable_cells
+    distances = model.path_distances(GOAL)
+    assert distances.shape == pushable.shape
+    assert np.all(np.isfinite(distances[pushable]))
+    assert np.all(np.isinf(distances[~pushable]))
+    assert model.distance_to_goal(np.array(GOAL), GOAL) == 0.0
+    assert model.path_distances(GOAL) is distances  # cached per goal cell

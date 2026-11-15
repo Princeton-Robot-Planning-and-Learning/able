@@ -27,10 +27,11 @@ model:
   depth: 3
   num_steps: 4000
 # Corrects the leaf values with the returns of the rollouts while sleeping, by
-# kernel regression on the puck, pushes left, and the belief's mean and standard
-# deviation, with these bandwidths. Where the data are sparse, the correction falls
-# back to its mean over all rollouts, with the weight of prior_weight rollouts.
+# kernel regression on the puck, the goal, pushes left, and the belief's mean and
+# standard deviation, with these bandwidths. Where the data are sparse, the
+# correction falls back to its mean over all rollouts, with the weight of
+# prior_weight rollouts.
 value_model:
   _target_: able.models.kernel_regression.KernelRegressor
-  bandwidths: [0.25, 0.25, 2.0, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03]
+  bandwidths: [0.25, 0.25, 0.5, 0.5, 2.0, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03]
   prior_weight: 2.0

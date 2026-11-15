@@ -358,7 +358,7 @@ class POMCPOW(Generic[S, A, O]):
 # The push model's input and output sizes, and the value model's input size. A
 # training row's input is the push model's input followed by the value model's, and
 # its output is a push followed by a value; NaN marks a missing push or value.
-X_DIM, Y_DIM, VALUE_X_DIM = 13, 4, 9
+X_DIM, Y_DIM, VALUE_X_DIM = 13, 4, 11
 
 
 @dataclass(frozen=True)
@@ -456,12 +456,13 @@ def get_push_features(
 
 def get_value_features(
     puck: NDArray[np.float64] | tuple[float, float],
+    goal: tuple[float, float],
     pushes_left: int,
     belief: ParticleBelief,
 ) -> NDArray[np.float64]:
-    """The value model's input for a state: puck, pushes left, and the belief's
-    mean and standard deviation."""
-    return np.concatenate([puck, [pushes_left], belief.mean, belief.std])
+    """The value model's input for a state: puck, goal, pushes left, and the
+    belief's mean and standard deviation."""
+    return np.concatenate([puck, goal, [pushes_left], belief.mean, belief.std])
 
 
 def encode_push(push: Push) -> list[float]:
@@ -571,7 +572,7 @@ class LearnedLeafValue:
         if state.outcome != ONGOING:
             return value, 0.0
         pushes_left = pomdp.max_pushes - state.pushes
-        x = get_value_features(state.puck, pushes_left, self._belief)
+        x = get_value_features(state.puck, state.goal, pushes_left, self._belief)
         correction, weight = self._value_model.predict(x)
         return value + float(correction[0]), weight
 
@@ -721,7 +722,11 @@ class FrictionPOMCPOWPolicy(Policy[FrictionState, Push]):
             return None
         pomdp = self._planner.pomdp
         root = pomdp.initial_state(
-            state.puck_array, state.robot_array, tuple(self._belief.mean), state.pushes
+            state.puck_array,
+            state.robot_array,
+            tuple(self._belief.mean),
+            state.goal,
+            state.pushes,
         )
         value, weight = leaf_value.estimate(root)
         return value if weight >= self._params.min_target_weight else None
@@ -880,7 +885,9 @@ class FrictionPOMCPOWPlanner(
                         get_push_features(
                             state.puck_array, task.goal, pomdp.world, search.belief
                         ),
-                        get_value_features(state.puck, pushes_left, search.belief),
+                        get_value_features(
+                            state.puck, task.goal, pushes_left, search.belief
+                        ),
                     ]
                 )
             )
@@ -888,7 +895,7 @@ class FrictionPOMCPOWPlanner(
             value = math.nan
             if returns is not None:
                 root = pomdp.initial_state(
-                    state.puck_array, state.robot_array, (), state.pushes
+                    state.puck_array, state.robot_array, (), task.goal, state.pushes
                 )
                 value = float(returns[i]) - pomdp.value(root)
             y.append([*push, value])
@@ -918,7 +925,9 @@ class FrictionPOMCPOWPlanner(
         given."""
         pomdp = self.pomdp
         particles = [
-            pomdp.initial_state(state.puck_array, state.robot_array, f, state.pushes)
+            pomdp.initial_state(
+                state.puck_array, state.robot_array, f, state.goal, state.pushes
+            )
             for f in belief.particles
         ]
         solver: POMCPOW[PuckState, Push, PuckObservation] = POMCPOW(

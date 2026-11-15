@@ -25,11 +25,13 @@ ONGOING, GOAL, HOLE = 0, 1, 2
 
 @dataclass(frozen=True)
 class PuckState:
-    """A POMDP state; positions are rounded so states hash stably."""
+    """A POMDP state; positions are rounded so states hash stably. The goal is the
+    center of the task's goal circle."""
 
     puck: tuple[float, float]
     robot: tuple[float, float]
     frictions: tuple[float, ...]
+    goal: tuple[float, float]
     outcome: int = ONGOING
     pushes: int = 0
     # Actual speed off the paddle on the push that led here.
@@ -71,19 +73,25 @@ class PuckPushingModel:
     hole_margin: float = 0.05
     # Path length (m) a leaf value assumes one push covers.
     push_length: float = 1.0
+    # Path distances per goal cell, computed on first use.
+    _distance_cache: dict[int, NDArray[np.float64]] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     def initial_state(
         self,
         puck: NDArray[np.float64],
         robot: NDArray[np.float64],
         frictions: Sequence[float],
+        goal: Sequence[float],
         pushes: int = 0,
     ) -> PuckState:
-        """A root state with the frictions."""
+        """A root state with the frictions, for the task with the goal."""
         return PuckState(
             puck=_round_point(puck),
             robot=_round_point(robot),
             frictions=tuple(float(f) for f in frictions),
+            goal=(float(goal[0]), float(goal[1])),
             pushes=pushes,
         )
 
@@ -137,16 +145,17 @@ class PuckPushingModel:
         if result.hole is not None:
             outcome = HOLE
             reward -= rewards.hole_penalty
-        elif world.in_goal(stop):
+        elif world.in_goal(stop, state.goal):
             outcome = GOAL
             reward += rewards.goal_reward
         else:
             outcome = ONGOING
-            stop = world.shed(stop)
+            stop = world.shed(stop, state.goal)
         return PuckState(
             puck=_round_point(stop),
             robot=_round_point(robot),
             frictions=state.frictions,
+            goal=state.goal,
             outcome=outcome,
             pushes=state.pushes + 1,
             release_speed=round(speed, 4),
@@ -236,13 +245,12 @@ class PuckPushingModel:
         return None
 
     @cached_property
-    def _goal_distances(self) -> tuple[NDArray[np.float64], int, int]:
-        """Shortest path lengths to the goal over pushable free cells: (distances,
-        nx, ny), where cell = j * nx + i."""
+    def _path_graph(self) -> tuple[NDArray[np.bool_], csr_matrix]:
+        """The pushable free cells of the value grid, and the graph of paths
+        between them, where cell = j * nx + i."""
         world, res = self.world, self.value_resolution
         margin = world.physics.hole_radius + self.hole_margin
-        nx = int(round(world.puck_map.width / res))
-        ny = int(round(world.puck_map.height / res))
+        nx, ny = self.value_grid_shape
         free = np.zeros((ny, nx), dtype=bool)
         for j in range(ny):
             for i in range(nx):
@@ -267,25 +275,52 @@ class PuckPushingModel:
                 rows += [j * nx + i, jj * nx + ii]
                 cols += [jj * nx + ii, j * nx + i]
                 lengths += [length, length]
-        goal_i = min(int(world.goal[0] // res), nx - 1)
-        goal_j = min(int(world.goal[1] // res), ny - 1)
         graph = csr_matrix((lengths, (rows, cols)), shape=(nx * ny, nx * ny))
-        distances = dijkstra(graph, indices=goal_j * nx + goal_i)
-        return distances, nx, ny
+        return free, graph
+
+    @cached_property
+    def value_grid_shape(self) -> tuple[int, int]:
+        """(nx, ny) of the value grid."""
+        res, puck_map = self.value_resolution, self.world.puck_map
+        return int(round(puck_map.width / res)), int(round(puck_map.height / res))
+
+    @property
+    def pushable_cells(self) -> NDArray[np.bool_]:
+        """Whether each cell of the value grid, indexed [j, i], is on the pushable
+        paths: free of walls, clear of holes, and with some feasible push."""
+        return self._path_graph[0]
+
+    def _cell_index(self, point: Sequence[float]) -> int:
+        nx, ny = self.value_grid_shape
+        res = self.value_resolution
+        i = min(max(int(point[0] // res), 0), nx - 1)
+        j = min(max(int(point[1] // res), 0), ny - 1)
+        return j * nx + i
+
+    def path_distances(self, goal: Sequence[float]) -> NDArray[np.float64]:
+        """Lengths (m) of the shortest pushable paths to the goal's grid cell from
+        every cell of the value grid, indexed [j, i] (infinite where there is no
+        path)."""
+        cell = self._cell_index(goal)
+        if cell not in self._distance_cache:
+            _, graph = self._path_graph
+            distances = dijkstra(graph, indices=cell)
+            self._distance_cache[cell] = np.asarray(distances).reshape(
+                self.value_grid_shape[::-1]
+            )
+        return self._distance_cache[cell]
 
     def _pushable(self, point: NDArray[np.float64], num_angles: int = 16) -> bool:
         """Whether some push is feasible from `point` on evenly spaced headings."""
         angles = np.linspace(-math.pi, math.pi, num_angles, endpoint=False)
         return any(self.world.push_feasible(point, float(a)) for a in angles)
 
-    def distance_to_goal(self, point: NDArray[np.float64]) -> float:
+    def distance_to_goal(
+        self, point: NDArray[np.float64], goal: Sequence[float]
+    ) -> float:
         """Length (m) of the shortest pushable path from `point`'s grid cell to the
-        goal, or infinity if there is none."""
-        distances, nx, ny = self._goal_distances
-        res = self.value_resolution
-        i = min(max(int(point[0] // res), 0), nx - 1)
-        j = min(max(int(point[1] // res), 0), ny - 1)
-        return float(distances[j * nx + i])
+        goal's, or infinity if there is none."""
+        return float(self.path_distances(goal).flat[self._cell_index(point)])
 
     def value(self, state: PuckState) -> float:
         """The goal reward minus one push cost per push_length of the shortest
@@ -294,7 +329,7 @@ class PuckPushingModel:
         rewards = self.rewards
         if state.outcome in (GOAL, HOLE):
             return 0.0
-        distance = self.distance_to_goal(state.puck_array)
+        distance = self.distance_to_goal(state.puck_array, state.goal)
         if not math.isfinite(distance):
             return -rewards.stuck_penalty
         pushes = max(1.0, distance / self.push_length)

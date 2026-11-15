@@ -29,11 +29,11 @@ _SURFACE = "#fcfcfb"
 class FrictionRenderer(Renderer[FrictionState, FrictionTask, NDArray[np.float64]]):
     """Draws the maze from above next to the belief over the floors' friction.
 
-    The left panel shows the floors, walls, holes, and goal, the puck's stops so
-    far, and the robot's base, and says how the last push went. The right panel
-    shows each floor's particles, their mean, and ticks at the true friction (and
-    the sampled friction in dreams). Images are width x height pixels; both should
-    be multiples of 16 for video encoding.
+    The left panel shows the floors, walls, holes, and the task's goal, the puck's
+    stops so far, and the robot's base, and says how the last push went. The right
+    panel shows each floor's particles, their mean, and ticks at the true friction
+    (and the sampled friction in dreams). Images are width x height pixels; both
+    should be multiples of 16 for video encoding.
     """
 
     def __init__(
@@ -78,12 +78,12 @@ class FrictionRenderer(Renderer[FrictionState, FrictionTask, NDArray[np.float64]
             view.add_patch(Rectangle((x0, y0), x1 - x0, y1 - y0, color=WALL_RGB))
         for hole in world.holes:
             view.add_patch(Circle(tuple(hole), phys.hole_radius, color=HOLE_RGB))
-        view.add_patch(
-            Circle(tuple(world.goal), phys.goal_radius, color=GOAL_RGB, alpha=0.6)
-        )
         if not states:
             view.set_title("No episode", fontsize=11, color=_INK)
             return
+        view.add_patch(
+            Circle(states[-1].goal, phys.goal_radius, color=GOAL_RGB, alpha=0.6)
+        )
         trail = np.array([s.true_puck for s in states])
         view.plot(trail[:, 0], trail[:, 1], "o-", color=_INK, ms=3, lw=1)
         state = states[-1]
