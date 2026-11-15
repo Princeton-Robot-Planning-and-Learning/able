@@ -169,6 +169,10 @@ def test_run_single_experiment(tmp_path: Path) -> None:
         cycle_df = pd.read_csv(run_dir / "cycle_results.csv")
         assert list(cycle_df.cycle) == [0, 1]
         assert list(cycle_df.num_executed_tasks) == [1, 1]
+        assert (cycle_df.num_executed_successes <= 1).all()
+        assert not cycle_df.num_executed_timeouts.any()
+        # The two-link arm's interval belief has no moments to log.
+        assert not any(c.startswith("belief_") for c in cycle_df.columns)
         for column in STAGE_TIME_COLUMNS:
             assert (cycle_df[column] >= 0).all()
         stage_total = cycle_df[list(STAGE_TIME_COLUMNS)].sum(axis=1)
@@ -337,6 +341,10 @@ def test_limb(tmp_path: Path) -> None:
     cycle_df = pd.read_csv(tmp_path / "cycle_results.csv")
     assert list(cycle_df.num_queries) == [1]
     assert list(cycle_df.num_executed_tasks) == [1]
+    # One mean and standard deviation per motion, after the query and execution.
+    for i in range(3):
+        assert 0.7 <= cycle_df[f"belief_mean_{i}"].iloc[0] <= 1.2
+        assert 0.0 < cycle_df[f"belief_std_{i}"].iloc[0] < 0.15
     assert sorted(p.name for p in (tmp_path / "videos").iterdir()) == [
         "cycle_000_2_queries.mp4",
         "cycle_000_3_execution.mp4",
@@ -371,6 +379,8 @@ def test_friction(tmp_path: Path) -> None:
     cycle_df = pd.read_csv(tmp_path / "cycle_results.csv")
     assert list(cycle_df.num_queries) == [1]
     assert list(cycle_df.num_executed_tasks) == [1]
+    # The particle belief logs one mean and standard deviation per parameter.
+    assert {"belief_mean_0", "belief_std_0"} <= set(cycle_df.columns)
     assert sorted(p.name for p in (tmp_path / "videos").iterdir()) == [
         "cycle_000_2_queries.mp4",
         "cycle_000_3_execution.mp4",
@@ -449,3 +459,5 @@ def test_human_reach(tmp_path: Path) -> None:
     cycle_df = pd.read_csv(tmp_path / "cycle_results.csv")
     assert list(cycle_df.num_queries) == [1]
     assert list(cycle_df.num_executed_tasks) == [1]
+    # The particle belief logs one mean and standard deviation per parameter.
+    assert {"belief_mean_0", "belief_std_0"} <= set(cycle_df.columns)
