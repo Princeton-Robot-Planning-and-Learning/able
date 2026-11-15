@@ -167,6 +167,49 @@ def test_continuous_placements_try_the_proposal_first(sim):
     assert len({p.surface for p in later}) > 1
 
 
+def test_requested_items_try_the_believed_edge_first(sim):
+    """A requested item tries only usable placements, those the fewest particles
+    reach first: the proposal's points, then the uniform samples."""
+    obs, _ = sim.reset(seed=0)
+    cfg = sim.config
+    rng = np.random.default_rng(0)
+    particles = rng.uniform(cfg.reach_theta_lb, cfg.reach_theta_ub, (256, 3))
+    ctx = build_stream_context(
+        sim, obs, theta_particles=particles, placement="continuous"
+    )
+    uniform = [streams.sample_uniform_placement(ctx, "req0") for _ in range(500)]
+    probability = np.array(
+        [streams.usable_probability(ctx, "req0", p.pose) for p in uniform]
+    )
+    inside = uniform[int(np.argmax(probability))]
+    edge = uniform[int(np.argmin(np.where(probability >= 0.9, probability, 2.0)))]
+    unusable = uniform[int(np.argmin(probability))]
+    proposal = _PointsProposal([p.pose.position for p in (inside, unusable, edge)])
+    ctx = build_stream_context(
+        sim,
+        obs,
+        theta_particles=particles,
+        proposal=proposal,
+        placement="continuous",
+    )
+    samples = streams.sample_continuous_place_pose(ctx, "req0")
+    first, second = next(samples)[0], next(samples)[0]
+    assert first.pose == edge.pose and second.pose == inside.pose
+    later = [next(samples)[0] for _ in range(20)]
+    reached = [streams.usable_probability(ctx, "req0", p.pose) for p in later]
+    assert min(reached) >= 0.9 and reached == sorted(reached)
+
+
+def test_no_usable_placement_yields_nothing(sim):
+    """Without a usable placement, a requested item's stream yields None rather
+    than searching on, so that PDDLStream can go on."""
+    obs, _ = sim.reset(seed=0)
+    ctx = build_stream_context(
+        sim, obs, theta_particles=np.array([[0.1] * 3]), placement="continuous"
+    )
+    assert next(streams.sample_continuous_place_pose(ctx, "req0")) is None
+
+
 def test_continuous_placements_for_clutter():
     """Clutter may go on every surface."""
     sim = ObjectCentricBedsideStocking3DEnv(num_requested=1, num_clutter=1)
