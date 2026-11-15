@@ -43,10 +43,10 @@ BOOK_COLORS = [
     (0.95, 0.55, 0.05, 1.0),
 ]
 SMALL_ITEMS = [
-    ("cup", (0.035, 0.035, 0.05), (0.95, 0.85, 0.10, 1.0)),
-    ("pills", (0.025, 0.025, 0.045), (0.95, 0.40, 0.10, 1.0)),
     ("remote", (0.025, 0.06, 0.04), (0.20, 0.20, 0.25, 1.0)),
     ("glasses", (0.06, 0.03, 0.04), (0.55, 0.15, 0.65, 1.0)),
+    ("cup", (0.035, 0.035, 0.05), (0.95, 0.85, 0.10, 1.0)),
+    ("pills", (0.025, 0.025, 0.045), (0.95, 0.40, 0.10, 1.0)),
 ]
 BOOK_HALF_EXTENTS = (0.04, 0.09, 0.02)
 CLUTTER_SHAPES = [
@@ -188,11 +188,17 @@ class ObjectCentricBedsideStocking3DEnv(
 
         self._items: dict[str, int] = {}
         self._half_extents: dict[str, tuple[float, float, float]] = {}
+        # Requested items alternate between books, 4 cm tall, and small items, 8 cm
+        # for the first two, so that deliveries come at two heights below the
+        # shoulder: at one height, the vertical semi-axis cannot be told apart from
+        # scaling the other two (#163). Near the person, the arm places items
+        # top-down no higher than 0.81 m, so a taller item would not fit where the
+        # person reaches most easily.
         for i in range(num_requested):
-            if i < 4 or i >= 4 + len(SMALL_ITEMS):
-                he, color = BOOK_HALF_EXTENTS, BOOK_COLORS[i % len(BOOK_COLORS)]
+            if i % 2 == 0:
+                he, color = BOOK_HALF_EXTENTS, BOOK_COLORS[i // 2 % len(BOOK_COLORS)]
             else:
-                _, he, color = SMALL_ITEMS[i - 4]
+                _, he, color = SMALL_ITEMS[i // 2 % len(SMALL_ITEMS)]
             self._add_item(f"req{i}", he, color)
         for i in range(num_clutter):
             self._add_item(
