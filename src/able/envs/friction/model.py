@@ -1,11 +1,12 @@
 """The friction environment model.
 
-The robot pushes a puck through the threeroutes maze to a goal. Each action is one
-push: the robot drives behind the puck and strikes it at a heading and speed, with a
-stance. The hidden parameters are the friction coefficients of the floors. A puck
-that stops too close to a wall for the robot to push it on is shed to the nearest
-spot it can push from (PuckWorld.shed). The task ends when the puck stops in the
-goal or passes over a hole, and the state stays fixed afterwards.
+The robot pushes a puck through the threeroutes maze to a goal, from a start and
+to a goal that vary by task. Each action is one push: the robot drives behind the
+puck and strikes it at a heading and speed, with a stance. The hidden parameters are
+the friction coefficients of the floors. A puck that stops too close to a wall for
+the robot to push it on is shed to the nearest spot it can push from
+(PuckWorld.shed). The task ends when the puck stops in the goal or passes over a
+hole, and the state stays fixed afterwards.
 """
 
 from dataclasses import dataclass
@@ -53,19 +54,22 @@ class PuckRewards:
 
 @dataclass(frozen=True)
 class FrictionState:
-    """What the robot knows of the puck and itself, the true poses, and the last
-    push.
+    """What the robot knows of the puck and itself, the true poses, the task's
+    goal, and the last push.
 
     Planners and belief updaters use only what the robot knows: `puck` is the
     measured stop moved off any wall, and `robot` is where the last push left the
     base. The true puck position and base pose let the model continue the episode
-    in a fresh simulator. The outcome is "goal" or "hole" once the task has ended.
+    in a fresh simulator. The goal is the center of the goal circle, which the
+    simulator needs to end the episode. The outcome is "goal" or "hole" once the
+    task has ended.
     """
 
     puck: tuple[float, float]
     robot: tuple[float, float]
     true_puck: tuple[float, float]
     robot_pose: tuple[float, float, float]
+    goal: tuple[float, float]
     pushes: int = 0
     last_push: PushRecord | None = None
     outcome: str | None = None
@@ -141,11 +145,19 @@ class FrictionModel(
             self._sim = None
         self._probes.close()
 
-    def get_initial_state(self) -> FrictionState:
-        """The puck and robot at the map's start."""
+    def get_initial_state(
+        self,
+        puck: tuple[float, float] | None = None,
+        robot: tuple[float, float] | None = None,
+        goal: tuple[float, float] | None = None,
+    ) -> FrictionState:
+        """The puck and the robot at their starts, the robot facing +x, for the
+        task with the goal. Each defaults to the map's default task."""
         puck_map = self.world.puck_map
-        puck, robot = puck_map.puck_start, puck_map.robot_start
-        return FrictionState(puck, robot, puck, (robot[0], robot[1], 0.0))
+        puck = puck_map.puck_start if puck is None else puck
+        robot = puck_map.robot_start if robot is None else robot
+        goal = puck_map.goal if goal is None else goal
+        return FrictionState(puck, robot, puck, (robot[0], robot[1], 0.0), goal)
 
     def sample_next_state(
         self,
@@ -161,6 +173,7 @@ class FrictionModel(
             "frictions": tuple(float(f) for f in hidden_params),
             "puck": state.true_puck,
             "robot": state.robot_pose,
+            "goal": state.goal,
         }
         sim.reset(seed=int(rng.integers(2**31)), options=options)
         terminated, info = execute_push(sim, action)
@@ -178,7 +191,7 @@ class FrictionModel(
         puck = self.world.nearest_free_puck_position(np.array(record.stop))
         true_puck, pose = np.asarray(sim.puck_position), sim.robot_pose
         if outcome is None:
-            rest = self.world.shed(true_puck)
+            rest = self.world.shed(true_puck, state.goal)
             if not np.array_equal(rest, true_puck):
                 # The robot sees where a shed puck comes to rest.
                 puck, true_puck = rest, rest
@@ -187,6 +200,7 @@ class FrictionModel(
             robot=robot,
             true_puck=(float(true_puck[0]), float(true_puck[1])),
             robot_pose=(float(pose[0]), float(pose[1]), float(pose[2])),
+            goal=state.goal,
             pushes=state.pushes + 1,
             last_push=record,
             outcome=outcome,

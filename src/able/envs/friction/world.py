@@ -25,7 +25,9 @@ WALL_CHAR = "#"
 
 @dataclass(frozen=True)
 class FrictionPrior:
-    """Friction prior: `levels` shuffled over surfaces, each scaled by U[1+-jitter]."""
+    """Friction prior: each surface draws one of `levels` on its own, uniformly,
+    scaled by U[1+-jitter]. The surfaces are independent, so what the robot learns
+    of some says nothing of the others."""
 
     levels: tuple[float, ...] = (0.03, 0.08, 0.15)
     jitter: float = 0.2
@@ -33,7 +35,7 @@ class FrictionPrior:
     @property
     def num_surfaces(self) -> int:
         """The number of floors."""
-        return len(self.levels)
+        return len(SURFACE_NAMES)
 
     @property
     def bounds(self) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
@@ -54,11 +56,11 @@ class FrictionPrior:
         """One coefficient vector, or `size` of them stacked."""
         n = 1 if size is None else size
         levels = np.asarray(self.levels, dtype=np.float64)
-        order = np.argsort(rng.random((n, self.num_surfaces)), axis=1)
+        picks = rng.integers(len(levels), size=(n, self.num_surfaces))
         scale = rng.uniform(
             1.0 - self.jitter, 1.0 + self.jitter, (n, self.num_surfaces)
         )
-        samples = levels[order] * scale
+        samples = levels[picks] * scale
         return samples[0] if size is None else samples
 
 
@@ -81,7 +83,11 @@ Frictions = Sequence[float] | NDArray[np.float64]
 
 @dataclass(frozen=True)
 class PuckMap:
-    """A floor maze (m); `rows` are top to bottom, row indices count from the bottom."""
+    """A floor maze (m); `rows` are top to bottom, row indices count from the bottom.
+
+    The puck start, robot start, and goal are the map's default task. Tasks may
+    push the puck between other points (FrictionTaskDistribution).
+    """
 
     name: str
     rows: tuple[str, ...]
@@ -306,16 +312,18 @@ class PuckWorld:
         self.surfaces = self.puck_map.surface_grid()
         self.walls = np.asarray(self.puck_map.wall_rects(), dtype=np.float64)
         self.holes = np.asarray(self.puck_map.holes, dtype=np.float64).reshape(-1, 2)
-        self.goal = np.asarray(self.puck_map.goal, dtype=np.float64)
         self._nav_cache: dict[int, tuple[NDArray[np.float64], NDArray[np.int32]]] = {}
         # LRU, keyed by (start node, puck x, puck y).
         self._nav_puck_cache: OrderedDict[
             tuple[int, float, float], tuple[NDArray[np.float64], NDArray[np.int32]]
         ] = OrderedDict()
         # Per shed grid cell: whether its center leaves the robot enough headings,
-        # and where a puck stopped in it without enough comes to rest.
+        # and where a puck stopped in it without enough comes to rest (keyed by the
+        # cell and the goal).
         self._room_cache: dict[tuple[int, int], bool] = {}
-        self._shed_cache: dict[tuple[int, int], NDArray[np.float64] | None] = {}
+        self._shed_cache: dict[
+            tuple[int, int, float, float], NDArray[np.float64] | None
+        ] = {}
 
     # ------------------------------------------------------------------ surfaces
 
@@ -498,8 +506,10 @@ class PuckWorld:
                     return candidate
         return point
 
-    def shed(self, point: NDArray[np.float64]) -> NDArray[np.float64]:
-        """Where a puck that stops at `point` comes to rest.
+    def shed(
+        self, point: NDArray[np.float64], goal: Sequence[float]
+    ) -> NDArray[np.float64]:
+        """Where a puck that stops at `point`, outside the goal, comes to rest.
 
         It stays if its shed grid cell leaves the robot enough headings (see
         PuckPhysics.min_push_fraction). Otherwise it moves along the floor, around
@@ -515,10 +525,20 @@ class PuckWorld:
         j = min(max(int(point[1] // res), 0), ny - 1)
         if self._has_room(i, j):
             return point
-        if (i, j) not in self._shed_cache:
-            self._shed_cache[(i, j)] = self._nearest_room(i, j)
-        rest = self._shed_cache[(i, j)]
+        key = (i, j, float(goal[0]), float(goal[1]))
+        if key not in self._shed_cache:
+            self._shed_cache[key] = self._nearest_room(i, j, goal)
+        rest = self._shed_cache[key]
         return point if rest is None else rest.copy()
+
+    def has_room(self, point: NDArray[np.float64]) -> bool:
+        """Whether a puck at `point` stays there rather than being shed: whether
+        its shed grid cell leaves the robot enough headings."""
+        nx, ny = self._shed_grid_shape
+        res = self.physics.shed_resolution
+        i = min(max(int(point[0] // res), 0), nx - 1)
+        j = min(max(int(point[1] // res), 0), ny - 1)
+        return self.physics.min_push_fraction <= 0 or self._has_room(i, j)
 
     @cached_property
     def _shed_grid_shape(self) -> tuple[int, int]:
@@ -528,7 +548,9 @@ class PuckWorld:
             int(round(self.puck_map.height / res)),
         )
 
-    def _nearest_room(self, i: int, j: int) -> NDArray[np.float64] | None:
+    def _nearest_room(
+        self, i: int, j: int, goal: Sequence[float]
+    ) -> NDArray[np.float64] | None:
         """The center of the shed grid cell with enough headings that is nearest
         to (i, j) along the floor, through cells whose centers are clear of walls,
         holes, and the goal, or None if there is none."""
@@ -543,7 +565,7 @@ class PuckWorld:
             return (
                 self.puck_position_free(point)
                 and not self.over_hole(point)
-                and not self.in_goal(point)
+                and not self.in_goal(point, goal)
             )
 
         distances = {(i, j): 0.0}
@@ -595,9 +617,11 @@ class PuckWorld:
         gaps = np.linalg.norm(self.holes - point, axis=1)
         return bool(np.any(gaps <= self.physics.hole_radius))
 
-    def in_goal(self, point: NDArray[np.float64]) -> bool:
-        """Whether a puck stopped at `point` is in the goal."""
-        return float(np.linalg.norm(point - self.goal)) <= self.physics.goal_radius
+    def in_goal(self, point: NDArray[np.float64], goal: Sequence[float]) -> bool:
+        """Whether a puck stopped at `point` is in the goal circle centered at
+        `goal`."""
+        gap = math.hypot(float(point[0]) - goal[0], float(point[1]) - goal[1])
+        return gap <= self.physics.goal_radius
 
     def strike_end(
         self, station: NDArray[np.float64], puck: NDArray[np.float64], angle: float

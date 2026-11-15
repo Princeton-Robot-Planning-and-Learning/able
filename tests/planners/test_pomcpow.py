@@ -231,13 +231,18 @@ def _close(model: FrictionModel) -> None:
     model.close()
 
 
+def _default_task(model: FrictionModel) -> Task:
+    """The map's default task, whose start the fixed pushes below suit."""
+    return Task(model.get_initial_state(), model.world.puck_map.goal)
+
+
 @pytest.fixture(name="setup", scope="module")
 def _setup():
     domain = make_domain(seed=0, num_particles=50)
     model = domain.env_model
     assert isinstance(model, FrictionModel)
     planner = _make_planner(model)
-    task = domain.task_distribution.sample(np.random.default_rng(0))
+    task = _default_task(model)
     yield domain, planner, task
     _close(model)
 
@@ -357,7 +362,9 @@ def test_plan_examples(setup):
         )
         assert np.allclose(rows.x[row, :X_DIM], features)
         pushes_left = planner.pomdp.max_pushes - state.pushes
-        value_features = get_value_features(state.puck, pushes_left, search.belief)
+        value_features = get_value_features(
+            state.puck, task.goal, pushes_left, search.belief
+        )
         assert np.allclose(rows.x[row, X_DIM:], value_features)
         assert np.allclose(rows.y[row, :Y_DIM], encode_push(search.push))
         assert np.isnan(rows.y[row, Y_DIM])
@@ -372,7 +379,7 @@ def test_rollout_examples(setup, solved):
     path-distance value there."""
     domain, planner, task = setup
     belief = domain.initial_belief
-    rng = np.random.default_rng(0)
+    rng = np.random.default_rng(1)
     env = SimulatedEnvironment(domain.env_model, belief.sample(rng), rng)
     policy = _plan(planner, task, belief)
     trajectory = run_episode(env, task, policy, max_steps=3)
@@ -383,7 +390,7 @@ def test_rollout_examples(setup, solved):
         state = search.state
         assert np.all(np.isnan(rows.y[row, :Y_DIM])) != solved
         root = pomdp.initial_state(
-            state.puck_array, state.robot_array, (), state.pushes
+            state.puck_array, state.robot_array, (), task.goal, state.pushes
         )
         excess = -sum(trajectory.costs[row:]) - pomdp.value(root)
         assert rows.y[row, Y_DIM] == pytest.approx(excess)
@@ -417,8 +424,10 @@ def test_a_trained_value_model_corrects_the_leaves(setup):
     domain, planner, task = setup
     belief = domain.initial_belief
     assert planner.make_leaf_value(belief, PARAMS) is None
-    state = planner.pomdp.initial_state(np.array([1.2, 2.2]), np.zeros(2), (0.1,) * 3)
-    x = get_value_features(state.puck, planner.pomdp.max_pushes, belief)
+    state = planner.pomdp.initial_state(
+        np.array([1.2, 2.2]), np.zeros(2), (0.1,) * 3, task.goal
+    )
+    x = get_value_features(state.puck, task.goal, planner.pomdp.max_pushes, belief)
     rows = Dataset(x[None], np.array([[-4.0]]), np.zeros(1), np.zeros(1, np.int64))
     value_model = KernelRegressor((1.0,) * VALUE_X_DIM, prior_weight=1.0).fit(rows)
     params = replace(PARAMS, value_model=value_model)
@@ -438,7 +447,7 @@ def test_searches_aspire_where_the_value_model_has_data(setup):
     domain, planner, task = setup
     belief = domain.initial_belief
     start = task.initial_state
-    x = get_value_features(start.puck, planner.pomdp.max_pushes, belief)
+    x = get_value_features(start.puck, task.goal, planner.pomdp.max_pushes, belief)
     rows = Dataset(x[None], np.array([[-4.0]]), np.zeros(1), np.zeros(1, np.int64))
     # One row at the start state gives half of the weight there.
     value_model = KernelRegressor((1.0,) * VALUE_X_DIM, prior_weight=1.0).fit(rows)
