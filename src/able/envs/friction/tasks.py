@@ -1,5 +1,7 @@
 """Tasks and domains for the friction environment."""
 
+import dataclasses
+
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
@@ -126,20 +128,25 @@ def make_domain(
     horizon: int = 15,
     num_particles: int = 500,
     task_distances: tuple[float, float] = (1.5, 3.5),
+    num_floors: int = 3,
     prior: FrictionPrior = DEFAULT_FRICTION_PRIOR,
     rewards: PuckRewards = PuckRewards(),
     true_frictions: ArrayLike | None = None,
 ) -> FrictionDomain:
-    """A friction domain on the maze with num_holes holes and the goal radius, with
-    floor frictions drawn from the prior unless given. Each task's start is
-    task_distances (least, most) from its goal along the shortest pushable path.
-    The robot's initial belief is particles from the prior."""
+    """A friction domain on the maze with num_holes holes, the goal radius, and
+    num_floors floors, with floor frictions drawn from the prior unless given.
+    Each task's start is task_distances (least, most) from its goal along the
+    shortest pushable path. The robot's initial belief is particles from the
+    prior."""
     rng = np.random.default_rng(seed)
+    model = FrictionModel(sim, num_holes, goal_radius, horizon, rewards, num_floors)
+    prior = dataclasses.replace(prior, num_surfaces=num_floors)  # a draw per floor
     frictions = prior.sample(rng) if true_frictions is None else true_frictions
-    model = FrictionModel(sim, num_holes, goal_radius, horizon, rewards)
+    frictions = np.asarray(frictions, dtype=np.float64)
+    assert frictions.shape == (num_floors,), "Need one friction per floor"
     return Domain(
         env_model=model,
         task_distribution=FrictionTaskDistribution(model, *task_distances),
         initial_belief=make_prior_belief(prior, num_particles, rng),
-        real_env=SimulatedEnvironment(model, np.asarray(frictions, np.float64), rng),
+        real_env=SimulatedEnvironment(model, frictions, rng),
     )

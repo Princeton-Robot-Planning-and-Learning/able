@@ -1,6 +1,7 @@
 """Tests for envs/friction/tasks.py."""
 
 import numpy as np
+import pytest
 
 from able.beliefs.particles import ParticleBelief
 from able.envs.friction.model import FrictionModel
@@ -41,13 +42,20 @@ def test_make_domain():
     assert result.state.pushes == 1 and not result.terminated
     assert result.state.goal == first.goal
     model.close()
+    model, real_env, belief, _ = _get_parts(
+        make_domain(seed=0, num_particles=100, num_floors=8)
+    )
+    assert real_env.hidden_params.shape == (8,)
+    assert belief.particles.shape == (100, 8)
+    model.close()
 
 
-def test_tasks_vary_and_stay_within_reach():
-    """Tasks start and end all over the maze, each with a pushable path between its
+@pytest.mark.parametrize("num_floors", [3, 8])
+def test_tasks_vary_and_stay_within_reach(num_floors):
+    """Tasks start and end on every floor, each with a pushable path between its
     start and goal of the configured length, clear of the holes, with the robot clear of
     the walls and the puck."""
-    domain = make_domain(seed=0, task_distances=(1.5, 3.5))
+    domain = make_domain(seed=0, task_distances=(1.5, 3.5), num_floors=num_floors)
     model, _, _, distribution = _get_parts(domain)
     world = model.world
     paths = PuckPushingModel(world)
@@ -70,7 +78,7 @@ def test_tasks_vary_and_stay_within_reach():
         assert state.robot_pose == (*state.robot, 0.0)
         start_floors.add(world.surface_at(puck))
         goal_floors.add(world.surface_at(np.array(task.goal)))
-    assert start_floors == goal_floors == {0, 1, 2}
+    assert start_floors == goal_floors == set(range(num_floors))
 
 
 def test_seeds_and_given_frictions():

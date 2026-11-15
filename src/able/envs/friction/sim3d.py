@@ -47,7 +47,6 @@ from able.envs.friction.world import (
     HOLE_RGB,
     MAPS,
     PUCK_RGB,
-    SURFACE_RGB,
     WALL_RGB,
     FrictionPrior,
     PuckPhysics,
@@ -125,6 +124,9 @@ class ObjectCentricPuckPushing3DEnv(
         if map_name is not None:
             config = dataclasses.replace(config, map_name=map_name)
         puck_map = MAPS[config.map_name]
+        assert (
+            config.friction_prior.num_surfaces == puck_map.num_surfaces
+        ), "Need a prior over the map's floors"
         config = dataclasses.replace(
             config,
             robot_base_home_pose=SE2Pose(*puck_map.robot_start, 0.0),
@@ -149,12 +151,13 @@ class ObjectCentricPuckPushing3DEnv(
         )
 
         # Floor patches, holes and goal are visual only.
+        rgbs = puck_map.surface_rgb
         for surface, (x0, y0, x1, y1) in puck_map.surface_rects():
             _visual_box(
                 client,
                 ((x1 - x0) / 2, (y1 - y0) / 2, 0.005),
                 ((x0 + x1) / 2, (y0 + y1) / 2, -0.005),
-                (*SURFACE_RGB[surface], 1.0),
+                (*rgbs[surface], 1.0),
             )
         self._hole_ids = [
             _visual_disc(client, phys.hole_radius, (hx, hy, 0.001), (*HOLE_RGB, 1.0))
@@ -573,7 +576,7 @@ class ObjectCentricPuckPushing3DEnv(
         obs, info = super().reset(seed=seed, options=options)
         if options is not None and "frictions" in options:
             frictions = tuple(float(f) for f in options["frictions"])
-            assert len(frictions) == self.config.friction_prior.num_surfaces
+            assert len(frictions) == self.world.puck_map.num_surfaces
             self._frictions = frictions
         elif options is None or "init_state" not in options:
             self._frictions = sample_frictions(

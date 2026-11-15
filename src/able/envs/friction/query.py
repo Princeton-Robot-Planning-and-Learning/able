@@ -175,10 +175,14 @@ class ProbeSimulator:
     disturbs an episode."""
 
     def __init__(
-        self, sim: str = "2d", num_holes: int = 2, goal_radius: float = 0.3
+        self,
+        sim: str = "2d",
+        num_holes: int = 2,
+        goal_radius: float = 0.3,
+        num_floors: int = 3,
     ) -> None:
         self._sim = sim
-        self.world = make_world(num_holes, goal_radius)
+        self.world = make_world(num_holes, goal_radius, num_floors)
         self._env: Any = None
 
     @property

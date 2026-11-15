@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from able.envs.friction.layout import HOLES, make_sim, make_world
+from able.envs.friction.layout import FLOOR_SPLITS, HOLES, make_sim, make_world
 from able.envs.friction.world import MAPS, THREE_ROUTES
 
 
@@ -17,6 +17,23 @@ def test_make_world_adds_holes_in_order():
     assert make_world(goal_radius=0.2).physics.goal_radius == 0.2
     with pytest.raises(ValueError):
         make_world(len(HOLES) + 1)
+
+
+def test_make_world_cuts_the_floors():
+    """Each number of floors cuts the same maze's colors where FLOOR_SPLITS says,
+    and the simulator takes a friction per floor."""
+    for num_floors, splits in FLOOR_SPLITS.items():
+        world = make_world(num_floors=num_floors)
+        assert world.puck_map.num_surfaces == num_floors
+        assert world.puck_map.floor_splits == splits
+        assert world.puck_map.rows == THREE_ROUTES.rows
+    with pytest.raises(ValueError):
+        make_world(num_floors=4)
+    env = make_sim("2d", make_world(num_floors=8))
+    env.reset(seed=0)
+    assert len(env.frictions) == 8
+    env.reset(seed=0, options={"frictions": (0.05,) * 8})
+    assert env.frictions == (0.05,) * 8
 
 
 def test_holes_are_on_the_floor():

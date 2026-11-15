@@ -1,11 +1,14 @@
 """Tests for envs/friction/world.py."""
 
+import dataclasses
 import math
 
 import numpy as np
 import pytest
 
 from able.envs.friction.world import (
+    COLOR_NAMES,
+    COLOR_RGB,
     GRAVITY,
     MAPS,
     THREE_ROUTES,
@@ -18,15 +21,42 @@ from able.envs.friction.world import (
 FRICTIONS = (0.03, 0.07, 0.15)
 
 
-def test_map_rectangles_tile_the_grid():
+@pytest.mark.parametrize("splits", [(), (2.0, 3.2)])
+def test_map_rectangles_tile_the_grid(splits):
     """Walls and floor patches cover every cell exactly once."""
-    puck_map = THREE_ROUTES
+    puck_map = dataclasses.replace(THREE_ROUTES, floor_splits=splits)
     area = sum((x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in puck_map.wall_rects())
     area += sum(
         (x1 - x0) * (y1 - y0) for _, (x0, y0, x1, y1) in puck_map.surface_rects()
     )
     assert math.isclose(area, puck_map.width * puck_map.height, rel_tol=1e-9)
     assert "threeroutes" in MAPS
+
+
+def test_floor_splits_cut_each_color_into_floors():
+    """Splits cut each color into a floor per stretch, numbered by color and then
+    from the left, and named and shaded after the color."""
+    puck_map = dataclasses.replace(THREE_ROUTES, floor_splits=(2.0, 3.2))
+    assert puck_map.num_surfaces == 8
+    assert puck_map.surface_names == (
+        "blue 1",
+        "blue 2",
+        "blue 3",
+        "tan 1",
+        "tan 2",
+        "green 1",
+        "green 2",
+        "green 3",
+    )
+    world = PuckWorld(puck_map)
+    points = [(x, y) for y in (3.4, 2.2, 1.0) for x in (1.0, 2.6, 4.0)]
+    floors = [world.surface_at(np.array(p)) for p in points]
+    # The central block's slot, at (2.6, 2.2), is blue.
+    assert floors == [0, 1, 2, 3, 1, 4, 5, 6, 7]
+    rgb = np.array(puck_map.surface_rgb)
+    assert np.allclose(rgb[0], COLOR_RGB[0]) and np.all(rgb[:2] > rgb[1:3])
+    assert THREE_ROUTES.surface_names == COLOR_NAMES
+    assert THREE_ROUTES.surface_rgb == COLOR_RGB
 
 
 def test_slide_on_one_surface_stops_at_the_coulomb_distance():
@@ -244,6 +274,8 @@ def test_friction_prior_draws_each_floor_on_its_own():
     low, high = prior.bounds
     assert np.all((low <= samples) & (samples <= high))
     assert np.allclose(prior.mean, np.mean(levels))
+    prior = FrictionPrior(num_surfaces=8)
+    assert prior.sample(rng, 5).shape == (5, 8) and prior.bounds[0].shape == (8,)
 
 
 def test_walls_shed_pucks():
