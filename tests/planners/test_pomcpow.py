@@ -231,14 +231,18 @@ def _close(model: FrictionModel) -> None:
     model.close()
 
 
+def _default_task(model: FrictionModel) -> Task:
+    """The map's default task, whose start the fixed pushes below suit."""
+    return Task(model.get_initial_state(), model.world.puck_map.goal)
+
+
 @pytest.fixture(name="setup", scope="module")
 def _setup():
     domain = make_domain(seed=0, num_particles=50)
     model = domain.env_model
     assert isinstance(model, FrictionModel)
     planner = _make_planner(model)
-    # The map's default task, whose start the fixed pushes below suit.
-    task = Task(model.get_initial_state(), model.world.puck_map.goal)
+    task = _default_task(model)
     yield domain, planner, task
     _close(model)
 

@@ -290,7 +290,7 @@ class PuckPushingModel:
         paths: free of walls, clear of holes, and with some feasible push."""
         return self._path_graph[0]
 
-    def _cell_index(self, point: Sequence[float]) -> int:
+    def _cell_index(self, point: Sequence[float] | NDArray[np.float64]) -> int:
         nx, ny = self.value_grid_shape
         res = self.value_resolution
         i = min(max(int(point[0] // res), 0), nx - 1)
