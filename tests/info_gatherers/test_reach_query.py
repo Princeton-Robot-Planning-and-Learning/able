@@ -19,6 +19,14 @@ def _get_shoulder(domain) -> np.ndarray:
     return model.sim.shoulder
 
 
+def _close(domain, gatherer: ReachQueryGatherer) -> None:
+    """Close the gatherer's simulator and the model's, which its queries use."""
+    gatherer.close()
+    model = domain.env_model
+    assert isinstance(model, ReachModel)
+    model.close()
+
+
 def _particles(belief) -> np.ndarray:
     assert isinstance(belief, ParticleBelief)
     return belief.particles
@@ -51,7 +59,7 @@ def test_queries_narrow_the_belief_toward_the_reach():
     assert r_after.std() < r_before.std() / 3
     assert abs(r_after.mean() - reach_distance(first.direction, THETA)) < 0.03
     assert reach_error(after) < reach_error(before) / 2
-    gatherer.close()
+    _close(domain, gatherer)
 
 
 def test_no_query_when_the_reach_is_known():
@@ -65,4 +73,4 @@ def test_no_query_when_the_reach_is_known():
     assert not gatherer.gather(known, domain.real_env, Budget(max_iterations=3), rng)
     belief = domain.initial_belief
     assert not gatherer.gather(belief, domain.real_env, Budget(max_iterations=0), rng)
-    gatherer.close()
+    _close(domain, gatherer)

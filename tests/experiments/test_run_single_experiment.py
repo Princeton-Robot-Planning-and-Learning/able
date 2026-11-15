@@ -20,6 +20,9 @@ from omegaconf import OmegaConf
 from able.approaches import make_scratch_robot
 from able.cycle import CycleBudgets, CycleResult, run_cycles
 from able.envs.base import Domain, FiniteTaskDistribution, TaskDistribution
+from able.envs.friction.model import FrictionModel
+from able.envs.human_reach.model import ReachModel
+from able.envs.limb.model import LimbModel
 from able.envs.two_link_arm import make_domain
 from able.robot import Robot
 from able.structs import Budget, Task
@@ -102,6 +105,9 @@ def test_every_approach_config_builds_its_robot(env: str) -> None:
             params = robot.planner_params
             assert params.placement == "continuous" and params.delta == 0.1
     assert isinstance(hydra.utils.instantiate(configs[0].budgets), CycleBudgets)
+    model = domain.env_model
+    assert isinstance(model, (LimbModel, FrictionModel, ReachModel))
+    model.close()
 
 
 def test_della_launcher() -> None:
