@@ -72,6 +72,41 @@ def test_matches_the_analytic_slide():
         assert np.linalg.norm(predicted.stop - info["stop_position"]) < 0.03
 
 
+def test_matches_the_analytic_slide_past_a_wall_corner():
+    """Without noise, a puck that passes close by a wall's corner, or clips it, stops
+    where the analytic slide says: a wall's corner is round to the puck."""
+    env = ObjectCentricDynPuckPushing2DEnv(DynPuckPushing2DEnvConfig(physics=NOISELESS))
+    world = env.world
+    angle, speed = math.pi / 4, 0.8
+    direction = np.array([math.cos(angle), math.sin(angle)])
+    corner = np.array([2.0, 2.8])  # the upper block's, toward the start
+    # Lines 0.14 m (clear of the puck's 0.12 m radius) and 0.10 m from the corner.
+    for gap, bounces in ((0.14, 0), (0.10, 1)):
+        closest = corner + gap * np.array([-1.0, 1.0]) / math.sqrt(2)
+        puck = closest - 0.8 * direction
+        robot = puck - 0.9 * direction
+        assert world.push_feasible(puck, angle)
+        env.reset(
+            seed=0,
+            options={
+                "frictions": FRICTIONS,
+                "puck": tuple(puck),
+                "robot": (*robot, angle),
+            },
+        )
+        _, _, _, _, info = env.step(np.array([angle, speed]))
+        end = world.strike_end(world.push_station(puck, angle), puck, angle)
+        predicted = world.slide(
+            world.release_point(puck, angle),
+            info["release_speed"],
+            angle,
+            FRICTIONS,
+            robot=end,
+        )
+        assert len(predicted.path) - 2 == bounces
+        assert np.linalg.norm(predicted.stop - info["stop_position"]) < 0.015
+
+
 def test_hole_fails_the_episode():
     """Sliding over a red circle ends the episode."""
     # Along the green corridor, past the hole at (2.6, 1.0), on a slippery green floor.

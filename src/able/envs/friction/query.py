@@ -49,7 +49,8 @@ class PushRecord:
 
     The release speed and the stop are noisy. The robot sees whether the push was
     feasible, whether the puck fell in a hole or stopped in the goal, and how far it
-    drove.
+    drove. The start is the last push's measured stop, or known exactly (a task's start,
+    a probe, or where a shed puck came to rest).
     """
 
     puck: tuple[float, float]
@@ -60,12 +61,17 @@ class PushRecord:
     fell_in_hole: bool
     goal_reached: bool
     drive_distance: float
+    start_measured: bool = False
 
     @classmethod
     def from_info(
-        cls, info: dict[str, Any], puck: ArrayLike, push: Push
+        cls,
+        info: dict[str, Any],
+        puck: ArrayLike,
+        push: Push,
+        start_measured: bool = False,
     ) -> "PushRecord":
-        """The record of a simulator step's info."""
+        """The record of a simulator step's info, from the start `puck`."""
         start = np.asarray(puck, dtype=np.float64)
         stop = np.asarray(info["stop_position"], dtype=np.float64)
         return cls(
@@ -77,6 +83,7 @@ class PushRecord:
             fell_in_hole=bool(info["fell_in_hole"]),
             goal_reached=bool(info["goal_reached"]),
             drive_distance=float(info["drive_distance"]),
+            start_measured=start_measured,
         )
 
 
