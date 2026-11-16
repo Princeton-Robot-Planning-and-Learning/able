@@ -1,13 +1,19 @@
 """Tests for learners/belief_tree.py."""
 
+from typing import Any, cast
+
 import numpy as np
 
 from able.approaches import get_cache_key_features
+from able.beliefs.base import Belief
 from able.beliefs.interval import IntervalBelief
 from able.envs.two_link_arm import JOINT_LIMIT_PRIOR, TwoLinkArmModel, make_domain
 from able.learners.belief_tree import BeliefTreeSource, _Node, _set_weights
 from able.planners.random_shooting import RandomShootingPlanner
 from tests.learners.test_belief_sources import _imagined_next_source
+
+# Nodes whose beliefs a test never reads.
+_NO_BELIEF = cast(Belief[Any], None)
 
 
 def _source(**kwargs) -> BeliefTreeSource:
@@ -193,9 +199,9 @@ def test_wave_size_caps_children_per_wave():
 def _chain() -> list[_Node]:
     """A node at depth 1 (weight 1) with two leaves (weight 1/2 each), all with
     distinct cache keys; the root is not a candidate."""
-    root = _Node(None, np.full(2, 9.0), None, 0)
-    middle = _Node(None, np.zeros(2), root, 1)
-    leaves = [_Node(None, np.full(2, x), middle, 2) for x in (3.0, 6.0)]
+    root = _Node(_NO_BELIEF, np.full(2, 9.0), None, 0)
+    middle = _Node(_NO_BELIEF, np.zeros(2), root, 1)
+    leaves = [_Node(_NO_BELIEF, np.full(2, x), middle, 2) for x in (3.0, 6.0)]
     root.children, middle.children = [middle], leaves
     _set_weights(root)
     return [middle, *leaves]
