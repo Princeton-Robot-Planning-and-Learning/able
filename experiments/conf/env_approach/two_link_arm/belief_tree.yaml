@@ -7,7 +7,12 @@ max_depth: 4
 max_children: null
 widening_constant: 1.0
 widening_exponent: 0.7
-# Ablations: m_n = 1 everywhere, and the initial cost model only.
+# The plan cache only helps on an exact key match, so beliefs with the same key
+# (distance below 1) are the same and all others are unlike.
+match_threshold: 0.5
+# Ablations: pick by each node's own score, m_n = 1 everywhere, and the initial
+# cost model only.
+use_facility_gain: true
 use_leaf_counts: true
 learn_cost_model: true
 # Below 1, a belief "barely moved" if its cache key did not change.

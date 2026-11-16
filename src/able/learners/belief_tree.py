@@ -29,8 +29,8 @@ class _Node:
     weight: float = 1.0
     # One plus the expansions made at this node or below it.
     visits: int = 1
-    # The predicted cost if trained here, cached because C is fixed in a sleep.
-    trained_cost: float | None = None
+    # C(b, delta) on the distance grid, cached because C is fixed in a sleep.
+    cost_row: NDArray[np.float64] | None = None
 
     def ancestors(self) -> list["_Node"]:
         """Ancestors below the root: beliefs future sleeps will train near."""
@@ -67,8 +67,15 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     belief moved less than stop_threshold over two consecutive cycles. A node may
     have at most max_children children or, with progressive widening, at most
     ceil(widening_constant * visits^widening_exponent), so the tree grows wider
-    where it is explored more. Runs in one process only. For ablations,
-    use_leaf_counts=False sets every m_n to 1 and learn_cost_model=False keeps the
+    where it is explored more. Runs in one process only.
+
+    Picks maximize the facility-location gain, the cost that a pick removes summed
+    over every node, sum_n w_n m_n [C(b_n, delta_n) - C(b_n, delta_n with the
+    pick)], so beliefs that many likely nodes share come first. With
+    match_threshold, a belief closer than it counts as the same belief (distance 0)
+    and any other as max_distance away, as an exact-match plan cache sees them.
+    For ablations, use_facility_gain=False picks by score(n) alone,
+    use_leaf_counts=False sets every m_n to 1, and learn_cost_model=False keeps the
     initial cost model.
     """
 
@@ -90,6 +97,8 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         distance_bandwidth: float = 0.5,
         max_distance: float = 10.0,
         max_cost_rows: int = 2048,
+        match_threshold: float | None = None,
+        use_facility_gain: bool = True,
         refit_per_iteration: bool = True,
         use_leaf_counts: bool = True,
         learn_cost_model: bool = True,
@@ -114,6 +123,9 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         self._distance_bandwidth = distance_bandwidth
         self._max_distance = max_distance
         self._max_cost_rows = max_cost_rows
+        self._match_threshold = match_threshold
+        self._use_facility_gain = use_facility_gain
+        self._distance_grid = np.linspace(0.0, max_distance, 21)
         self._refit_per_iteration = refit_per_iteration
         self._use_leaf_counts = use_leaf_counts
         self._learn_cost_model = learn_cost_model
@@ -165,11 +177,15 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         self._refit_cost_model()
         self._num_trained_before_sleep = len(self._trained)
         nodes = self._grow_tree(belief, params, rng)
-        picks: list[_Node] = []
-        for _ in range(min(self._num_training_beliefs, len(nodes))):
-            open_nodes = [n for n in nodes if n not in picks]
-            scores = self._scores(open_nodes, [p.features for p in picks])
-            picks.append(open_nodes[int(np.argmax(scores))])
+        num_picks = min(self._num_training_beliefs, len(nodes))
+        if self._use_facility_gain:
+            picks = self._pick_by_gain(nodes, num_picks)
+        else:
+            picks = []
+            for _ in range(num_picks):
+                open_nodes = [n for n in nodes if n not in picks]
+                scores = self._scores(open_nodes, [p.features for p in picks])
+                picks.append(open_nodes[int(np.argmax(scores))])
         self._trained.extend(p.features for p in picks)
         logging.info(
             "Belief tree: %d nodes, depths %s, picked depths %s",
@@ -239,8 +255,50 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
             limits.append(max(1, int(np.ceil(widened))))
         return min(limits)
 
+    def _pick_by_gain(self, nodes: list[_Node], num_picks: int) -> list[_Node]:
+        """Greedy picks, each with the largest facility-location gain."""
+        rows, values = self._get_cost_rows(nodes), self._get_values(nodes)
+        features = np.array([n.features for n in nodes])
+        between = np.abs(features[:, None] - features[None]).max(axis=2)
+        between = self._match(between)
+        distances = self._get_distances(nodes, [])
+        costs = self._cost_at(rows, distances)
+        available = np.ones(len(nodes), dtype=bool)
+        picks = []
+        for _ in range(num_picks):
+            # Row n, column c: n's distance once c is trained.
+            after = np.minimum(distances[:, None], between)
+            gains = values @ (costs[:, None] - self._cost_at(rows, after))
+            gains[~available] = -np.inf
+            best = int(np.argmax(gains))
+            picks.append(nodes[best])
+            available[best] = False
+            distances = after[:, best]
+            costs = self._cost_at(rows, distances)
+        return picks
+
     def _scores(self, nodes: list[_Node], picked: list[Features]) -> NDArray:
-        """Each node's score, with the picked features counted as trained."""
+        """Each node's own score, with the picked features counted as trained."""
+        rows = self._get_cost_rows(nodes)
+        distances = self._get_distances(nodes, picked)
+        reduction = self._cost_at(rows, distances) - rows[:, 0]
+        return self._get_values(nodes) * reduction
+
+    def _get_values(self, nodes: list[_Node]) -> NDArray:
+        """w_n m_n: the expected evaluations each node stands for."""
+        counts = [
+            (
+                1
+                if n.children or not self._use_leaf_counts
+                else self._max_depth - n.depth + 1
+            )
+            for n in nodes
+        ]
+        return np.array([n.weight for n in nodes]) * np.array(counts)
+
+    def _get_distances(self, nodes: list[_Node], picked: list[Features]) -> NDArray:
+        """Each node's distance to the trained beliefs, the picked ones, and its
+        ancestors."""
         features = np.array([n.features for n in nodes])
         distances = np.full(len(nodes), np.inf)
         trained = self._trained + picked
@@ -252,26 +310,37 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
                 distances[i] = min(
                     distances[i], _distance(node.features, ancestor.features)
                 )
-        distances = np.minimum(distances, self._max_distance)
-        missing = [i for i, n in enumerate(nodes) if n.trained_cost is None]
+        return self._match(distances)
+
+    def _match(self, distances: NDArray) -> NDArray:
+        if self._match_threshold is None:
+            return np.minimum(distances, self._max_distance)
+        return np.where(distances < self._match_threshold, 0.0, self._max_distance)
+
+    def _get_cost_rows(self, nodes: list[_Node]) -> NDArray:
+        """C(b_n, d) for each node and each d on the distance grid."""
+        missing = [n for n in nodes if n.cost_row is None]
         if missing:
-            costs = self._predict_cost(features[missing], np.zeros(len(missing)))
-            for i, cost in zip(missing, costs):
-                nodes[i].trained_cost = float(cost)
-        trained_costs = np.array([n.trained_cost for n in nodes])
-        reduction = self._predict_cost(features, distances) - trained_costs
-        counts = np.array(
-            [
-                (
-                    1
-                    if n.children or not self._use_leaf_counts
-                    else self._max_depth - n.depth + 1
-                )
-                for n in nodes
-            ]
-        )
-        weights = np.array([n.weight for n in nodes])
-        return weights * counts * reduction
+            grid = self._distance_grid
+            features = np.repeat([n.features for n in missing], len(grid), axis=0)
+            distances = np.tile(grid, len(missing))
+            costs = self._predict_cost(features, distances).reshape(len(missing), -1)
+            for node, row in zip(missing, costs):
+                node.cost_row = row
+        return np.array([n.cost_row for n in nodes])
+
+    def _cost_at(self, rows: NDArray, distances: NDArray) -> NDArray:
+        """Each row's cost at its distances (shape (N,) or (N, M)), interpolated
+        on the grid."""
+        position = distances / self._max_distance * (len(self._distance_grid) - 1)
+        low = np.minimum(np.floor(position).astype(int), rows.shape[1] - 2)
+        fraction = position - low
+        if distances.ndim == 1:
+            low, fraction = low[:, None], fraction[:, None]
+        below = np.take_along_axis(rows, low, axis=1)
+        above = np.take_along_axis(rows, low + 1, axis=1)
+        result = below + fraction * (above - below)
+        return result[:, 0] if distances.ndim == 1 else result
 
     def _predict_cost(self, features: NDArray, distances: NDArray) -> NDArray:
         if self._cost_model is None:
@@ -289,9 +358,10 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         rows = []
         for belief, stats in plans:
             features = self._get_features(belief)
-            distance = self._max_distance
+            distance = np.inf
             if trained:
-                distance = min(distance, min(_distance(features, t) for t in trained))
+                distance = min(_distance(features, t) for t in trained)
+            distance = float(self._match(np.array(distance)))
             rows.append((np.append(features, distance), self._get_cost(stats)))
         if rows:
             self._cost_data = Dataset.concatenate(

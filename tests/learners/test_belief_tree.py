@@ -128,3 +128,42 @@ def test_ablations():
     for _ in range(2):
         source.get_training_belief(1, belief, params, rng)
     assert source._cost_model is None
+
+
+def test_facility_gain_prefers_shared_beliefs():
+    """The first pick is a belief that two likely nodes share, not a belief that
+    one node holds alone, even though each node scores the same alone."""
+    source = _source(match_threshold=0.5)
+    root = _Node(None, np.full(2, 9.0), None, 0)
+    shared = [_Node(None, np.zeros(2), root, 1) for _ in range(2)]
+    alone = _Node(None, np.full(2, 5.0), root, 1)
+    root.children = [*shared, alone]
+    _set_weights(root)
+    # pylint: disable=protected-access
+    nodes = [root, *shared, alone]
+    scores = source._scores(nodes, [])
+    assert np.isclose(scores[1], scores[3])
+    picks = source._pick_by_gain(nodes, 2)
+    # The lone leaf stands for 4 evaluations at weight 1/3, more than the root.
+    assert picks[0] in shared and picks[1] is alone
+
+
+def test_match_threshold_makes_distances_all_or_nothing():
+    """Below the threshold a belief counts as trained; above it, as far away."""
+    # pylint: disable=protected-access
+    source = _source(match_threshold=0.5)
+    assert list(source._match(np.array([0.0, 0.4, 1.0, 3.0]))) == [0, 0, 10, 10]
+    assert list(_source()._match(np.array([0.4, 30.0]))) == [0.4, 10.0]
+
+
+def test_cost_rows_interpolate_the_cost_model():
+    """Cached cost rows give the cost model's values on the grid and between."""
+    # pylint: disable=protected-access
+    source = _source()
+    node = _Node(None, np.zeros(2), None, 0)
+    rows = source._get_cost_rows([node])
+    grid = source._distance_grid
+    assert np.allclose(rows[0], source._predict_cost(np.zeros((len(grid), 2)), grid))
+    mid = (grid[1] + grid[2]) / 2
+    expected = (rows[0, 1] + rows[0, 2]) / 2
+    assert np.isclose(source._cost_at(rows, np.array([mid]))[0], expected)
