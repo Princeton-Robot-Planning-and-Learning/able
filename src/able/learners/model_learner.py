@@ -1,7 +1,8 @@
 """A learner that trains a planner's model on plans for chosen beliefs."""
 
 import time
-from typing import Any, Generic
+from contextlib import contextmanager
+from typing import Any, Generic, Iterator
 
 import numpy as np
 
@@ -20,6 +21,9 @@ from able.structs import (
 )
 
 REFIT_TIMINGS = ("per_iteration", "per_sleep")
+# The stages of a sleep: the belief source's work, which includes the dreams that
+# choose training beliefs, the training plans, and fitting the model.
+SLEEP_STAGES = ("dream", "training", "fit")
 
 
 class ModelLearner(
@@ -74,6 +78,7 @@ class ModelLearner(
         self._max_sleeps = max_sleeps
         self._dataset = Dataset.empty()
         self._num_sleeps = 0
+        self._stage_times = dict.fromkeys(SLEEP_STAGES, 0.0)
 
     @property
     def dataset(self) -> Dataset:
@@ -84,6 +89,20 @@ class ModelLearner(
     def belief_source(self) -> BeliefSource[HiddenParamsType, PlannerParamsType]:
         """The source of the beliefs the learner trains under."""
         return self._belief_source
+
+    @property
+    def sleep_stage_times(self) -> dict[str, float]:
+        """The wall time of the last sleep's belief source work (dream), training
+        plans (training), and model fitting (fit), all zero for a skipped sleep."""
+        return dict(self._stage_times)
+
+    @contextmanager
+    def _timed(self, stage: str) -> Iterator[None]:
+        start_time = time.perf_counter()
+        try:
+            yield
+        finally:
+            self._stage_times[stage] += time.perf_counter() - start_time
 
     def learn(
         self,
@@ -98,6 +117,7 @@ class ModelLearner(
         assert (
             budget.max_iterations is not None or budget.max_wall_time is not None
         ), "Learning needs a finite budget"
+        self._stage_times = dict.fromkeys(SLEEP_STAGES, 0.0)
         if self._max_sleeps is not None and self._num_sleeps >= self._max_sleeps:
             return params
         self._num_sleeps += 1
@@ -114,11 +134,13 @@ class ModelLearner(
         num_iterations = 0
         while not budget.is_exhausted(time.perf_counter() - start_time, num_iterations):
             num_iterations += 1
-            training_belief = self._belief_source.get_training_belief(
-                num_iterations, belief, params, rng
-            )
-            examples = self.plan_training_tasks(training_belief, params, rng)
-            self._dataset = Dataset.concatenate([self._dataset, examples])
+            with self._timed("dream"):
+                training_belief = self._belief_source.get_training_belief(
+                    num_iterations, belief, params, rng
+                )
+            with self._timed("training"):
+                examples = self.plan_training_tasks(training_belief, params, rng)
+                self._dataset = Dataset.concatenate([self._dataset, examples])
             if self._refit == "per_iteration":
                 params = self._fit(params)
         if self._refit == "per_sleep":
@@ -136,31 +158,34 @@ class ModelLearner(
         """One sleep of num_iterations iterations, with the draws and the training
         plans made in the pool's workers."""
         num_draws = self._belief_source.num_draws
-        draw_rngs = rng.spawn(num_iterations * num_draws)
-        draws = pool.map(
-            _draw_in_worker,
-            [(i + 1, belief, params, r) for i, r in enumerate(draw_rngs)],
-        )
-        training_beliefs = [
-            self._belief_source.choose(
-                iteration + 1,
-                draws[iteration * num_draws : (iteration + 1) * num_draws],
+        with self._timed("dream"):
+            draw_rngs = rng.spawn(num_iterations * num_draws)
+            draws = pool.map(
+                _draw_in_worker,
+                [(i + 1, belief, params, r) for i, r in enumerate(draw_rngs)],
             )
-            for iteration in range(num_iterations)
-        ]
-        plan_rngs = rng.spawn(num_iterations)
-        examples = pool.map(
-            _plan_training_tasks_in_worker,
-            [(b, params, r) for b, r in zip(training_beliefs, plan_rngs)],
-        )
-        self._dataset = Dataset.concatenate([self._dataset, *examples])
+            training_beliefs = [
+                self._belief_source.choose(
+                    iteration + 1,
+                    draws[iteration * num_draws : (iteration + 1) * num_draws],
+                )
+                for iteration in range(num_iterations)
+            ]
+        with self._timed("training"):
+            plan_rngs = rng.spawn(num_iterations)
+            examples = pool.map(
+                _plan_training_tasks_in_worker,
+                [(b, params, r) for b, r in zip(training_beliefs, plan_rngs)],
+            )
+            self._dataset = Dataset.concatenate([self._dataset, *examples])
         return self._fit(params)
 
     def _fit(self, params: PlannerParamsType) -> PlannerParamsType:
         if len(self._dataset) == 0:
             return params
-        model = self._planner.get_model(params)
-        return self._planner.set_model(params, model.fit(self._dataset))
+        with self._timed("fit"):
+            model = self._planner.get_model(params)
+            return self._planner.set_model(params, model.fit(self._dataset))
 
     def _get_training_tasks(self, rng: np.random.Generator) -> list[Any]:
         if isinstance(self._task_distribution, FiniteTaskDistribution):

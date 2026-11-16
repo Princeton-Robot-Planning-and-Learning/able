@@ -36,6 +36,11 @@ STAGE_TIME_COLUMNS = (
     "execution_wall_time",
     "evaluation_wall_time",
 )
+SLEEP_STAGE_TIME_COLUMNS = (
+    "sleep_dream_wall_time",
+    "sleep_training_wall_time",
+    "sleep_fit_wall_time",
+)
 
 
 class _UniformGoalDistribution(TaskDistribution[Task[float, float]]):
@@ -183,6 +188,15 @@ def test_run_single_experiment(tmp_path: Path) -> None:
             assert (cycle_df[column] >= 0).all()
         stage_total = cycle_df[list(STAGE_TIME_COLUMNS)].sum(axis=1)
         assert (cycle_df.cycle_wall_time >= stage_total).all()
+        # Learners that train a model time each stage of their sleep. The prior-only
+        # robot sleeps only in the first cycle.
+        if approach == "scratch":
+            assert not set(SLEEP_STAGE_TIME_COLUMNS) & set(cycle_df.columns)
+        else:
+            sleep_stage_total = cycle_df[list(SLEEP_STAGE_TIME_COLUMNS)].sum(axis=1)
+            assert sleep_stage_total[0] > 0
+            assert (sleep_stage_total[1:] > 0).all() == (approach != "prior_only")
+            assert (cycle_df.sleep_wall_time >= sleep_stage_total).all()
 
         # One progress line per cycle, and no temporary files left behind.
         log = (run_dir / "run_single_experiment.log").read_text()

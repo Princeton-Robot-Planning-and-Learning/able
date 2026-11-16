@@ -62,11 +62,14 @@ class CycleResult(
     is also the belief the robot was evaluated under. The stage wall times cover
     sleeping, asking queries and updating the belief with the responses, executing
     tasks, and evaluating. The cycle's wall time covers the whole cycle, including
-    the recorder's work between stages, so it is at least their sum.
+    the recorder's work between stages, so it is at least their sum. The sleep's
+    stage wall times are the learner's, such as dreaming, training plans, and
+    fitting, and are empty for a learner without stages.
     """
 
     cycle: int
     sleep_wall_time: float
+    sleep_stage_wall_times: dict[str, float]
     gathering_wall_time: float
     execution_wall_time: float
     evaluation_wall_time: float
@@ -383,6 +386,7 @@ def run_cycles(
         result = CycleResult(
             cycle=cycle,
             sleep_wall_time=sleep_wall_time,
+            sleep_stage_wall_times=robot.learner.sleep_stage_times,
             gathering_wall_time=gathering_wall_time,
             execution_wall_time=execution_wall_time,
             evaluation_wall_time=evaluation_wall_time,

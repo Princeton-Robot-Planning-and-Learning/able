@@ -244,14 +244,19 @@ def _get_eval_rows(results: list[CycleResult]) -> list[dict[str, Any]]:
 
 
 def _get_cycle_rows(results: list[CycleResult]) -> list[dict[str, Any]]:
-    """One row per cycle, with the wall time of each stage and of the whole cycle,
-    what the robot did between sleeping and evaluation, and the belief it was
-    evaluated under. An executed task that timed out moved nothing, so it showed
-    nothing about the hidden parameters."""
+    """One row per cycle, with the wall time of each stage, of each stage of the
+    sleep that the learner times, and of the whole cycle, what the robot did
+    between sleeping and evaluation, and the belief it was evaluated under. An
+    executed task that timed out moved nothing, so it showed nothing about the
+    hidden parameters."""
     return [
         {
             "cycle": result.cycle,
             "sleep_wall_time": result.sleep_wall_time,
+            **{
+                f"sleep_{stage}_wall_time": t
+                for stage, t in result.sleep_stage_wall_times.items()
+            },
             "gathering_wall_time": result.gathering_wall_time,
             "execution_wall_time": result.execution_wall_time,
             "evaluation_wall_time": result.evaluation_wall_time,
