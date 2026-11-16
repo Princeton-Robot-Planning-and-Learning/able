@@ -21,7 +21,6 @@ from pybullet_helpers.ikfast.utils import (
     IKFastHyperparameters,
     ikfast_closest_inverse_kinematics,
 )
-from pybullet_helpers.inverse_kinematics import add_fingers_to_joint_positions
 from pybullet_helpers.motion_planning import (
     check_collisions_with_held_object,
     run_motion_planning,
@@ -56,13 +55,16 @@ IK_FREE_JOINT_SAMPLES = 1000
 
 @dataclass(frozen=True)
 class FixedSetup:
-    """A variant's grasp, offset m up the forearm or shank from the wrist or ankle
-    and rolled about it, and its base pose (x, y, rotation)."""
+    """A variant's grasp and base pose (x, y, rotation). The grasp is the
+    environment's, offset m up the forearm or shank from the wrist or ankle, rolled
+    about the gripper's axis, and turned by twist about the forearm or shank (see
+    get_wrist_grasp)."""
 
     variant: str
     offset: float
     roll: float
     base: tuple[float, float, float]
+    twist: float = 0.0
     stats: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -90,21 +92,25 @@ def _get_link_position(sim: LimbSim, name: str) -> NDArray[np.float64]:
     raise ValueError(f"No link named {name}")
 
 
-def get_wrist_grasp(sim: LimbSim, offset: float, roll: float) -> Pose:
+def get_wrist_grasp(
+    sim: LimbSim, offset: float, roll: float, twist: float = 0.0
+) -> Pose:
     """The environment's grasp, moved offset m up the forearm or shank from the
-    wrist or ankle and rolled about it, relative to the limb's end effector."""
+    wrist or ankle, rolled about the gripper's axis, and turned by twist about the
+    forearm or shank, relative to the limb's end effector. A twist of pi grasps the
+    limb from the opposite side."""
     limb = sim.env.limb
     is_arm = "arm" in limb.get_name()
     wrist = _get_link_position(sim, "hand_x" if is_arm else "foot_x")
     elbow = _get_link_position(sim, "lower_arm" if is_arm else "lower_leg")
-    target = wrist + offset * (elbow - wrist) / np.linalg.norm(elbow - wrist)
+    axis = (elbow - wrist) / np.linalg.norm(elbow - wrist)
     end_effector = limb.get_end_effector_pose()
-    local = matrix_from_quat(end_effector.orientation).T @ (
-        target - np.asarray(end_effector.position)
-    )
+    to_local = matrix_from_quat(end_effector.orientation).T
+    local = to_local @ (wrist + offset * axis - np.asarray(end_effector.position))
+    turn = p.getQuaternionFromAxisAngle((to_local @ axis).tolist(), twist)
     spin = Pose.from_rpy((0.0, 0.0, 0.0), (0.0, 0.0, roll))
     return multiply_poses(
-        Pose(tuple(local.tolist())), sim.env.scene.grasp_transform, spin
+        Pose(tuple(local.tolist()), tuple(turn)), sim.env.scene.grasp_transform, spin
     )
 
 
@@ -154,7 +160,7 @@ def solve_grasp_ik(
         )
         if not solutions:
             continue
-        solution = add_fingers_to_joint_positions(arm, solutions[0])
+        solution = _with_fingers(solutions[0])
         arm.set_joints(list(solution))
         if not arm_in_collision(sim):
             return list(solution)
@@ -227,7 +233,7 @@ class LimbTaskDistribution(TaskDistribution[LimbTask]):
             self._sim.release_grasp()
             env.limb.set_joints(list(self._nominal_limb))
             self._grasp = get_wrist_grasp(
-                self._sim, self._setup.offset, self._setup.roll
+                self._sim, self._setup.offset, self._setup.roll, self._setup.twist
             )
             self._resting = get_resting_penetration(self._sim)
         return self._sim

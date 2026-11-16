@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from pybullet_helpers.geometry import matrix_from_quat, multiply_poses
 
 from able.beliefs.range_of_motion import RangeOfMotionBelief
 from able.envs.limb.human import VARIANTS, RangeOfMotionPrior
@@ -9,6 +10,8 @@ from able.envs.limb.model import LimbModel
 from able.envs.limb.tasks import (
     LimbTaskDistribution,
     TaskBox,
+    _get_link_position,
+    get_wrist_grasp,
     load_fixed_setup,
     make_domain,
 )
@@ -45,6 +48,31 @@ def test_fixed_setups():
         assert setup.base_pose.x == setup.base[0]
     with pytest.raises(KeyError):
         load_fixed_setup("sofa-third-arm")
+
+
+def test_twisted_grasp(domain):
+    """Tests that twisting the grasp turns the gripper about the forearm, through
+    the grasped point: half a turn grasps from the opposite side."""
+    sim = domain.task_distribution.sim
+    end_effector = sim.env.limb.get_end_effector_pose()
+
+    def get_pose(*twist: float) -> tuple[np.ndarray, np.ndarray]:
+        pose = multiply_poses(end_effector, get_wrist_grasp(sim, 0.03, 0.0, *twist))
+        return np.asarray(pose.position), matrix_from_quat(pose.orientation)
+
+    position, rotation = get_pose(0.0)
+    assert np.allclose(get_pose()[1], rotation)
+    assert np.allclose(get_pose(2 * np.pi)[1], rotation, atol=1e-6)
+    turned_position, turned_rotation = get_pose(np.pi)
+    # The gripper sits at the grasped point on the forearm, and half a turn
+    # rotates it by pi about the forearm.
+    wrist = _get_link_position(sim, "hand_x")
+    elbow = _get_link_position(sim, "lower_arm")
+    axis = (elbow - wrist) / np.linalg.norm(elbow - wrist)
+    assert np.allclose(turned_position, position, atol=1e-6)
+    turn = turned_rotation @ rotation.T
+    assert np.allclose(turn @ axis, axis, atol=1e-6)
+    assert np.trace(turn) == pytest.approx(-1.0, abs=1e-6)
 
 
 def test_make_domain(domain):
