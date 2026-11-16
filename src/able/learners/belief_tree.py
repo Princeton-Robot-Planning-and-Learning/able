@@ -108,6 +108,11 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     with chance novelty(n). Two beliefs are the same when their matched distance is
     0 (with match_threshold) or below stop_threshold. Only max_children, if set,
     limits the children; progressive widening is off.
+
+    With train_root_first, the first iteration of each sleep trains under the
+    current belief, and the tree grows in the second iteration, so its dreams
+    plan with that training, as the robot will when it next executes a task
+    under the current belief. The tree then picks the remaining beliefs.
     """
 
     def __init__(
@@ -137,6 +142,7 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         later_sleep_budget: int | None = None,
         num_later_sleep_draws: int = 8,
         expansion: str = "score",
+        train_root_first: bool = False,
     ) -> None:
         assert 0 < num_training_beliefs <= num_expansions + 1, "Too few nodes to pick"
         assert max_depth >= 1 and wave_size >= 1
@@ -175,6 +181,7 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         )
         self._num_later_sleep_draws = num_later_sleep_draws
         self._expansion = expansion
+        self._train_root_first = train_root_first
         self._trained: list[Features] = []
         self._num_trained_before_sleep = 0
         self._cost_data = Dataset.empty()
@@ -189,7 +196,19 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         rng: np.random.Generator,
     ) -> Belief[HiddenParamsType]:
         if iteration == 1:
-            self._picks = self._plan_sleep(belief, params, rng)
+            self._refit_cost_model()
+            self._num_trained_before_sleep = len(self._trained)
+        root_first = self._train_root_first and self._num_training_beliefs > 1
+        if root_first and iteration == 1:
+            self._picks = [belief]
+            self._trained.append(self._get_features(belief))
+        elif root_first and iteration == 2:
+            num_picks = self._num_training_beliefs - 1
+            picks = self._plan_sleep(belief, params, rng, num_picks, root_picked=True)
+            self._picks = [self._picks[0], *picks]
+        elif iteration == 1:
+            num_picks = self._num_training_beliefs
+            self._picks = self._plan_sleep(belief, params, rng, num_picks)
         # A tree smaller than the budget repeats its picks.
         return self._picks[(iteration - 1) % len(self._picks)]
 
@@ -219,11 +238,14 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         belief: Belief[HiddenParamsType],
         params: PlannerParamsType,
         rng: np.random.Generator,
+        num_picks: int,
+        root_picked: bool = False,
     ) -> list[Belief[HiddenParamsType]]:
-        self._refit_cost_model()
-        self._num_trained_before_sleep = len(self._trained)
+        """Grows the tree and picks num_picks training beliefs. root_picked says
+        whether this sleep already trained under the root's belief (logged with
+        the picks)."""
         nodes = self._grow_tree(belief, params, rng)
-        num_picks = min(self._num_training_beliefs, len(nodes))
+        num_picks = min(num_picks, len(nodes))
         if self._use_facility_gain:
             picks = self._pick_by_gain(nodes, num_picks, rng)
         else:
@@ -233,11 +255,13 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
                 scores = self._scores(open_nodes, [p.features for p in picks])
                 picks.append(open_nodes[int(np.argmax(scores))])
         self._trained.extend(p.features for p in picks)
+        picked_depths = Counter(p.depth for p in picks)
+        picked_depths[0] += int(root_picked)
         logging.info(
             "Belief tree: %d nodes, depths %s, picked depths %s",
             len(nodes),
             dict(sorted(Counter(n.depth for n in nodes).items())),
-            dict(sorted(Counter(p.depth for p in picks).items())),
+            dict(sorted((d, c) for d, c in picked_depths.items() if c)),
         )
         return [p.belief for p in picks]
 

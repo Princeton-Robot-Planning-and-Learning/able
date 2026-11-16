@@ -32,4 +32,7 @@ num_later_sleep_draws: 8
 # "value" (needs later_sleeps: dreaming) expands where a new child is worth the
 # most to this sleep's picks, without progressive widening.
 expansion: score
+# Train under the current belief first, so the tree's dreams plan with that
+# training, as the robot's next task does.
+train_root_first: false
 max_warm_starts_per_key: 4

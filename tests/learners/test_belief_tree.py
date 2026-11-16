@@ -312,3 +312,24 @@ def test_value_expansion_grows_the_root_without_widening():
     )
     assert len(nodes[0].children) > np.ceil(41**0.5)
     assert len(nodes[0].children) >= 30
+
+
+def test_train_root_first():
+    """The first iteration trains under the current belief without growing a
+    tree; the second grows it and the picks fill the rest of the budget."""
+    source = _source(
+        later_sleeps="dreaming",
+        expansion="value",
+        train_root_first=True,
+        max_children=None,
+        widening_constant=1.0,
+    )
+    belief = IntervalBelief(JOINT_LIMIT_PRIOR)
+    params = RandomShootingPlanner(TwoLinkArmModel()).get_default_params()
+    rng = np.random.default_rng(0)
+    assert source.get_training_belief(1, belief, params, rng) is belief
+    # pylint: disable=protected-access
+    assert len(source._picks) == 1
+    picks = [source.get_training_belief(i, belief, params, rng) for i in (2, 3, 4)]
+    assert len(source._picks) == 4 and source._picks[0] is belief
+    assert all(p is not belief for p in picks)

@@ -338,6 +338,7 @@ def make_belief_tree_robot(
     later_sleep_budget: int | None = None,
     num_later_sleep_draws: int = 8,
     expansion: str = "score",
+    train_root_first: bool = False,
     max_warm_starts_per_key: int = 4,
     recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
 ) -> ArmRobot:
@@ -381,6 +382,7 @@ def make_belief_tree_robot(
         later_sleep_budget=later_sleep_budget,
         num_later_sleep_draws=num_later_sleep_draws,
         expansion=expansion,
+        train_root_first=train_root_first,
     )
     return Robot(
         planner=planner,
