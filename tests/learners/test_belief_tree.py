@@ -109,3 +109,22 @@ def test_progressive_widening_widens_the_root():
     assert len(root.children) > 4
     for node in nodes:
         assert len(node.children) <= np.ceil(node.visits**0.5)
+
+
+def test_ablations():
+    """Without leaf counts a leaf scores like an inner node, and without a learned
+    cost model the source keeps the initial one."""
+    source = _source(use_leaf_counts=False, learn_cost_model=False)
+    root = _Node(None, np.zeros(2), None, 0)
+    leaf = _Node(None, np.full(2, 5.0), root, 1)
+    root.children = [leaf]
+    _set_weights(root)
+    # pylint: disable=protected-access
+    full = _source()._scores([leaf], [])
+    assert np.isclose(source._scores([leaf], [])[0] * 4, full[0])
+    belief = IntervalBelief(JOINT_LIMIT_PRIOR)
+    params = RandomShootingPlanner(TwoLinkArmModel()).get_default_params()
+    rng = np.random.default_rng(0)
+    for _ in range(2):
+        source.get_training_belief(1, belief, params, rng)
+    assert source._cost_model is None

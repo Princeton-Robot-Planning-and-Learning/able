@@ -67,7 +67,9 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     belief moved less than stop_threshold over two consecutive cycles. A node may
     have at most max_children children or, with progressive widening, at most
     ceil(widening_constant * visits^widening_exponent), so the tree grows wider
-    where it is explored more. Runs in one process only.
+    where it is explored more. Runs in one process only. For ablations,
+    use_leaf_counts=False sets every m_n to 1 and learn_cost_model=False keeps the
+    initial cost model.
     """
 
     def __init__(
@@ -89,6 +91,8 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         max_distance: float = 10.0,
         max_cost_rows: int = 2048,
         refit_per_iteration: bool = True,
+        use_leaf_counts: bool = True,
+        learn_cost_model: bool = True,
     ) -> None:
         assert 0 < num_training_beliefs <= num_expansions + 1, "Too few nodes to pick"
         assert max_depth >= 1 and wave_size >= 1
@@ -111,6 +115,8 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         self._max_distance = max_distance
         self._max_cost_rows = max_cost_rows
         self._refit_per_iteration = refit_per_iteration
+        self._use_leaf_counts = use_leaf_counts
+        self._learn_cost_model = learn_cost_model
         self._trained: list[Features] = []
         self._num_trained_before_sleep = 0
         self._cost_data = Dataset.empty()
@@ -255,7 +261,14 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         trained_costs = np.array([n.trained_cost for n in nodes])
         reduction = self._predict_cost(features, distances) - trained_costs
         counts = np.array(
-            [1 if n.children else self._max_depth - n.depth + 1 for n in nodes]
+            [
+                (
+                    1
+                    if n.children or not self._use_leaf_counts
+                    else self._max_depth - n.depth + 1
+                )
+                for n in nodes
+            ]
         )
         weights = np.array([n.weight for n in nodes])
         return weights * counts * reduction
@@ -294,7 +307,7 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
             )
 
     def _refit_cost_model(self) -> None:
-        if len(self._cost_data) == 0:
+        if len(self._cost_data) == 0 or not self._learn_cost_model:
             return
         num_features = self._cost_data.x.shape[1] - 1
         bandwidths = (self._feature_bandwidth,) * num_features + (

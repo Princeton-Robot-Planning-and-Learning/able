@@ -7,6 +7,9 @@ max_depth: 4
 max_children: null
 widening_constant: 1.0
 widening_exponent: 0.7
+# Ablations: m_n = 1 everywhere, and the initial cost model only.
+use_leaf_counts: true
+learn_cost_model: true
 # Below 1, a belief "barely moved" if its cache key did not change.
 stop_threshold: 0.5
 wave_size: 8
