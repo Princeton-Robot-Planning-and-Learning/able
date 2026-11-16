@@ -28,4 +28,8 @@ init_radius: 1.0
 later_sleeps: ancestors
 later_sleep_budget: null
 num_later_sleep_draws: 8
+# How the tree grows: "score" expands the nodes with the highest score(n);
+# "value" (needs later_sleeps: dreaming) expands where a new child is worth the
+# most to this sleep's picks, without progressive widening.
+expansion: score
 max_warm_starts_per_key: 4

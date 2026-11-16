@@ -31,6 +31,10 @@ class _Node:
     visits: int = 1
     # C(b, delta) on the distance grid, cached because C is fixed in a sleep.
     cost_row: NDArray[np.float64] | None = None
+    # Whether the belief matches one trained in an earlier sleep.
+    trained: bool = False
+    # The chance that a new child is a new belief, cached until a child is added.
+    novelty: float | None = None
 
     def ancestors(self) -> list["_Node"]:
         """Ancestors below the root: beliefs future sleeps will train near."""
@@ -88,7 +92,22 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     averaged over num_later_sleep_draws such draws. A pick then counts only for
     the cost that later sleeps would not remove, and each leaf counts once (its
     later evaluations follow sleeps at the leaf itself, which train near it). The
-    tree still grows by score(n).
+    tree still grows by score(n) unless expansion="value".
+
+    expansion="value" (with later_sleeps="dreaming") grows the tree where a new
+    child is worth the most to this sleep's picks:
+
+        value(n) = w_n / (k_n + 1) * novelty(n) * miss(n),
+
+    the new child's weight, times the chance it is a belief not seen yet,
+    novelty(n) = (f1 + 1) / (k_n + 2) with f1 the children whose belief no other
+    child and no earlier sleep shares (a Good-Turing estimate), times the chance
+    that the later sleep at n misses it: 1 at the root, whose children only this
+    sleep can train, and alpha / (alpha + later_sleep_budget) below it, with alpha
+    the Dirichlet-process concentration for which the next of k_n + 1 draws is new
+    with chance novelty(n). Two beliefs are the same when their matched distance is
+    0 (with match_threshold) or below stop_threshold. Only max_children, if set,
+    limits the children; progressive widening is off.
     """
 
     def __init__(
@@ -117,12 +136,15 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         later_sleeps: str = "ancestors",
         later_sleep_budget: int | None = None,
         num_later_sleep_draws: int = 8,
+        expansion: str = "score",
     ) -> None:
         assert 0 < num_training_beliefs <= num_expansions + 1, "Too few nodes to pick"
         assert max_depth >= 1 and wave_size >= 1
         assert later_sleeps in ("ancestors", "dreaming")
         assert later_sleeps == "ancestors" or use_facility_gain
         assert num_later_sleep_draws >= 1
+        assert expansion in ("score", "value")
+        assert expansion == "score" or later_sleeps == "dreaming"
         assert max_children is not None or widening_constant is not None
         assert max_children is None or max_children >= 1
         self._dreamer = dreamer
@@ -152,6 +174,7 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
             num_training_beliefs if later_sleep_budget is None else later_sleep_budget
         )
         self._num_later_sleep_draws = num_later_sleep_draws
+        self._expansion = expansion
         self._trained: list[Features] = []
         self._num_trained_before_sleep = 0
         self._cost_data = Dataset.empty()
@@ -239,7 +262,11 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
                 ]
                 if not expandable:
                     break
-                order = np.argsort(-self._scores(expandable, []), kind="stable")
+                if self._expansion == "value":
+                    priorities = self._get_expansion_values(expandable)
+                else:
+                    priorities = self._scores(expandable, [])
+                order = np.argsort(-priorities, kind="stable")
                 wave = [expandable[i] for i in order[:budget]]
             for node in wave:
                 cycle = self._dreamer.imagine_cycle(
@@ -258,7 +285,9 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
                     and _distance(node.features, node.parent.features)
                     < self._stop_threshold
                 )
+                child.trained = self._is_trained(child.features)
                 node.children.append(child)
+                node.novelty = None
                 nodes.append(child)
                 ancestor: _Node | None = node
                 while ancestor is not None:
@@ -270,6 +299,12 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         return nodes
 
     def _get_max_children(self, node: _Node) -> int:
+        if self._expansion == "value":
+            return (
+                self._num_expansions
+                if self._max_children is None
+                else (self._max_children)
+            )
         limits = []
         if self._max_children is not None:
             limits.append(self._max_children)
@@ -277,6 +312,47 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
             widened = self._widening_constant * node.visits**self._widening_exponent
             limits.append(max(1, int(np.ceil(widened))))
         return min(limits)
+
+    def _same(self, distances: NDArray) -> NDArray:
+        """Whether beliefs this far apart count as the same belief."""
+        if self._match_threshold is not None:
+            return distances < self._match_threshold
+        return distances < self._stop_threshold
+
+    def _is_trained(self, features: Features) -> bool:
+        if not self._trained:
+            return False
+        gaps = np.abs(np.array(self._trained) - features).max(axis=1)
+        return bool(self._same(gaps).any())
+
+    def _get_novelty(self, node: _Node) -> float:
+        """The Good-Turing chance that node's next child is a belief that no child
+        and no earlier sleep has: (children seen once and untrained + 1) /
+        (children + 2)."""
+        if node.novelty is None:
+            singles = 0
+            if node.children:
+                features = np.array([c.features for c in node.children])
+                gaps = np.abs(features[:, None] - features[None]).max(axis=2)
+                counts = self._same(gaps).sum(axis=1)
+                trained = np.array([c.trained for c in node.children])
+                singles = int(((counts == 1) & ~trained).sum())
+            node.novelty = (singles + 1) / (len(node.children) + 2)
+        return node.novelty
+
+    def _get_expansion_values(self, nodes: list[_Node]) -> NDArray:
+        """value(n) = w_n / (k_n + 1) * novelty(n) * miss(n): what a new child of
+        n is expected to add to this sleep's picks."""
+        values = []
+        for node in nodes:
+            novelty = self._get_novelty(node)
+            num_children = len(node.children)
+            miss = 1.0
+            if node.depth >= 1:
+                alpha = novelty * (num_children + 1) / (1.0 - novelty)
+                miss = alpha / (alpha + self._later_sleep_budget)
+            values.append(node.weight / (num_children + 1) * novelty * miss)
+        return np.array(values)
 
     def _pick_by_gain(
         self, nodes: list[_Node], num_picks: int, rng: np.random.Generator

@@ -255,3 +255,60 @@ def test_sleep_with_later_dreaming():
     rng = np.random.default_rng(0)
     picks = [source.get_training_belief(i, belief, params, rng) for i in (1, 2, 3, 4)]
     assert len({id(p) for p in picks}) == 4
+
+
+def _fan(keys: list[float]) -> tuple[_Node, list[_Node]]:
+    """A root whose children have the given cache keys, all leaves."""
+    root = _Node(None, np.full(2, 9.0), None, 0)
+    root.children = [_Node(None, np.full(2, k), root, 1) for k in keys]
+    _set_weights(root)
+    return root, root.children
+
+
+def test_expansion_values_favor_a_novel_root():
+    """While the root's children are all new beliefs, a new root child is worth
+    more than a child of a depth-1 node, which the later sleep there would likely
+    train anyway."""
+    # pylint: disable=protected-access
+    source = _source(match_threshold=0.5, later_sleeps="dreaming", expansion="value")
+    root, children = _fan([0.0, 3.0, 6.0])
+    values = source._get_expansion_values([root, children[0]])
+    # Root: 1/4 * (3 + 1)/5. Child: 1/3 * 1/2 * alpha/(alpha + 4), alpha = 1.
+    assert np.allclose(values, [0.2, 1 / 3 * 0.5 * 0.2])
+
+
+def test_expansion_values_move_down_once_the_root_repeats():
+    """When every root child has the same belief, the root is unlikely to show a
+    new one, and a depth-1 node's child is worth more."""
+    # pylint: disable=protected-access
+    source = _source(
+        match_threshold=0.5,
+        later_sleeps="dreaming",
+        expansion="value",
+        later_sleep_budget=1,
+    )
+    root, children = _fan([0.0] * 6)
+    values = source._get_expansion_values([root, children[0]])
+    assert values[1] > values[0]
+
+
+def test_value_expansion_grows_the_root_without_widening():
+    """With a large later-sleep budget, most dreams go to the root, past the
+    progressive widening limit."""
+    source = _source(
+        num_training_beliefs=1,
+        num_expansions=40,
+        max_children=None,
+        widening_constant=1.0,
+        wave_size=1,
+        match_threshold=0.5,
+        later_sleeps="dreaming",
+        later_sleep_budget=64,
+        expansion="value",
+    )
+    params = RandomShootingPlanner(TwoLinkArmModel()).get_default_params()
+    nodes = source._grow_tree(  # pylint: disable=protected-access
+        IntervalBelief(JOINT_LIMIT_PRIOR), params, np.random.default_rng(0)
+    )
+    assert len(nodes[0].children) > np.ceil(41**0.5)
+    assert len(nodes[0].children) >= 30
