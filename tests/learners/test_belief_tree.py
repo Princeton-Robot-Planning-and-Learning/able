@@ -70,3 +70,14 @@ def test_untrained_scores_prefer_new_beliefs():
     source._trained = [np.zeros(2)]  # pylint: disable=protected-access
     scores = source._scores([near, far], [])  # pylint: disable=protected-access
     assert scores[0] == 0.0 and scores[1] > 0.0
+
+
+def test_small_tree_repeats_its_picks():
+    """A tree with fewer nodes than the sleep budget repeats its picks."""
+    limits = np.array([-1.2, 1.4, -2.0, 0.9])
+    known = IntervalBelief(np.stack([limits, limits], axis=1))
+    source = _source(num_training_beliefs=10, num_expansions=40, max_children=2)
+    params = RandomShootingPlanner(TwoLinkArmModel()).get_default_params()
+    rng = np.random.default_rng(0)
+    picks = [source.get_training_belief(i, known, params, rng) for i in range(1, 11)]
+    assert picks[7] is picks[0]

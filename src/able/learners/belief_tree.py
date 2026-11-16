@@ -56,7 +56,8 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
 
     The first iteration of each sleep grows the tree with num_expansions dreams,
     wave_size at a time from the highest-scoring open nodes, and picks
-    num_training_beliefs nodes greedily; each iteration returns the next pick. A
+    num_training_beliefs nodes greedily (all of them if the tree is smaller); each
+    iteration returns the next pick. A
     node is terminal at max_depth, or once its belief moved less than
     stop_threshold over two consecutive cycles. Runs in one process only.
     """
@@ -106,8 +107,8 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     ) -> Belief[HiddenParamsType]:
         if iteration == 1:
             self._picks = self._plan_sleep(belief, params, rng)
-        assert iteration <= len(self._picks), "The sleep budget exceeds the picks"
-        return self._picks[iteration - 1]
+        # A tree smaller than the budget repeats its picks.
+        return self._picks[(iteration - 1) % len(self._picks)]
 
     def draw(
         self,
@@ -126,7 +127,7 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     ) -> list[Belief[HiddenParamsType]]:
         nodes = self._grow_tree(belief, params, rng)
         picks: list[_Node] = []
-        for _ in range(self._num_training_beliefs):
+        for _ in range(min(self._num_training_beliefs, len(nodes))):
             open_nodes = [n for n in nodes if n not in picks]
             scores = self._scores(open_nodes, [p.features for p in picks])
             picks.append(open_nodes[int(np.argmax(scores))])
