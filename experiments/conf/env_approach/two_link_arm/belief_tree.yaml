@@ -5,8 +5,8 @@ max_depth: 4
 # Progressive widening: a node may have ceil(c * visits^a) children, where visits
 # counts the expansions at or below it.
 max_children: null
-widening_constant: 2.0
-widening_exponent: 0.5
+widening_constant: 1.0
+widening_exponent: 0.7
 # Below 1, a belief "barely moved" if its cache key did not change.
 stop_threshold: 0.5
 wave_size: 8
