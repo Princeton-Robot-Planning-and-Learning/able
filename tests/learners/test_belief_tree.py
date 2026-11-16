@@ -88,3 +88,24 @@ def test_small_tree_repeats_its_picks():
     rng = np.random.default_rng(0)
     picks = [source.get_training_belief(i, known, params, rng) for i in range(1, 11)]
     assert picks[7] is picks[0]
+
+
+def test_progressive_widening_widens_the_root():
+    """With widening, the root's child limit grows with the expansions below it,
+    and every node keeps within its limit."""
+    source = _source(
+        num_training_beliefs=1,
+        num_expansions=40,
+        max_children=None,
+        widening_constant=1.0,
+        wave_size=1,
+    )
+    params = RandomShootingPlanner(TwoLinkArmModel()).get_default_params()
+    nodes = source._grow_tree(  # pylint: disable=protected-access
+        IntervalBelief(JOINT_LIMIT_PRIOR), params, np.random.default_rng(0)
+    )
+    root = nodes[0]
+    assert root.visits == len(nodes) == 41
+    assert len(root.children) > 4
+    for node in nodes:
+        assert len(node.children) <= np.ceil(node.visits**0.5)

@@ -27,6 +27,8 @@ class _Node:
     children: list["_Node"] = field(default_factory=list)
     terminal: bool = False
     weight: float = 1.0
+    # One plus the expansions made at this node or below it.
+    visits: int = 1
 
     def ancestors(self) -> list["_Node"]:
         """Ancestors below the root: beliefs future sleeps will train near."""
@@ -60,8 +62,10 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     wave_size at a time from the highest-scoring open nodes, and picks
     num_training_beliefs nodes greedily (all of them if the tree is smaller); each
     iteration returns the next pick. A node is terminal at max_depth, or once its
-    belief moved less than stop_threshold over two consecutive cycles. Runs in one
-    process only.
+    belief moved less than stop_threshold over two consecutive cycles. A node may
+    have at most max_children children or, with progressive widening, at most
+    ceil(widening_constant * visits^widening_exponent), so the tree grows wider
+    where it is explored more. Runs in one process only.
     """
 
     def __init__(
@@ -72,7 +76,9 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         num_training_beliefs: int,
         num_expansions: int = 256,
         max_depth: int = 4,
-        max_children: int = 4,
+        max_children: int | None = 4,
+        widening_constant: float | None = None,
+        widening_exponent: float = 0.5,
         stop_threshold: float = 0.5,
         wave_size: int = 8,
         init_radius: float = 1.0,
@@ -82,7 +88,9 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         refit_per_iteration: bool = True,
     ) -> None:
         assert 0 < num_training_beliefs <= num_expansions + 1, "Too few nodes to pick"
-        assert max_depth >= 1 and max_children >= 1 and wave_size >= 1
+        assert max_depth >= 1 and wave_size >= 1
+        assert max_children is not None or widening_constant is not None
+        assert max_children is None or max_children >= 1
         self._dreamer = dreamer
         self._get_features = get_features
         self._get_cost = get_cost
@@ -90,6 +98,8 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         self._num_expansions = num_expansions
         self._max_depth = max_depth
         self._max_children = max_children
+        self._widening_constant = widening_constant
+        self._widening_exponent = widening_exponent
         self._stop_threshold = stop_threshold
         self._wave_size = wave_size
         self._init_radius = init_radius
@@ -171,12 +181,12 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         while spent < self._num_expansions:
             budget = min(self._wave_size, self._num_expansions - spent)
             if spent == 0:
-                wave = [root] * min(budget, self._max_children)
+                wave = [root] * min(budget, self._get_max_children(root))
             else:
                 expandable = [
                     n
                     for n in nodes
-                    if not n.terminal and len(n.children) < self._max_children
+                    if not n.terminal and len(n.children) < self._get_max_children(n)
                 ]
                 if not expandable:
                     break
@@ -201,10 +211,23 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
                 )
                 node.children.append(child)
                 nodes.append(child)
+                ancestor: _Node | None = node
+                while ancestor is not None:
+                    ancestor.visits += 1
+                    ancestor = ancestor.parent
                 self._add_cost_data(cycle.plans, self._trained)
             spent += len(wave)
             _set_weights(root)
         return nodes
+
+    def _get_max_children(self, node: _Node) -> int:
+        limits = []
+        if self._max_children is not None:
+            limits.append(self._max_children)
+        if self._widening_constant is not None:
+            widened = self._widening_constant * node.visits**self._widening_exponent
+            limits.append(max(1, int(np.ceil(widened))))
+        return min(limits)
 
     def _scores(self, nodes: list[_Node], picked: list[Features]) -> NDArray:
         """Each node's score, with the picked features counted as trained."""
