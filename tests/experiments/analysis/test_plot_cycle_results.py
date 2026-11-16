@@ -8,6 +8,7 @@ from types import ModuleType
 
 import numpy as np
 import pandas as pd
+from matplotlib import pyplot as plt
 from omegaconf import OmegaConf
 
 ANALYSIS_DIR = Path(__file__).resolve().parents[3] / "experiments" / "analysis"
@@ -193,6 +194,33 @@ def test_planner_work_in_the_table(tmp_path: Path) -> None:
     table = (tmp_path / "summary_table.md").read_text(encoding="utf-8")
     assert "| Simulations per push, cycle 0 | 275.00 ± 0.00 |" in table
     assert "| Simulations per push, last 5 cycles | 187.50 ± 0.00 |" in table
+
+
+def test_limb_plots_rollouts(tmp_path: Path) -> None:
+    """Tests that a limb row gets a panel of MPC rollouts per task when the runs
+    record them, and that other environments' rows do not."""
+    widths = {}
+    for name, extra in (("without", None), ("with", {"num_rollouts": [1.0] * 4})):
+        results_dir = tmp_path / name
+        _write_run(
+            results_dir / "0", "scratch", 0, [1.0, 2.0, 3.0, 4.0], "limb", extra=extra
+        )
+        _write_run(results_dir / "1", "scratch", 0, [1.0, 2.0, 3.0, 4.0], "friction")
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ANALYSIS_DIR / "plot_cycle_results.py"),
+                "--results_dir",
+                str(results_dir),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        widths[name] = plt.imread(results_dir / "cycle_results.png").shape[1]
+    # Two panels per row without the rollouts, three with them.
+    assert widths["with"] > 1.3 * widths["without"]
 
 
 def _write_budget_run(

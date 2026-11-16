@@ -37,7 +37,7 @@ Each run writes its resolved `config.yaml`, `eval_results.csv` (one row per eval
 python experiments/analysis/plot_cycle_results.py --results_dir <directory containing the runs>
 ```
 
-The plot shows raw planning time and success rate per cycle. Planning time averages every evaluation task, and a timed-out task counts at the time it took (about the planning limit), so a robot that stops timing out does not seem slower for the hard tasks it now finishes. When the runs record timeouts, timed-out tasks also count as failures and are shown in a third panel of timeout rate.
+The plot shows raw planning time and success rate per cycle, and for limb its MPC rollouts per task, which do not depend on the machine. Planning time averages every evaluation task, and a timed-out task counts at the time it took (about the planning limit), so a robot that stops timing out does not seem slower for the hard tasks it now finishes. When the runs record timeouts, timed-out tasks also count as failures and are shown in a third panel of timeout rate.
 
 To plot how the belief moves, its distance from the true parameters and its standard deviation per cycle in prior standard deviations, with one panel per number of queries per cycle (run it at the runs' code version, since it rebuilds each run's domain for the prior and the truth):
 
