@@ -29,6 +29,14 @@ class Learner(ABC, Generic[HiddenParamsType, PlannerParamsType]):
     ) -> PlannerParamsType:
         """Return new planner parameters given the current belief and parameters."""
 
+    @property
+    def sleep_stage_times(self) -> dict[str, float]:
+        """The wall time of each stage of the last sleep, in seconds, by stage name.
+
+        Empty for a learner without stages.
+        """
+        return {}
+
 
 class NullLearner(Learner[HiddenParamsType, PlannerParamsType]):
     """Never changes the planner parameters."""

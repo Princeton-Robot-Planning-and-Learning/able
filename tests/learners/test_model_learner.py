@@ -1,6 +1,7 @@
 """Tests for learners/model_learner.py."""
 
 import dataclasses
+import time
 
 import numpy as np
 import pytest
@@ -12,10 +13,12 @@ from able.envs.two_link_arm import (
     ArmTask,
     TwoLinkArmModel,
 )
+from able.learners.base import NullLearner
 from able.learners.belief_sources import CurrentBeliefSource, PriorSource
 from able.learners.model_learner import ModelLearner
 from able.models.base import Dataset
 from able.models.exact_match_cache import ExactMatchCache
+from able.parallel import SerialPool, WorkerContext
 from able.planners.random_shooting import (
     RandomShootingParams,
     RandomShootingPlanner,
@@ -182,3 +185,53 @@ def test_sampled_training_tasks():
             Budget(),
             num_training_tasks=0,
         )
+
+
+class _SlowSource(CurrentBeliefSource):
+    """Trains under the current belief after a short wait, like a dream."""
+
+    def get_training_belief(self, iteration, belief, params, rng):
+        time.sleep(0.01)
+        return super().get_training_belief(iteration, belief, params, rng)
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+def test_sleep_stage_times(parallel):
+    """Tests that the last sleep's time is split into the belief source's work,
+    training plans, and fitting, with or without a pool, and is zero for a skipped
+    sleep."""
+    planner = _make_planner()
+    learner: ModelLearner = ModelLearner(
+        planner,
+        FiniteTaskDistribution(TASKS),
+        _SlowSource(),
+        Budget(),
+        refit="per_sleep" if parallel else "per_iteration",
+        max_sleeps=1,
+    )
+    assert learner.sleep_stage_times == {"dream": 0.0, "training": 0.0, "fit": 0.0}
+    pool = SerialPool(WorkerContext(None, planner, learner)) if parallel else None
+    start_time = time.perf_counter()
+    params = learner.learn(
+        IntervalBelief(JOINT_LIMIT_PRIOR),
+        planner.get_default_params(),
+        Budget(max_iterations=3),
+        np.random.default_rng(0),
+        pool,
+    )
+    sleep_time = time.perf_counter() - start_time
+    times = learner.sleep_stage_times
+    assert set(times) == {"dream", "training", "fit"}
+    assert times["dream"] >= 0.03
+    assert times["training"] > 0
+    assert times["fit"] > 0
+    assert sum(times.values()) <= sleep_time
+    learner.learn(
+        IntervalBelief(JOINT_LIMIT_PRIOR),
+        params,
+        Budget(max_iterations=3),
+        np.random.default_rng(0),
+        pool,
+    )
+    assert learner.sleep_stage_times == {"dream": 0.0, "training": 0.0, "fit": 0.0}
+    assert not NullLearner().sleep_stage_times

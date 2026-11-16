@@ -237,6 +237,8 @@ def test_run_cycles_reports_each_cycle():
         assert result.execution_wall_time > 0
         assert result.evaluation_wall_time > 0
         assert result.cycle_wall_time >= sum(stage_times)
+        # The learner does not time stages of its sleep.
+        assert not result.sleep_stage_wall_times
 
 
 def test_executed_tasks_do_not_depend_on_planning():
