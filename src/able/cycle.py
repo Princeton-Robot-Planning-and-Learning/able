@@ -261,6 +261,21 @@ def _describe_outcome(result: EpisodeResult) -> str:
     return f"{outcome}, planning time {1000 * result.planning_wall_time:.1f} ms"
 
 
+def _sleep(
+    robot: Robot[Any, Any, Any, Any, Any, Any, Any],
+    budget: Budget,
+    rng: np.random.Generator,
+    pool: WorkerPool | None,
+    recorder: CycleRecorder[Any, Any, Any],
+    cycle: int,
+) -> float:
+    recorder.start_stage(cycle, Stage.SLEEP)
+    start_time = time.perf_counter()
+    robot.sleep(budget, rng, pool)
+    recorder.end_stage()
+    return time.perf_counter() - start_time
+
+
 def run_cycles(
     robot: Robot[
         StateType,
@@ -295,6 +310,7 @@ def run_cycles(
         | None
     ) = None,
     pool: WorkerPool | None = None,
+    belief_anticipation_oracle: bool = False,
 ) -> list[
     CycleResult[StateType, ActType, TaskType, HiddenParamsType, QueryType, ResponseType]
 ]:
@@ -316,6 +332,9 @@ def run_cycles(
     from the evaluation stream, and its own copy of the real environment, so
     evaluation no longer draws noise from the real environment that task execution
     uses. A pool cannot be used with a recorder, which sees episodes as they run.
+
+    With belief_anticipation_oracle, the robot sleeps after execution instead, so it
+    trains knowing the belief it is evaluated with.
     """
     assert (
         budgets.execution.max_iterations is not None
@@ -327,11 +346,11 @@ def run_cycles(
     results = []
     for cycle in range(num_cycles):
         cycle_start_time = time.perf_counter()
-        recorder.start_stage(cycle, Stage.SLEEP)
-        start_time = time.perf_counter()
-        robot.sleep(budgets.sleep, sleep_rng, pool)
-        sleep_wall_time = time.perf_counter() - start_time
-        recorder.end_stage()
+        sleep_wall_time = 0.0
+        if not belief_anticipation_oracle:
+            sleep_wall_time = _sleep(
+                robot, budgets.sleep, sleep_rng, pool, recorder, cycle
+            )
 
         recorder.start_stage(cycle, Stage.QUERIES)
         start_time = time.perf_counter()
@@ -356,6 +375,10 @@ def run_cycles(
             )
         execution_wall_time = time.perf_counter() - start_time
         recorder.end_stage()
+        if belief_anticipation_oracle:
+            sleep_wall_time = _sleep(
+                robot, budgets.sleep, sleep_rng, pool, recorder, cycle
+            )
 
         recorder.start_stage(cycle, Stage.EVALUATION)
         evaluations: list[EpisodeResult[StateType, ActType, TaskType]] = []

@@ -11,6 +11,8 @@ num_cycles: 20
 # at once, one CPU each. 1 runs everything in this process. With
 # hydra/launcher=della, each job requests this many CPUs.
 num_workers: 1
+# Sleep after execution, under the belief the robot is evaluated with.
+belief_anticipation_oracle: false
 # Evaluation tasks sampled once per seed and used in every cycle. Finite task
 # distributions ignore this and evaluate every task.
 num_eval_tasks: 6
