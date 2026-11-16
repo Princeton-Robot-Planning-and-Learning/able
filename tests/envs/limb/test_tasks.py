@@ -56,12 +56,21 @@ def test_make_domain(domain):
     assert domain.initial_belief == RangeOfMotionBelief.from_prior(
         prior.mean, prior.stddev, prior.low, prior.high, 3
     )
+    scaled = RangeOfMotionPrior(scales=(0.5, 1.0, 0.75))
+    narrow = make_domain(seed=0, prior=scaled)
+    mean, stddev, low, high = scaled.get_parameters(3).T
+    narrow_theta = _get_true_theta(narrow)
+    assert np.all((low <= narrow_theta) & (narrow_theta <= high))
+    assert narrow.initial_belief == RangeOfMotionBelief.from_prior(
+        mean, stddev, low, high, 3
+    )
     same = make_domain(seed=0)
     given = make_domain(seed=0, true_theta=np.array([0.8, 0.9, 1.0]))
     assert np.array_equal(_get_true_theta(same), theta)
     assert np.array_equal(_get_true_theta(given), [0.8, 0.9, 1.0])
     _close(same)
     _close(given)
+    _close(narrow)
 
 
 def test_sampled_tasks(domain):

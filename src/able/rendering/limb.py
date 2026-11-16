@@ -119,7 +119,7 @@ class LimbRenderer(Renderer[LimbState, LimbTask, NDArray[np.float64]]):
             )
         names = [m.replace("_", " ") for m in self._model.variant.active_motions]
         axes.set_yticks(rows, names)
-        axes.set_xlim(belief.low - 0.05, belief.high + 0.05)
+        axes.set_xlim(float(belief.low.min()) - 0.05, float(belief.high.max()) + 0.05)
         axes.invert_yaxis()
         axes.set_xlabel("Range-of-motion scale")
         axes.set_title(

@@ -10,6 +10,15 @@ env:
     # under the prior takes 50-250 s per task in this band.
     min_separation: 0.5
     max_separation: 0.8
+    # The population the person is drawn from and the robot's initial belief:
+    # each motion's scale of its normal range is N(0.9, 0.15) truncated to
+    # [0.7, 1.2], with all four multiplied by the motion's entry of scales. For the
+    # left arm (shoulder flexion, shoulder abduction, elbow flexion), the scales
+    # put each range where the robot can carry the limb, so executed tasks come
+    # near the person's limits.
+    prior:
+      _target_: able.envs.limb.human.RangeOfMotionPrior
+      scales: [0.5, 1.0, 0.75]
   # Instantiated with the domain's environment model, only when recording videos.
   renderer:
     _target_: able.rendering.limb.LimbRenderer

@@ -365,6 +365,7 @@ def make_domain(
     if true_theta is None:
         true_theta = prior.sample(num_motions, rng)
     model = LimbModel(limb_variant, settings, horizon=horizon)
+    mean, stddev, low, high = prior.get_parameters(num_motions).T
     return Domain(
         env_model=model,
         task_distribution=LimbTaskDistribution(
@@ -374,7 +375,7 @@ def make_domain(
             TaskBox(min_separation=min_separation, max_separation=max_separation),
         ),
         initial_belief=RangeOfMotionBelief.from_prior(
-            prior.mean, prior.stddev, prior.low, prior.high, num_motions
+            mean, stddev, low, high, num_motions
         ),
         real_env=SimulatedEnvironment(model, np.asarray(true_theta), rng),
     )

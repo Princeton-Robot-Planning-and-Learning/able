@@ -349,10 +349,11 @@ def test_limb(tmp_path: Path) -> None:
     cycle_df = pd.read_csv(tmp_path / "cycle_results.csv")
     assert list(cycle_df.num_queries) == [1]
     assert list(cycle_df.num_executed_tasks) == [1]
-    # One mean and standard deviation per motion, after the query and execution.
-    for i in range(3):
-        assert 0.7 <= cycle_df[f"belief_mean_{i}"].iloc[0] <= 1.2
-        assert 0.0 < cycle_df[f"belief_std_{i}"].iloc[0] < 0.15
+    # One mean and standard deviation per motion, after the query and execution,
+    # within each motion's prior range (limb.yaml scales [0.7, 1.2] per motion).
+    for i, scale in enumerate([0.5, 1.0, 0.75]):
+        assert 0.7 * scale <= cycle_df[f"belief_mean_{i}"].iloc[0] <= 1.2 * scale
+        assert 0.0 < cycle_df[f"belief_std_{i}"].iloc[0] < 0.15 * scale
     assert sorted(p.name for p in (tmp_path / "videos").iterdir()) == [
         "cycle_000_2_queries.mp4",
         "cycle_000_3_execution.mp4",

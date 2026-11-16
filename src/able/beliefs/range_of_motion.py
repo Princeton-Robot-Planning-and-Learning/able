@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 from scipy.stats import truncnorm
 
 from able.beliefs.base import Belief
@@ -20,31 +20,43 @@ class RangeOfMotionBelief(Belief[NDArray[np.float64]]):
 
     Measurements update the untruncated Gaussian in closed form. The lower bound is
     the population's low or a floor: a scale the person was seen to reach safely,
-    so their limit lies beyond it.
+    so their limit lies beyond it. The population's low and high are per motion.
     """
 
     mean: NDArray[np.float64]
     stddev: NDArray[np.float64]
-    low: float
-    high: float
+    low: NDArray[np.float64]
+    high: NDArray[np.float64]
     floor: NDArray[np.float64]
 
     def __post_init__(self) -> None:
-        assert self.mean.shape == self.stddev.shape == self.floor.shape
+        shapes = {a.shape for a in (self.mean, self.stddev, self.low, self.high)}
+        assert shapes == {self.floor.shape}, "Need one value per motion"
         assert np.all(self.stddev > 0.0), "Need positive standard deviations"
-        assert self.low < self.high
+        assert np.all(self.low < self.high)
 
     @classmethod
     def from_prior(
-        cls, mean: float, stddev: float, low: float, high: float, num_motions: int
+        cls,
+        mean: ArrayLike,
+        stddev: ArrayLike,
+        low: ArrayLike,
+        high: ArrayLike,
+        num_motions: int,
     ) -> "RangeOfMotionBelief":
-        """The same truncated Gaussian for every motion, with no floor."""
+        """The prior's truncated Gaussian for each motion, with no floor. Each
+        parameter is one value for every motion or one per motion."""
+
+        def per_motion(value: ArrayLike) -> NDArray[np.float64]:
+            array = np.asarray(value, dtype=np.float64)
+            return np.broadcast_to(array, (num_motions,)).copy()
+
         return cls(
-            mean=np.full(num_motions, mean),
-            stddev=np.full(num_motions, stddev),
-            low=low,
-            high=high,
-            floor=np.full(num_motions, low),
+            mean=per_motion(mean),
+            stddev=per_motion(stddev),
+            low=per_motion(low),
+            high=per_motion(high),
+            floor=per_motion(low),
         )
 
     @property
@@ -74,7 +86,9 @@ class RangeOfMotionBelief(Belief[NDArray[np.float64]]):
     def with_floor(self, motion: int, scale: float) -> "RangeOfMotionBelief":
         """The belief after seeing the person reach the scale of a motion safely."""
         floor = self.floor.copy()
-        floor[motion] = min(max(floor[motion], scale), self.high - _FLOOR_MARGIN)
+        floor[motion] = min(
+            max(floor[motion], scale), self.high[motion] - _FLOOR_MARGIN
+        )
         return dataclasses.replace(self, floor=floor)
 
     def with_measurement(
@@ -97,7 +111,8 @@ class RangeOfMotionBelief(Belief[NDArray[np.float64]]):
             np.array_equal(self.mean, other.mean)
             and np.array_equal(self.stddev, other.stddev)
             and np.array_equal(self.floor, other.floor)
-            and (self.low, self.high) == (other.low, other.high)
+            and np.array_equal(self.low, other.low)
+            and np.array_equal(self.high, other.high)
         )
 
     def __hash__(self) -> int:

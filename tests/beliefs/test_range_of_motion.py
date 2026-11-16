@@ -51,6 +51,25 @@ def test_a_floor_truncates_and_narrows():
     assert np.array_equal(raised.with_measurement(0, 1.0, 0.1).floor, raised.floor)
 
 
+def test_per_motion_bounds():
+    """Tests that each motion keeps its own population range."""
+    belief = RangeOfMotionBelief.from_prior(
+        [0.45, 0.9, 0.675],
+        [0.075, 0.15, 0.1125],
+        [0.35, 0.7, 0.525],
+        [0.6, 1.2, 0.9],
+        3,
+    )
+    assert np.allclose(belief.lower, [0.35, 0.7, 0.525])
+    draws = np.stack([belief.sample(np.random.default_rng(i)) for i in range(500)])
+    assert np.all((belief.low <= draws) & (draws <= belief.high))
+    assert np.allclose(draws.mean(axis=0), belief.truncated_mean, atol=0.02)
+    # A floor stays below its own motion's top.
+    assert belief.with_floor(0, 5.0).lower[0] == pytest.approx(0.6, abs=1e-2)
+    assert belief.with_floor(0, 5.0).lower[0] < 0.6
+    assert belief != _prior()
+
+
 def test_equality():
     """Tests that beliefs compare and hash by value and are never modified."""
     belief = _prior()

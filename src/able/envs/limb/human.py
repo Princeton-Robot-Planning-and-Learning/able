@@ -7,6 +7,7 @@ wheelchair) and a limb (left or right arm or leg).
 """
 
 from dataclasses import dataclass
+from typing import Sequence
 
 import numpy as np
 from kinder.envs.dynamic3d.limb_utils import NUM_LIMB_JOINTS
@@ -106,20 +107,36 @@ def get_variant(name: str) -> LimbVariant:
 @dataclass(frozen=True)
 class RangeOfMotionPrior:
     """The population that theta is drawn from: each scale is normal, truncated to
-    [low, high]."""
+    [low, high].
+
+    scales, if given, has one entry per motion and multiplies that motion's mean,
+    standard deviation, low, and high, so a motion can center on a narrower range
+    with the same relative spread.
+    """
 
     mean: float = 0.9
     stddev: float = 0.15
     low: float = 0.7
     high: float = 1.2
+    scales: Sequence[float] | None = None
+
+    def get_parameters(self, num_motions: int) -> NDArray[np.float64]:
+        """Each motion's (mean, stddev, low, high), one row per motion."""
+        scales = np.asarray(
+            [1.0] * num_motions if self.scales is None else list(self.scales),
+            dtype=np.float64,
+        )
+        assert scales.shape == (num_motions,), "Need one scale per motion"
+        parameters = np.array([self.mean, self.stddev, self.low, self.high])
+        return scales[:, None] * parameters
 
     def sample(self, num_motions: int, rng: np.random.Generator) -> NDArray[np.float64]:
-        """One scale per motion, redrawing any outside [low, high]."""
+        """One scale per motion, redrawing any outside its [low, high]."""
         draws = np.empty(num_motions)
-        for i in range(num_motions):
+        for i, (mean, stddev, low, high) in enumerate(self.get_parameters(num_motions)):
             while True:
-                value = rng.normal(self.mean, self.stddev)
-                if self.low <= value <= self.high:
+                value = rng.normal(mean, stddev)
+                if low <= value <= high:
                     draws[i] = value
                     break
         return draws

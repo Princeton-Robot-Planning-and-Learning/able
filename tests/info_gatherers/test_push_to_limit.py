@@ -14,11 +14,9 @@ from able.structs import Budget
 VARIANT = get_variant("human-left-arm")
 
 
-def _prior() -> RangeOfMotionBelief:
-    prior = RangeOfMotionPrior()
-    return RangeOfMotionBelief.from_prior(
-        prior.mean, prior.stddev, prior.low, prior.high, 3
-    )
+def _prior(scales=None) -> RangeOfMotionBelief:
+    mean, stddev, low, high = RangeOfMotionPrior(scales=scales).get_parameters(3).T
+    return RangeOfMotionBelief.from_prior(mean, stddev, low, high, 3)
 
 
 def _gatherer(probe_band: float = 0.3) -> PushToLimitGatherer:
@@ -41,14 +39,19 @@ def test_choose():
     assert exact.choose(raised, rng).target == pytest.approx(1.1 * query.target)
 
 
-def test_gather_narrows_the_belief_toward_the_person():
-    """Tests that queries narrow the belief and never exclude the person."""
-    theta = np.array([0.85, 1.05, 0.95])
+@pytest.mark.parametrize(
+    "theta, scales",
+    [([0.85, 1.05, 0.95], None), ([0.4, 0.95, 0.7], (0.5, 1.0, 0.75))],
+)
+def test_gather_narrows_the_belief_toward_the_person(theta, scales):
+    """Tests that queries narrow the belief and never exclude the person, also
+    with a narrower range for some motions."""
+    theta = np.array(theta)
     rng = np.random.default_rng(7)
     model = LimbModel(VARIANT)
     env = SimulatedEnvironment(model, theta, rng)
     updater = RangeOfMotionBeliefUpdater(VARIANT)
-    belief = _prior()
+    belief = _prior(scales)
     try:
         data = _gatherer().gather(belief, env, Budget(max_iterations=6), rng)
     finally:
