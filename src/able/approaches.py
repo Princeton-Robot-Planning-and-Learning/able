@@ -334,6 +334,9 @@ def make_belief_tree_robot(
     stop_threshold: float = 0.5,
     wave_size: int = 8,
     init_radius: float = 1.0,
+    later_sleeps: str = "ancestors",
+    later_sleep_budget: int | None = None,
+    num_later_sleep_draws: int = 8,
     max_warm_starts_per_key: int = 4,
     recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
 ) -> ArmRobot:
@@ -373,6 +376,9 @@ def make_belief_tree_robot(
         stop_threshold=stop_threshold,
         wave_size=wave_size,
         init_radius=init_radius,
+        later_sleeps=later_sleeps,
+        later_sleep_budget=later_sleep_budget,
+        num_later_sleep_draws=num_later_sleep_draws,
     )
     return Robot(
         planner=planner,

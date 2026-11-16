@@ -79,6 +79,16 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     For ablations, use_facility_gain=False picks by score(n) alone,
     use_leaf_counts=False sets every m_n to 1, and learn_cost_model=False keeps the
     initial cost model.
+
+    later_sleeps says what the picks assume about the sleeps after this one.
+    "ancestors" (the default) counts each node's ancestors as trained, as if later
+    sleeps trained at exactly those beliefs. "dreaming" simulates them instead:
+    the sleep at each node below the root trains under later_sleep_budget of its
+    children, drawn by weight as dreaming draws next beliefs, and the gain is
+    averaged over num_later_sleep_draws such draws. A pick then counts only for
+    the cost that later sleeps would not remove, and each leaf counts once (its
+    later evaluations follow sleeps at the leaf itself, which train near it). The
+    tree still grows by score(n).
     """
 
     def __init__(
@@ -104,9 +114,15 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         refit_per_iteration: bool = True,
         use_leaf_counts: bool = True,
         learn_cost_model: bool = True,
+        later_sleeps: str = "ancestors",
+        later_sleep_budget: int | None = None,
+        num_later_sleep_draws: int = 8,
     ) -> None:
         assert 0 < num_training_beliefs <= num_expansions + 1, "Too few nodes to pick"
         assert max_depth >= 1 and wave_size >= 1
+        assert later_sleeps in ("ancestors", "dreaming")
+        assert later_sleeps == "ancestors" or use_facility_gain
+        assert num_later_sleep_draws >= 1
         assert max_children is not None or widening_constant is not None
         assert max_children is None or max_children >= 1
         self._dreamer = dreamer
@@ -131,6 +147,11 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         self._refit_per_iteration = refit_per_iteration
         self._use_leaf_counts = use_leaf_counts
         self._learn_cost_model = learn_cost_model
+        self._later_sleeps = later_sleeps
+        self._later_sleep_budget = (
+            num_training_beliefs if later_sleep_budget is None else later_sleep_budget
+        )
+        self._num_later_sleep_draws = num_later_sleep_draws
         self._trained: list[Features] = []
         self._num_trained_before_sleep = 0
         self._cost_data = Dataset.empty()
@@ -181,7 +202,7 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         nodes = self._grow_tree(belief, params, rng)
         num_picks = min(self._num_training_beliefs, len(nodes))
         if self._use_facility_gain:
-            picks = self._pick_by_gain(nodes, num_picks)
+            picks = self._pick_by_gain(nodes, num_picks, rng)
         else:
             picks = []
             for _ in range(num_picks):
@@ -257,27 +278,97 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
             limits.append(max(1, int(np.ceil(widened))))
         return min(limits)
 
-    def _pick_by_gain(self, nodes: list[_Node], num_picks: int) -> list[_Node]:
-        """Greedy picks, each with the largest facility-location gain."""
-        rows, values = self._get_cost_rows(nodes), self._get_values(nodes)
+    def _pick_by_gain(
+        self, nodes: list[_Node], num_picks: int, rng: np.random.Generator
+    ) -> list[_Node]:
+        """Greedy picks, each with the largest facility-location gain, averaged
+        over the draws of the later sleeps."""
+        rows = self._get_cost_rows(nodes)
         features = np.array([n.features for n in nodes])
-        between = np.abs(features[:, None] - features[None]).max(axis=2)
-        between = self._match(between)
-        distances = self._get_distances(nodes, [])
-        costs = self._cost_at(rows, distances)
+        between = self._match(np.abs(features[:, None] - features[None]).max(axis=2))
+        if self._later_sleeps == "dreaming":
+            values = np.array([n.weight for n in nodes])
+            later = self._get_later_sleep_distances(nodes, between, rng)
+        else:
+            values = self._get_values(nodes)
+            later = self._get_ancestor_distances(nodes, between)
+        # Row n, draw r: n's distance to the beliefs trained before it is evaluated.
+        distances = np.minimum(self._get_distances_to(nodes, self._trained), later.T).T
+        self._log_coverage(nodes, later)
         available = np.ones(len(nodes), dtype=bool)
         picks = []
         for _ in range(num_picks):
-            # Row n, column c: n's distance once c is trained.
-            after = np.minimum(distances[:, None], between)
-            gains = values @ (costs[:, None] - self._cost_at(rows, after))
+            gains, after = self._get_gains(rows, values, distances, between)
             gains[~available] = -np.inf
             best = int(np.argmax(gains))
             picks.append(nodes[best])
             available[best] = False
             distances = after[:, best]
-            costs = self._cost_at(rows, distances)
         return picks
+
+    def _get_gains(
+        self, rows: NDArray, values: NDArray, distances: NDArray, between: NDArray
+    ) -> tuple[NDArray, NDArray]:
+        """Each candidate's gain, sum_n values_n (C(b_n, d_n) - C(b_n, d_n with the
+        candidate)), averaged over draws, and the distances after each candidate
+        (node, candidate, draw)."""
+        num_nodes, num_draws = distances.shape
+        costs = self._cost_at(rows, distances).mean(axis=1)
+        after = np.minimum(distances[:, None, :], between[:, :, None])
+        costs_after = self._cost_at(rows, after.reshape(num_nodes, -1))
+        costs_after = costs_after.reshape(num_nodes, num_nodes, num_draws).mean(axis=2)
+        return values @ (costs[:, None] - costs_after), after
+
+    def _get_ancestor_distances(self, nodes: list[_Node], between: NDArray) -> NDArray:
+        """Each node's distance to its ancestors below the root, as one draw."""
+        index = {id(n): i for i, n in enumerate(nodes)}
+        distances = np.full((len(nodes), 1), self._max_distance)
+        for i, node in enumerate(nodes):
+            for ancestor in node.ancestors():
+                distances[i, 0] = min(distances[i, 0], between[i, index[id(ancestor)]])
+        return distances
+
+    def _get_later_sleep_distances(
+        self, nodes: list[_Node], between: NDArray, rng: np.random.Generator
+    ) -> NDArray:
+        """Each node's distance to the beliefs later sleeps on its path train
+        under, per draw. The sleep at a node below the root trains under
+        later_sleep_budget of its children, drawn by weight with replacement."""
+        index = {id(n): i for i, n in enumerate(nodes)}
+        shape = (self._num_later_sleep_draws, self._later_sleep_budget)
+        trained_by = {}
+        for node in nodes:
+            if node.depth >= 1 and node.children:
+                children = [index[id(c)] for c in node.children]
+                weights = np.array([c.weight for c in node.children])
+                trained_by[id(node)] = rng.choice(
+                    children, size=shape, p=weights / weights.sum()
+                )
+        distances = np.full((len(nodes), shape[0]), self._max_distance)
+        for i, node in enumerate(nodes):
+            for ancestor in node.ancestors():
+                drawn = trained_by[id(ancestor)]
+                distances[i] = np.minimum(distances[i], between[i, drawn].min(axis=1))
+        return distances
+
+    def _log_coverage(self, nodes: list[_Node], later: NDArray) -> None:
+        """Logs the share of each depth's nodes (and draws) that later sleeps
+        train at distance 0, and each depth's total weight."""
+        depths = np.array([n.depth for n in nodes])
+        weights = np.array([n.weight for n in nodes])
+        coverage = {
+            int(d): round(float((later[depths == d] == 0).mean()), 3)
+            for d in np.unique(depths)
+        }
+        mass = {
+            int(d): round(float(weights[depths == d].sum()), 3)
+            for d in np.unique(depths)
+        }
+        logging.info(
+            "Belief tree: later-sleep coverage by depth %s, weight by depth %s",
+            coverage,
+            mass,
+        )
 
     def _scores(self, nodes: list[_Node], picked: list[Features]) -> NDArray:
         """Each node's own score, with the picked features counted as trained."""
@@ -297,6 +388,14 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
             for n in nodes
         ]
         return np.array([n.weight for n in nodes]) * np.array(counts)
+
+    def _get_distances_to(self, nodes: list[_Node], trained: list[Features]) -> NDArray:
+        """Each node's matched distance to the nearest of the trained features."""
+        if not trained:
+            return self._match(np.full(len(nodes), np.inf))
+        features = np.array([n.features for n in nodes])
+        gaps = np.abs(features[:, None] - np.array(trained)[None]).max(axis=2)
+        return self._match(gaps.min(axis=1))
 
     def _get_distances(self, nodes: list[_Node], picked: list[Features]) -> NDArray:
         """Each node's distance to the trained beliefs, the picked ones, and its

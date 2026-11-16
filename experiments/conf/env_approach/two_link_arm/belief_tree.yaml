@@ -21,4 +21,11 @@ stop_threshold: 0.5
 # root at one child per wave.
 wave_size: 1
 init_radius: 1.0
+# What picks assume about later sleeps: "ancestors" counts each node's ancestors
+# as trained; "dreaming" simulates each later sleep as dreaming over the node's
+# children (later_sleep_budget of them, default the sleep budget), averaged over
+# num_later_sleep_draws draws.
+later_sleeps: ancestors
+later_sleep_budget: null
+num_later_sleep_draws: 8
 max_warm_starts_per_key: 4

@@ -143,7 +143,7 @@ def test_facility_gain_prefers_shared_beliefs():
     nodes = [root, *shared, alone]
     scores = source._scores(nodes, [])
     assert np.isclose(scores[1], scores[3])
-    picks = source._pick_by_gain(nodes, 2)
+    picks = source._pick_by_gain(nodes, 2, np.random.default_rng(0))
     # The lone leaf stands for 4 evaluations at weight 1/3, more than the root.
     assert picks[0] in shared and picks[1] is alone
 
@@ -188,3 +188,64 @@ def test_wave_size_caps_children_per_wave():
         )
         widths[wave_size] = len(nodes[0].children)
     assert widths[1] > 2 * widths[8]
+
+
+def _chain() -> list[_Node]:
+    """A node at depth 1 (weight 1) with two leaves (weight 1/2 each), all with
+    distinct cache keys; the root is not a candidate."""
+    root = _Node(None, np.full(2, 9.0), None, 0)
+    middle = _Node(None, np.zeros(2), root, 1)
+    leaves = [_Node(None, np.full(2, x), middle, 2) for x in (3.0, 6.0)]
+    root.children, middle.children = [middle], leaves
+    _set_weights(root)
+    return [middle, *leaves]
+
+
+def test_later_sleeps_leave_deep_nodes_to_later_dreaming():
+    """Counting ancestors as trained, a leaf (3 evaluations at weight 1/2) beats
+    its parent; with later sleeps as dreaming, the parent's sleep covers both
+    leaves, so the parent comes first and the leaves add nothing."""
+    # pylint: disable=protected-access
+    nodes = _chain()
+    rng = np.random.default_rng(0)
+    open_loop = _source(match_threshold=0.5)._pick_by_gain(nodes, 1, rng)
+    assert open_loop[0] is nodes[1]
+    source = _source(match_threshold=0.5, later_sleeps="dreaming")
+    assert source._pick_by_gain(nodes, 1, rng)[0] is nodes[0]
+    features = np.array([n.features for n in nodes])
+    between = source._match(np.abs(features[:, None] - features[None]).max(axis=2))
+    later = source._get_later_sleep_distances(nodes, between, rng)
+    assert (later[1:] == 0).all()
+
+
+def test_later_sleep_gain_matches_closed_form():
+    """With one belief per later sleep and two equally likely leaves, each leaf is
+    missed with chance 1/2, so its gain is w (1 - Q) [C(far) - C(0)] = 1/4."""
+    # pylint: disable=protected-access
+    nodes = _chain()
+    source = _source(
+        match_threshold=0.5,
+        later_sleeps="dreaming",
+        later_sleep_budget=1,
+        num_later_sleep_draws=4000,
+    )
+    features = np.array([n.features for n in nodes])
+    between = source._match(np.abs(features[:, None] - features[None]).max(axis=2))
+    later = source._get_later_sleep_distances(nodes, between, np.random.default_rng(0))
+    rows = source._get_cost_rows(nodes)
+    values = np.array([n.weight for n in nodes])
+    distances = np.minimum(source._get_distances_to(nodes, []), later.T).T
+    gains, _ = source._get_gains(rows, values, distances, between)
+    gap = rows[0, -1] - rows[0, 0]
+    assert np.isclose(gains[0], gap)
+    assert np.allclose(gains[1:], 0.25 * gap, atol=0.02)
+
+
+def test_sleep_with_later_dreaming():
+    """A whole sleep runs with later sleeps simulated as dreaming."""
+    source = _source(later_sleeps="dreaming", match_threshold=0.5)
+    belief = IntervalBelief(JOINT_LIMIT_PRIOR)
+    params = RandomShootingPlanner(TwoLinkArmModel()).get_default_params()
+    rng = np.random.default_rng(0)
+    picks = [source.get_training_belief(i, belief, params, rng) for i in (1, 2, 3, 4)]
+    assert len({id(p) for p in picks}) == 4
