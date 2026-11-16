@@ -259,8 +259,8 @@ def test_sleep_with_later_dreaming():
 
 def _fan(keys: list[float]) -> tuple[_Node, list[_Node]]:
     """A root whose children have the given cache keys, all leaves."""
-    root = _Node(None, np.full(2, 9.0), None, 0)
-    root.children = [_Node(None, np.full(2, k), root, 1) for k in keys]
+    root = _Node(_NO_BELIEF, np.full(2, 9.0), None, 0)
+    root.children = [_Node(_NO_BELIEF, np.full(2, k), root, 1) for k in keys]
     _set_weights(root)
     return root, root.children
 
