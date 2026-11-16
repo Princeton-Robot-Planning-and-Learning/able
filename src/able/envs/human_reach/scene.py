@@ -201,6 +201,12 @@ class ObjectCentricBedsideStocking3DEnv(
                 CLUTTER_COLORS[i % len(CLUTTER_COLORS)],
             )
 
+    def close(self) -> None:
+        """Disconnect the PyBullet client. Kinder's kinematic 3D env keeps gym's
+        close, which does nothing, so each closed env kept its world in memory."""
+        if p.isConnected(physicsClientId=self.physics_client_id):
+            p.disconnect(physicsClientId=self.physics_client_id)
+
     def _block(self, lo, hi, color) -> int:
         lo, hi = np.asarray(lo, dtype=float), np.asarray(hi, dtype=float)
         body = create_pybullet_block(
