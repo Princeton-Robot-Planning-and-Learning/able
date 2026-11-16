@@ -167,3 +167,24 @@ def test_cost_rows_interpolate_the_cost_model():
     mid = (grid[1] + grid[2]) / 2
     expected = (rows[0, 1] + rows[0, 2]) / 2
     assert np.isclose(source._cost_at(rows, np.array([mid]))[0], expected)
+
+
+def test_wave_size_caps_children_per_wave():
+    """With waves of 8, the root gains at most one child per wave; one dream at a
+    time lets it grow much wider."""
+    params = RandomShootingPlanner(TwoLinkArmModel()).get_default_params()
+    widths = {}
+    for wave_size in (8, 1):
+        source = _source(
+            num_training_beliefs=1,
+            num_expansions=64,
+            max_children=None,
+            widening_constant=1.0,
+            widening_exponent=0.9,
+            wave_size=wave_size,
+        )
+        nodes = source._grow_tree(  # pylint: disable=protected-access
+            IntervalBelief(JOINT_LIMIT_PRIOR), params, np.random.default_rng(0)
+        )
+        widths[wave_size] = len(nodes[0].children)
+    assert widths[1] > 2 * widths[8]

@@ -67,7 +67,9 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     belief moved less than stop_threshold over two consecutive cycles. A node may
     have at most max_children children or, with progressive widening, at most
     ceil(widening_constant * visits^widening_exponent), so the tree grows wider
-    where it is explored more. Runs in one process only.
+    where it is explored more. A wave expands each node at most once, so with
+    wave_size > 1 a node gains at most one child per wave. Runs in one process
+    only.
 
     Picks maximize the facility-location gain, the cost that a pick removes summed
     over every node, sum_n w_n m_n [C(b_n, delta_n) - C(b_n, delta_n with the

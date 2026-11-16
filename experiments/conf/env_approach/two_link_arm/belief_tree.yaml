@@ -17,6 +17,8 @@ use_leaf_counts: true
 learn_cost_model: true
 # Below 1, a belief "barely moved" if its cache key did not change.
 stop_threshold: 0.5
-wave_size: 8
+# One dream at a time: a wave expands a node at most once, which would cap the
+# root at one child per wave.
+wave_size: 1
 init_radius: 1.0
 max_warm_starts_per_key: 4
