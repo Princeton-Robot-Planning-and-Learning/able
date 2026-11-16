@@ -34,6 +34,69 @@ def test_resample_follows_the_weights():
     )
 
 
+def test_resample_noise_follows_the_spread():
+    """Without evidence, resampling widens a narrow belief by its bandwidth's factor,
+    not by noise on the scale of the bounds, and moves every particle."""
+    rng = np.random.default_rng(0)
+    narrow = ParticleBelief(rng.normal(0.5, 0.01, (500, 2)), [0, 0], [1, 1])
+    new = narrow.resample(np.zeros(500))
+    assert np.allclose(new.std, narrow.std * np.sqrt(1.01), rtol=0.05)
+    assert np.allclose(new.mean, narrow.mean, atol=0.002)
+    assert len(np.unique(new.particles[:, 0])) == 500
+
+
+def test_resample_keeps_narrowing_with_evidence():
+    """Repeated measurements keep narrowing the belief, about as Bayes' rule does, and
+    its mean stays within a few of its standard deviations of the truth."""
+    belief = _belief()
+    rng = np.random.default_rng(1)
+    for _ in range(100):
+        measurement = 0.3 + rng.normal(0.0, 0.05)
+        belief = belief.resample(
+            -0.5 * ((belief.particles[:, 0] - measurement) / 0.05) ** 2
+        )
+    # Bayes' rule gives 0.05 / sqrt(100) = 0.005; fading evidence leaves a bit
+    # more. The old fixed noise of 0.02 stopped near 0.035.
+    assert 0.004 < belief.std[0] < 0.009
+    assert abs(belief.mean[0] - 0.3) < 3 * belief.std[0]
+
+
+def test_resample_onto_one_particle_keeps_some_spread():
+    """If one particle takes all the weight, the noise's floor still spreads the
+    particles around it."""
+    belief = _belief()
+    log_weights = np.full(500, -np.inf)
+    log_weights[7] = 0.0
+    new = belief.resample(log_weights)
+    assert np.allclose(new.mean, belief.particles[7], atol=0.001)
+    assert np.allclose(new.std, 0.001, rtol=0.2)
+
+
+def test_resample_only_some_parameters():
+    """Resampling the parameters the weights depend on leaves the others' particles as
+    they were."""
+    belief = _belief()
+    log_weights = -0.5 * ((belief.particles[:, 0] - 0.2) / 0.05) ** 2
+    new = belief.resample(log_weights, dims=[0])
+    assert abs(new.mean[0] - 0.2) < 0.05 and new.std[0] < belief.std[0]
+    assert np.array_equal(new.particles[:, 1], belief.particles[:, 1])
+
+
+def test_reweight_steps_through_a_sharp_likelihood():
+    """A likelihood sharper than the particles' spacing pins plain resampling to the
+    nearest particle, but reweighting in steps finds its peak."""
+    belief = _belief()
+
+    def log_likelihood(particles):
+        return -0.5 * ((particles[:, 0] - 0.3037) / 0.0005) ** 2
+
+    resampled = belief.resample(log_likelihood(belief.particles))
+    assert abs(resampled.mean[0] - 0.3037) > 0.002
+    new = belief.reweight(log_likelihood, dims=[0])
+    assert abs(new.mean[0] - 0.3037) < 0.0005 and new.std[0] < 0.002
+    assert np.array_equal(new.particles[:, 1], belief.particles[:, 1])
+
+
 def test_resample_without_finite_weights_keeps_the_belief():
     """If nothing explains the data, the belief is unchanged."""
     belief = _belief()
