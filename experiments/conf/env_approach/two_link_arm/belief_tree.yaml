@@ -1,0 +1,10 @@
+_target_: able.approaches.make_belief_tree_robot
+# Dreams per sleep: belief coverage's 4 candidates per training belief.
+num_expansions: 256
+max_depth: 4
+max_children: 4
+# Below 1, a belief "barely moved" if its cache key did not change.
+stop_threshold: 0.5
+wave_size: 8
+init_radius: 1.0
+max_warm_starts_per_key: 4

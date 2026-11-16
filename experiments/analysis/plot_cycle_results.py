@@ -18,6 +18,7 @@ from matplotlib import pyplot as plt
 
 APPROACH_TO_DISPLAY_NAME = {
     "belief_coverage": "Belief coverage",
+    "belief_tree": "Belief tree",
     "current_belief": "Current belief only",
     "dreaming": "Dreaming",
     "prior_only": "Prior only (first sleep)",

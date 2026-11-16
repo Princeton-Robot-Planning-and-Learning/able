@@ -8,6 +8,7 @@ import numpy as np
 from able.approaches import (
     get_cache_key_features,
     make_belief_coverage_robot,
+    make_belief_tree_robot,
     make_current_belief_robot,
     make_dreaming_robot,
     make_friction_belief_coverage_robot,
@@ -179,6 +180,21 @@ def test_belief_coverage_spreads_training():
             counts[name].append(_count_cached_beliefs(robot.planner_params))
     assert counts["belief_coverage"] == [num_training_beliefs] * 3
     assert sum(counts["dreaming"]) < sum(counts["belief_coverage"])
+
+
+def test_make_belief_tree_robot():
+    """Tests that the belief-tree robot caches plans for its picked beliefs."""
+    budgets = _budgets(num_dreams=0)
+    robot = make_belief_tree_robot(
+        make_domain(seed=0),
+        budgets.information_gathering,
+        budgets.execution,
+        budgets.planning,
+        num_training_beliefs=3,
+        num_expansions=8,
+    )
+    robot.sleep(Budget(max_iterations=3), np.random.default_rng(0))
+    assert _count_cached_beliefs(robot.planner_params) >= 2
 
 
 def test_known_limits_always_hit():

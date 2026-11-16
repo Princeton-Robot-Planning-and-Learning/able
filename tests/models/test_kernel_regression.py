@@ -48,3 +48,14 @@ def test_untrained_and_sampled_predictions():
     assert model.x is None and trained.bandwidths == (1.0,)
     draws = trained.sample(np.zeros(1), 3, rng)
     assert draws.shape == (1, 2) and np.allclose(draws, [[2.0, -1.0]])
+
+
+def test_predict_batch_matches_predict():
+    """Batch predictions equal one-at-a-time predictions."""
+    rng = np.random.default_rng(0)
+    model = KernelRegressor(bandwidths=(0.5, 2.0)).fit(
+        _rows(rng.normal(size=(20, 2)), rng.normal(size=(20, 1)))
+    )
+    xs = rng.normal(size=(5, 2))
+    expected = np.array([model.predict(x)[0] for x in xs])
+    assert np.allclose(model.predict_batch(xs), expected)

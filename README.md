@@ -17,6 +17,7 @@ The approaches all plan with random shooting and differ in what they learn while
 - `prior_only` caches plans for every task under the prior in its first sleep and never learns again.
 - `current_belief` caches plans for every task under its current belief, so it never anticipates belief updates.
 - `dreaming` imagines the belief updates it will make before it is evaluated and caches plans for the imagined beliefs.
+- `belief_tree` (two-link arm only) grows a tree of dreams up to 4 cycles ahead from its current belief, then caches plans for the beliefs where a regression of its dreams' planning cost predicts training saves the most, weighted by how likely each belief is (`learners/belief_tree.py`).
 - `belief_coverage` dreams like `dreaming`, but each training belief is the farthest of four dreams from the beliefs it has already cached plans for. The distance compares the beliefs' parts of the cache key, so it spreads training over beliefs that need different plans. This adapts a belief-expansion heuristic from point-based POMDP planning ([Pineau, Gordon, and Thrun, 2006](https://jair.org/index.php/jair/article/view/10473)).
 
 In the limb, friction, and human reach environments there is no plan cache, so `belief_coverage` compares beliefs by each hidden parameter's mean and standard deviation, in units of the prior's standard deviation, and takes the farthest of 4 dreams. Like the other approaches, it refits the model once per sleep.

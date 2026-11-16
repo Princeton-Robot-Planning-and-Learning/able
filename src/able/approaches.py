@@ -6,6 +6,7 @@ sees what the robot imagines while it sleeps.
 """
 
 import dataclasses
+import functools
 from typing import Any, Callable
 
 import numpy as np
@@ -41,6 +42,7 @@ from able.learners.belief_sources import (
     ImaginedNextBeliefSource,
     PriorSource,
 )
+from able.learners.belief_tree import BeliefTreeSource
 from able.learners.model_learner import ModelLearner
 from able.learners.rollout_model_learner import RolloutModelLearner
 from able.models.base import ConditionalModel
@@ -295,6 +297,70 @@ def make_belief_coverage_robot(
     assert isinstance(cache, ExactMatchCache)
     belief_source: BeliefCoverageSource = BeliefCoverageSource(
         dreamer, get_cache_key_features(cache.key_resolution), num_candidates
+    )
+    return Robot(
+        planner=planner,
+        learner=ModelLearner(
+            planner, task_distribution, belief_source, planning_budget
+        ),
+        belief_updater=belief_updater,
+        info_gatherer=info_gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
+def _get_arm_planning_cost(max_samples: float, stats: dict[str, float] | None) -> float:
+    """Samples a plan took, as a fraction of the most it can take; 1 if it failed."""
+    if stats is None:
+        return 1.0
+    return min(stats["num_samples"] / max_samples, 1.0)
+
+
+def make_belief_tree_robot(
+    domain: ArmDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    num_training_beliefs: int,
+    num_expansions: int = 256,
+    max_depth: int = 4,
+    max_children: int = 4,
+    stop_threshold: float = 0.5,
+    wave_size: int = 8,
+    init_radius: float = 1.0,
+    max_warm_starts_per_key: int = 4,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+) -> ArmRobot:
+    """A robot that plans with random shooting and, while it sleeps, grows a tree
+    of dreams and caches plans for the beliefs where it predicts they save the
+    most planning (BeliefTreeSource). Beliefs are compared by their parts of the
+    plan cache's keys, as in belief coverage. num_training_beliefs must match the
+    sleep budget."""
+    task_distribution, planner, belief_updater, info_gatherer, dreamer = (
+        _make_arm_dreaming_parts(
+            domain,
+            gathering_budget,
+            execution_budget,
+            planning_budget,
+            max_warm_starts_per_key,
+            recorder,
+        )
+    )
+    params = planner.get_default_params()
+    assert isinstance(params.model, ExactMatchCache)
+    belief_source: BeliefTreeSource = BeliefTreeSource(
+        dreamer,
+        get_cache_key_features(params.model.key_resolution),
+        functools.partial(
+            _get_arm_planning_cost, params.batch_size * params.max_batches
+        ),
+        num_training_beliefs,
+        num_expansions=num_expansions,
+        max_depth=max_depth,
+        max_children=max_children,
+        stop_threshold=stop_threshold,
+        wave_size=wave_size,
+        init_radius=init_radius,
     )
     return Robot(
         planner=planner,

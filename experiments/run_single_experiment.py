@@ -268,8 +268,7 @@ def _get_cycle_rows(results: list[CycleResult]) -> list[dict[str, Any]]:
 
 def _get_belief_columns(belief: Belief[Any]) -> dict[str, float]:
     """Each hidden parameter's mean and standard deviation under the belief, as
-    belief coverage measures them, or nothing for a belief without moments (the
-    two-link arm's intervals)."""
+    belief coverage measures them, or nothing for a belief without moments."""
     try:
         mean, std = get_moments(belief)
     except TypeError:

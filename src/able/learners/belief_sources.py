@@ -2,6 +2,7 @@
 
 import time
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any, Callable, Generic, Sequence
 
 import numpy as np
@@ -100,6 +101,15 @@ class PriorSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         return self._prior
 
 
+@dataclass(frozen=True)
+class ImaginedCycle(Generic[HiddenParamsType]):
+    """A dream's resulting belief, and each imagined plan's belief and planning
+    statistics (None if planning failed)."""
+
+    belief: Belief[HiddenParamsType]
+    plans: list[tuple[Belief[HiddenParamsType], dict[str, float] | None]]
+
+
 class ImaginedNextBeliefSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     """Trains under beliefs the robot may hold when it is next evaluated.
 
@@ -153,16 +163,23 @@ class ImaginedNextBeliefSource(BeliefSource[HiddenParamsType, PlannerParamsType]
         params: PlannerParamsType,
         rng: np.random.Generator,
     ) -> Belief[HiddenParamsType]:
-        label = f"Dream {iteration}"
+        return self.imagine_cycle(belief, params, rng, f"Dream {iteration}").belief
+
+    def imagine_cycle(
+        self,
+        belief: Belief[HiddenParamsType],
+        params: PlannerParamsType,
+        rng: np.random.Generator,
+        label: str = "Dream",
+    ) -> ImaginedCycle[HiddenParamsType]:
+        """One dream from the belief, with hidden parameters sampled from it."""
         hypothesis = belief.sample(rng)
         imagined_env = SimulatedEnvironment(self._env_model, hypothesis, rng)
-        imagined_belief = self._imagine_until_evaluation(
-            label, belief, params, imagined_env, rng
-        )
+        cycle = self._imagine_until_evaluation(label, belief, params, imagined_env, rng)
         self._recorder.record_belief(
-            f"{label} · imagined belief", imagined_belief, hypothesis
+            f"{label} · imagined belief", cycle.belief, hypothesis
         )
-        return imagined_belief
+        return cycle
 
     def _imagine_until_evaluation(
         self,
@@ -171,9 +188,8 @@ class ImaginedNextBeliefSource(BeliefSource[HiddenParamsType, PlannerParamsType]
         params: PlannerParamsType,
         env: SimulatedEnvironment[Any, Any, Any, HiddenParamsType, Any, Any],
         rng: np.random.Generator,
-    ) -> Belief[HiddenParamsType]:
-        """Imagine information gathering and task execution in the environment and
-        return the resulting belief."""
+    ) -> ImaginedCycle[HiddenParamsType]:
+        """Imagine information gathering and task execution in the environment."""
         hypothesis = env.hidden_params
         data = self._info_gatherer.gather(belief, env, self._gathering_budget, rng)
         belief = self._belief_updater.update_from_queries(belief, data)
@@ -186,6 +202,7 @@ class ImaginedNextBeliefSource(BeliefSource[HiddenParamsType, PlannerParamsType]
             )
             self._recorder.record_step(next_state, belief)
 
+        plans: list[tuple[Belief[HiddenParamsType], dict[str, float] | None]] = []
         start_time = time.perf_counter()
         num_tasks = 0
         while not self._execution_budget.is_exhausted(
@@ -196,19 +213,23 @@ class ImaginedNextBeliefSource(BeliefSource[HiddenParamsType, PlannerParamsType]
             self._recorder.start_episode(
                 f"{label} · imagined task {num_tasks}", task, belief, hypothesis
             )
+            planned_under = belief
             try:
                 policy = self._planner.plan(
                     task, belief, params, self._planning_budget, rng
                 )
+                plans.append((planned_under, policy.get_planning_stats()))
                 trajectory = run_episode(env, task, policy, on_step=update)
             except PlanningFailure:
+                if len(plans) < num_tasks:
+                    plans.append((planned_under, None))
                 self._recorder.end_episode("planning failed")
                 continue
             success = env.check_goal(task, trajectory.states[-1])
             self._recorder.end_episode(
                 "imagined success" if success else "imagined failure"
             )
-        return belief
+        return ImaginedCycle(belief, plans)
 
 
 class BeliefCoverageSource(BeliefSource[HiddenParamsType, PlannerParamsType]):

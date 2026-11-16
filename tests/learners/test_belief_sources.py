@@ -65,6 +65,11 @@ def _get_low(belief: Belief[Any]) -> NDArray[np.float64]:
     return belief.intervals[:, 0]
 
 
+def _get_width(belief: Belief[Any]) -> float:
+    assert isinstance(belief, IntervalBelief)
+    return belief.get_total_width()
+
+
 def test_current_belief_source():
     """Tests that the current belief is returned unchanged."""
     belief = IntervalBelief(JOINT_LIMIT_PRIOR)
@@ -95,8 +100,7 @@ def test_imagined_next_belief_source():
         imagined = source.get_training_belief(
             iteration, belief, params, np.random.default_rng(iteration)
         )
-        assert isinstance(imagined, IntervalBelief)
-        assert imagined.get_total_width() < belief.get_total_width()
+        assert _get_width(imagined) < belief.get_total_width()
     episodes = [e for e in recorder.events if e[0] == "start_episode"]
     assert episodes == [
         ("start_episode", "Dream 1 · imagined task 1", True),
@@ -109,6 +113,20 @@ def test_imagined_next_belief_source():
     ]
     outcomes = {e[1] for e in recorder.events if e[0] == "end_episode"}
     assert outcomes <= {"imagined success", "imagined failure", "planning failed"}
+
+
+def test_imagine_cycle_reports_its_plans():
+    """Tests that a dream reports the belief and statistics of each plan."""
+    domain = make_domain(seed=0)
+    belief = IntervalBelief(JOINT_LIMIT_PRIOR)
+    params = RandomShootingPlanner(TwoLinkArmModel()).get_default_params()
+    cycle = _imagined_next_source(domain).imagine_cycle(
+        belief, params, np.random.default_rng(0)
+    )
+    assert len(cycle.plans) == 1
+    planned_under, stats = cycle.plans[0]
+    assert planned_under is belief
+    assert stats is not None and stats["num_samples"] > 0
 
 
 def test_imagined_belief_is_known_with_known_limits():

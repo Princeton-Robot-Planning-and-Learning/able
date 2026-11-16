@@ -48,6 +48,18 @@ class KernelRegressor(ConditionalModel):
         outputs = (weights @ self.y + prior) / (total + self.prior_weight)
         return outputs, total / (total + self.prior_weight)
 
+    def predict_batch(self, xs: NDArray[np.float64]) -> NDArray[np.float64]:
+        """predict()'s outputs for each row of xs, with shape (N, outputs)."""
+        assert self.x is not None and self.y is not None, "Need a fitted model"
+        bandwidths = np.asarray(self.bandwidths)
+        a, b = xs / bandwidths, self.x / bandwidths
+        squared = (a**2).sum(1)[:, None] + (b**2).sum(1)[None] - 2 * a @ b.T
+        weights = np.exp(-0.5 * np.maximum(squared, 0.0))
+        prior = self.prior_weight * self.y.mean(axis=0)
+        return (weights @ self.y + prior) / (
+            weights.sum(1, keepdims=True) + self.prior_weight
+        )
+
     def sample(
         self, x: NDArray[np.float64], num_samples: int, rng: np.random.Generator
     ) -> NDArray[np.float64]:
