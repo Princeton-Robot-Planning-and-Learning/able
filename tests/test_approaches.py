@@ -266,10 +266,12 @@ def test_make_limb_scratch_robot():
     """Tests that the limb scratch robot uses the requested MPC settings and never
     changes its parameters."""
     domain = make_limb_domain(seed=0)
-    robot = make_limb_scratch_robot(domain, num_rollouts=8, num_particles=4)
+    robot = make_limb_scratch_robot(
+        domain, num_rollouts=8, num_particles=4, confidence=0.75
+    )
     params = robot.planner_params
     assert params.config.sampling.num_rollouts == 8
-    assert params.num_particles == 4
+    assert params.num_particles == 4 and params.confidence == 0.75
     assert robot.belief is domain.initial_belief
     robot.sleep(Budget(max_iterations=1), np.random.default_rng(0))
     assert robot.planner_params is params
@@ -298,6 +300,7 @@ def test_make_limb_learning_robots():
         "model": model,
         "num_rollouts": 4,
         "num_particles": 4,
+        "confidence": 0.75,
         "seed_tolerance": 0.1,
     }
     budgets = _budgets(num_dreams=0)
@@ -318,6 +321,7 @@ def test_make_limb_learning_robots():
         assert robot.planner_params.model is model
         assert robot.planner_params.config.sampling.num_rollouts == 4
         assert robot.planner_params.seed.tolerance == 0.1
+        assert robot.planner_params.confidence == 0.75
         robot.sleep(Budget(max_iterations=1), rng)
     prior_only = robots[1]
     params = prior_only.planner_params
