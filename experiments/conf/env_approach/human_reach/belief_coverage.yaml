@@ -6,7 +6,9 @@ num_candidates: 4
 # examples per sleep, as for limb (#132).
 num_training_tasks: 2
 # PDDLStream's time limit per plan (s), the belief particles it plans under, and
-# the chance a usable pose may be out of reach.
+# the chance a usable pose may be out of reach. At 0.02, few poses are usable
+# under the prior, so early plans often time out, and learning shows as rising
+# success; at 0.1 (#167) planning was easy from the first cycle (#180).
 max_time: 600.0
 num_particles: 256
 delta: 0.02

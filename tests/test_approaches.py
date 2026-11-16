@@ -32,13 +32,16 @@ from able.beliefs.interval import IntervalBelief
 from able.cycle import CycleBudgets, run_cycles
 from able.envs.base import FiniteTaskDistribution
 from able.envs.friction.tasks import make_domain as make_friction_domain
+from able.envs.human_reach.model import ReachModel
 from able.envs.human_reach.tasks import make_domain as make_reach_domain
-from able.envs.limb.model import LimbTask
+from able.envs.limb.model import LimbModel, LimbTask
 from able.envs.limb.tasks import LimbTaskDistribution
 from able.envs.limb.tasks import make_domain as make_limb_domain
 from able.envs.two_link_arm import make_domain
 from able.models.exact_match_cache import ExactMatchCache
 from able.models.neural import MLPRegressor
+from able.planners.mpc import LimbMPCPlanner
+from able.planners.pddlstream import ReachPDDLStreamPlanner
 from able.planners.random_shooting import RandomShootingParams, get_plan_features
 from able.robot import Robot
 from able.structs import Budget
@@ -53,6 +56,18 @@ def _budgets(num_dreams: int) -> CycleBudgets:
         execution=Budget(max_iterations=1),
         planning=Budget(),
     )
+
+
+def _close(domain, *robots: Robot) -> None:
+    """Disconnect the simulators of the robots' planners and the domain's model,
+    which hold a few hundred MB each until disconnected."""
+    for robot in robots:
+        planner = robot.planner
+        assert isinstance(planner, (LimbMPCPlanner, ReachPDDLStreamPlanner))
+        planner.close()
+    model = domain.env_model
+    assert isinstance(model, (LimbModel, ReachModel))
+    model.close()
 
 
 def _make_dreaming_robot(domain) -> Robot:
@@ -308,6 +323,7 @@ def test_make_limb_learning_robots():
     params = prior_only.planner_params
     prior_only.sleep(Budget(max_iterations=1), rng)
     assert prior_only.planner_params is params
+    _close(domain, *robots)
 
 
 def test_make_friction_scratch_robot():
@@ -359,10 +375,11 @@ def test_make_human_reach_scratch_robot():
     robot = make_human_reach_scratch_robot(domain, max_time=10.0, num_particles=8)
     params = robot.planner_params
     assert params.max_time == 10.0 and params.num_particles == 8
-    assert params.placement == "continuous" and params.delta == 0.02
+    assert params.placement == "continuous" and params.delta == 0.1
     assert robot.belief is domain.initial_belief
     robot.sleep(Budget(max_iterations=1), np.random.default_rng(0))
     assert robot.planner_params is params
+    _close(domain, robot)
 
 
 def test_make_human_reach_learning_robots():
@@ -401,6 +418,7 @@ def test_make_human_reach_learning_robots():
     prior_only.sleep(Budget(max_iterations=1), rng)
     assert prior_only.planner_params is params
     assert robots[2].planner_params.model is model
+    _close(domain, *robots)
 
 
 def _make_coverage_robot(make_coverage, domain, planning, options, num_candidates=2):
@@ -425,6 +443,7 @@ def test_make_limb_belief_coverage_robot():
     )
     assert robot.planner_params.model is model
     robot.sleep(Budget(max_iterations=2), np.random.default_rng(0))
+    _close(domain, robot)
 
 
 def test_make_friction_belief_coverage_robot():
@@ -455,3 +474,4 @@ def test_make_human_reach_belief_coverage_robot():
     ) as fit:
         robot.sleep(Budget(max_iterations=2), np.random.default_rng(0))
     assert fit.call_count == 1
+    _close(domain, robot)

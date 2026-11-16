@@ -1,6 +1,7 @@
 """Tests for envs/friction/model.py."""
 
 import math
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -12,7 +13,7 @@ from able.envs.friction.model import (
     PuckRewards,
 )
 from able.envs.friction.query import FrictionQuery
-from able.envs.friction.world import Push
+from able.envs.friction.world import THREE_ROUTES, Push
 from able.structs import Task
 
 FRICTIONS = np.array([0.03, 0.07, 0.15])
@@ -27,7 +28,7 @@ def _model():
 
 def _state_at(puck: tuple[float, float]) -> FrictionState:
     robot = (1.2, 1.0)
-    return FrictionState(puck, robot, puck, (*robot, 0.0))
+    return FrictionState(puck, robot, puck, (*robot, 0.0), THREE_ROUTES.goal)
 
 
 def _task(model: FrictionModel) -> Task:
@@ -49,6 +50,13 @@ def test_a_push_moves_the_puck_and_the_robot(model):
     assert next_state.pushes == 1 and not next_state.ended
     assert next_state.robot != state.robot
     assert np.linalg.norm(np.subtract(next_state.puck, next_state.true_puck)) < 0.1
+    # The task's start is known; the next start is the measured stop.
+    assert not state.puck_measured and not record.start_measured
+    assert next_state.puck_measured
+    after = model.sample_next_state(
+        next_state, Push(-math.pi / 2, 0.3, 0.0), FRICTIONS, np.random.default_rng(1)
+    )
+    assert after.last_push is not None and after.last_push.start_measured
     cost = model.get_cost(task, state, push, next_state, FRICTIONS)
     assert cost == pytest.approx(1.0 + 0.5 * record.drive_distance)
     assert not model.check_goal(task, next_state, FRICTIONS)
@@ -65,8 +73,9 @@ def test_a_puck_stopped_in_the_slot_is_shed(model):
     record = next_state.last_push
     assert record is not None and record.stop[0] > 2.1  # inside the slot
     assert next_state.puck == next_state.true_puck and next_state.puck[0] < 2.0
+    assert not next_state.puck_measured
     rest = np.array(next_state.puck)
-    assert np.array_equal(model.world.shed(rest), rest)
+    assert np.array_equal(model.world.shed(rest, state.goal), rest)
 
 
 def test_a_hole_ends_the_task(model):
@@ -87,7 +96,8 @@ def test_a_hole_ends_the_task(model):
 
 
 def test_the_goal_ends_the_task(model):
-    """A puck that stops in the goal completes the task."""
+    """A puck that stops in the state's goal completes the task, and the same push
+    toward the map's goal does not end a task whose goal is elsewhere."""
     state = _state_at((3.9, 1.8))
     task = _task(model)
     speed = math.sqrt(2 * FRICTIONS[1] * 9.81 * 0.1)  # stops 0.1 m past release
@@ -99,6 +109,19 @@ def test_the_goal_ends_the_task(model):
         task, next_state, FRICTIONS
     )
     assert model.get_cost(task, state, push, next_state, FRICTIONS) < 0
+    elsewhere = replace(state, goal=(1.2, 3.4))
+    next_state = model.sample_next_state(
+        elsewhere, push, FRICTIONS, np.random.default_rng(0)
+    )
+    assert not next_state.ended and next_state.goal == elsewhere.goal
+    record = next_state.last_push
+    assert record is not None and not record.goal_reached
+    # The state's own goal ends it.
+    in_goal = replace(state, goal=(3.9, 2.0))
+    next_state = model.sample_next_state(
+        in_goal, push, FRICTIONS, np.random.default_rng(0)
+    )
+    assert next_state.outcome == "goal"
 
 
 def test_an_infeasible_push_costs_a_push(model):

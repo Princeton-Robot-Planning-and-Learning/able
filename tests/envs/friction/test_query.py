@@ -1,6 +1,9 @@
 """Tests for envs/friction/query.py."""
 
+import dataclasses
+
 import numpy as np
+import pytest
 
 from able.envs.friction.query import (
     FrictionQuery,
@@ -11,19 +14,22 @@ from able.envs.friction.query import (
 from able.envs.friction.world import DEFAULT_FRICTION_PRIOR, Push
 
 
-def test_probe_poses_fit_their_floor():
+@pytest.mark.parametrize("num_floors", [3, 8])
+def test_probe_poses_fit_their_floor(num_floors):
     """Each floor's probe, at either extreme friction, stops on that floor and clear
     of holes."""
-    simulator = ProbeSimulator("2d")
+    simulator = ProbeSimulator("2d", num_floors=num_floors)
     world = simulator.world
-    low, high = DEFAULT_FRICTION_PRIOR.bounds
+    prior = dataclasses.replace(DEFAULT_FRICTION_PRIOR, num_surfaces=num_floors)
+    low, high = prior.bounds
     queries = probe_queries(world, low)
+    assert len(queries) == num_floors
     rng = np.random.default_rng(0)
     for floor, query in enumerate(queries):
         assert query.floor == floor == world.surface_at(np.array(query.puck))
         assert world.push_feasible(np.array(query.puck), query.angle)
         for mu in (low[floor], high[floor]):
-            frictions = np.full(3, 0.08)
+            frictions = np.full(num_floors, 0.08)
             frictions[floor] = mu
             record = simulator.ask(frictions, query, rng)
             assert record.feasible and not record.fell_in_hole

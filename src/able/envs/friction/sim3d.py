@@ -47,7 +47,6 @@ from able.envs.friction.world import (
     HOLE_RGB,
     MAPS,
     PUCK_RGB,
-    SURFACE_RGB,
     WALL_RGB,
     FrictionPrior,
     PuckPhysics,
@@ -125,6 +124,9 @@ class ObjectCentricPuckPushing3DEnv(
         if map_name is not None:
             config = dataclasses.replace(config, map_name=map_name)
         puck_map = MAPS[config.map_name]
+        assert (
+            config.friction_prior.num_surfaces == puck_map.num_surfaces
+        ), "Need a prior over the map's floors"
         config = dataclasses.replace(
             config,
             robot_base_home_pose=SE2Pose(*puck_map.robot_start, 0.0),
@@ -136,6 +138,8 @@ class ObjectCentricPuckPushing3DEnv(
         self.world = PuckWorld(puck_map, config.physics)
         # Puck (x, y) and robot (x, y, heading; None: home) at reset.
         self._start: tuple[Any, Any] = (puck_map.puck_start, None)
+        # Center of the goal circle.
+        self._goal: tuple[float, float] = puck_map.goal
         super().__init__(config=config, **kwargs)
         client = self.physics_client_id
         phys = config.physics
@@ -147,19 +151,20 @@ class ObjectCentricPuckPushing3DEnv(
         )
 
         # Floor patches, holes and goal are visual only.
+        rgbs = puck_map.surface_rgb
         for surface, (x0, y0, x1, y1) in puck_map.surface_rects():
             _visual_box(
                 client,
                 ((x1 - x0) / 2, (y1 - y0) / 2, 0.005),
                 ((x0 + x1) / 2, (y0 + y1) / 2, -0.005),
-                (*SURFACE_RGB[surface], 1.0),
+                (*rgbs[surface], 1.0),
             )
         self._hole_ids = [
             _visual_disc(client, phys.hole_radius, (hx, hy, 0.001), (*HOLE_RGB, 1.0))
             for hx, hy in self.world.holes
         ]
         self._goal_id = _visual_disc(
-            client, phys.goal_radius, (*self.world.goal, 0.0005), (*GOAL_RGB, 1.0)
+            client, phys.goal_radius, (*self._goal, 0.0005), (*GOAL_RGB, 1.0)
         )
 
         self._walls: dict[str, int] = {}
@@ -310,6 +315,12 @@ class ObjectCentricPuckPushing3DEnv(
         )
         self._outcome: str | None = None  # "goal", "hole" or None
         self._last_info: dict[str, Any] = {}
+
+    def close(self) -> None:
+        """Disconnect the PyBullet client. Kinder's kinematic 3D env keeps gym's
+        close, which does nothing, so each closed env kept its world in memory."""
+        if p.isConnected(physicsClientId=self.physics_client_id):
+            p.disconnect(physicsClientId=self.physics_client_id)
 
     @property
     def puck_z(self) -> float:
@@ -551,17 +562,27 @@ class ObjectCentricPuckPushing3DEnv(
         seed: int | None = None,
         options: dict | None = None,
     ) -> tuple[PuckPushing3DObjectCentricState, dict]:
-        """Reset; `options` may fix "frictions", and the "puck" (x, y) and "robot"
-        (x, y, heading) start."""
+        """Reset; `options` may fix "frictions", the "puck" (x, y) and "robot"
+        (x, y, heading) start, and the "goal" (x, y). Each but the robot defaults
+        to the map's."""
         opts = options or {}
         self._start = (
             opts.get("puck", self.world.puck_map.puck_start),
             opts.get("robot"),
         )
+        goal = opts.get("goal", self.world.puck_map.goal)
+        if tuple(goal) != self._goal:
+            self._goal = (float(goal[0]), float(goal[1]))
+            p.resetBasePositionAndOrientation(
+                self._goal_id,
+                (*self._goal, 0.0005),
+                (0.0, 0.0, 0.0, 1.0),
+                physicsClientId=self.physics_client_id,
+            )
         obs, info = super().reset(seed=seed, options=options)
         if options is not None and "frictions" in options:
             frictions = tuple(float(f) for f in options["frictions"])
-            assert len(frictions) == self.config.friction_prior.num_surfaces
+            assert len(frictions) == self.world.puck_map.num_surfaces
             self._frictions = frictions
         elif options is None or "init_state" not in options:
             self._frictions = sample_frictions(
@@ -591,7 +612,7 @@ class ObjectCentricPuckPushing3DEnv(
             )
         if info["fell_in_hole"]:
             self._outcome = "hole"
-        elif self.world.in_goal(self._puck_position()):
+        elif self.world.in_goal(self._puck_position(), self._goal):
             self._outcome = "goal"
         info["goal_reached"] = self._outcome == "goal"
         self._last_info = info

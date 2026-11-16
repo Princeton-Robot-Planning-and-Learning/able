@@ -8,14 +8,7 @@ from numpy.typing import NDArray
 
 from able.beliefs.particles import ParticleBelief
 from able.envs.friction.model import FrictionModel, FrictionState, FrictionTask
-from able.envs.friction.world import (
-    GOAL_RGB,
-    HOLE_RGB,
-    PUCK_RGB,
-    SURFACE_NAMES,
-    SURFACE_RGB,
-    WALL_RGB,
-)
+from able.envs.friction.world import GOAL_RGB, HOLE_RGB, PUCK_RGB, WALL_RGB
 from able.rendering.base import Renderer, Snapshot
 
 _BELIEF_COLOR = "#2a78d6"
@@ -29,11 +22,11 @@ _SURFACE = "#fcfcfb"
 class FrictionRenderer(Renderer[FrictionState, FrictionTask, NDArray[np.float64]]):
     """Draws the maze from above next to the belief over the floors' friction.
 
-    The left panel shows the floors, walls, holes, and goal, the puck's stops so
-    far, and the robot's base, and says how the last push went. The right panel
-    shows each floor's particles, their mean, and ticks at the true friction (and
-    the sampled friction in dreams). Images are width x height pixels; both should
-    be multiples of 16 for video encoding.
+    The left panel shows the floors, walls, holes, and the task's goal, the puck's
+    stops so far, and the robot's base, and says how the last push went. The right
+    panel shows each floor's particles, their mean, and ticks at the true friction
+    (and the sampled friction in dreams). Images are width x height pixels; both
+    should be multiples of 16 for video encoding.
     """
 
     def __init__(
@@ -70,20 +63,19 @@ class FrictionRenderer(Renderer[FrictionState, FrictionTask, NDArray[np.float64]
         view.set_aspect("equal")
         view.set_xlim(0, puck_map.width)
         view.set_ylim(0, puck_map.height)
+        rgbs = puck_map.surface_rgb
         for surface, (x0, y0, x1, y1) in puck_map.surface_rects():
-            view.add_patch(
-                Rectangle((x0, y0), x1 - x0, y1 - y0, color=SURFACE_RGB[surface])
-            )
+            view.add_patch(Rectangle((x0, y0), x1 - x0, y1 - y0, color=rgbs[surface]))
         for x0, y0, x1, y1 in puck_map.wall_rects():
             view.add_patch(Rectangle((x0, y0), x1 - x0, y1 - y0, color=WALL_RGB))
         for hole in world.holes:
             view.add_patch(Circle(tuple(hole), phys.hole_radius, color=HOLE_RGB))
-        view.add_patch(
-            Circle(tuple(world.goal), phys.goal_radius, color=GOAL_RGB, alpha=0.6)
-        )
         if not states:
             view.set_title("No episode", fontsize=11, color=_INK)
             return
+        view.add_patch(
+            Circle(states[-1].goal, phys.goal_radius, color=GOAL_RGB, alpha=0.6)
+        )
         trail = np.array([s.true_puck for s in states])
         view.plot(trail[:, 0], trail[:, 1], "o-", color=_INK, ms=3, lw=1)
         state = states[-1]
@@ -100,7 +92,8 @@ class FrictionRenderer(Renderer[FrictionState, FrictionTask, NDArray[np.float64]
     ) -> None:
         axes = self._belief
         axes.clear()
-        rows = np.arange(len(SURFACE_NAMES))
+        names = self._world.puck_map.surface_names
+        rows = np.arange(len(names))
         spread = np.linspace(-0.25, 0.25, len(belief.particles))
         for row in rows:
             axes.scatter(
@@ -112,7 +105,7 @@ class FrictionRenderer(Renderer[FrictionState, FrictionTask, NDArray[np.float64]
             axes.vlines(
                 hypothesis, rows - 0.4, rows + 0.4, color=_HYPOTHESIS_COLOR, lw=2
             )
-        axes.set_yticks(rows, list(SURFACE_NAMES))
+        axes.set_yticks(rows, list(names))
         margin = 0.1 * float(np.max(belief.high - belief.low))
         axes.set_xlim(
             float(belief.low.min()) - margin, float(belief.high.max()) + margin

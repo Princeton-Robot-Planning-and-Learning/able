@@ -28,22 +28,59 @@ def reached_log_likelihood(
     return -np.logaddexp(0.0, -z).sum(0)
 
 
+# The chance the robot's record of a delivery disagrees with the true reach: P(reached
+# | theta) is 1 - DELIVERY_LAPSE if theta reaches the item and DELIVERY_LAPSE if not.
+DELIVERY_LAPSE = 0.01
+
+
+def delivered_log_likelihood(
+    point: ArrayLike,
+    reached: bool,
+    particles: NDArray[np.float64],
+    shoulder: NDArray[np.float64],
+    lapse: float = DELIVERY_LAPSE,
+) -> NDArray[np.float64]:
+    """The log likelihood of each particle for one delivery: log(1 - lapse) if the
+    particle agrees with whether the person reached the item, else log(lapse).
+
+    A person reaches a delivered item exactly when it is within their reach, so
+    every particle that agrees with the outcome is equally likely, however far
+    inside its reach the item lies.
+    """
+    m = reach_margin(np.asarray(point, float)[None], particles, shoulder)
+    agrees = (m >= 0) == bool(reached)
+    return np.where(agrees, np.log1p(-lapse), np.log(lapse))
+
+
 class ReachBeliefUpdater(
     BeliefUpdater[
         ReachState, ReachAction, NDArray[np.float64], ReachQuery, ReachResponse
     ]
 ):
-    """Reweights reach particles by P(reached x | theta) = sigmoid(margin(x, theta) /
-    scale), and resamples.
+    """Reweights reach particles by how likely each makes what the person did, and
+    resamples.
 
-    Queries and deliveries share this model. Each delivered item is one update, after
-    the action that placed it, and each query response is one update with all of
-    its points.
+    Each delivered item is one update, after the action that placed it, weighed by
+    delivered_log_likelihood: the person reaches an item exactly when it is within
+    their reach, up to delivery_lapse. Each query response is one update with all of
+    its points, weighed by P(reached x | theta) = sigmoid(margin(x, theta) / scale),
+    since the person answers a query noisily near the edge of their reach.
+
+    Weighing deliveries by the sigmoid would favor longer reaches after every item
+    the person reaches, because it expects a person whose reach barely covers an
+    item to miss it sometimes, and they never do. The belief then overestimates
+    the reach until the robot places an item out of it.
     """
 
-    def __init__(self, shoulder: NDArray[np.float64], scale: float = REACH_SCALE):
+    def __init__(
+        self,
+        shoulder: NDArray[np.float64],
+        scale: float = REACH_SCALE,
+        delivery_lapse: float = DELIVERY_LAPSE,
+    ):
         self._shoulder = np.asarray(shoulder, dtype=float)
         self._scale = scale
+        self._delivery_lapse = delivery_lapse
 
     def update_from_transition(
         self,
@@ -56,7 +93,11 @@ class ReachBeliefUpdater(
         if next_state.num_actions == state.num_actions or delivery is None:
             return belief
         _, point, reached = delivery
-        return self._update(belief, [point], [reached])
+        assert isinstance(belief, ParticleBelief), "Need a ParticleBelief"
+        log_weights = delivered_log_likelihood(
+            point, reached, belief.particles, self._shoulder, self._delivery_lapse
+        )
+        return belief.resample(log_weights)
 
     def update_from_queries(
         self,

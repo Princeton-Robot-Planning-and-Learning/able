@@ -25,7 +25,7 @@ from able.envs.friction.pomdp import (
     PuckPushingModel,
     PuckState,
 )
-from able.envs.friction.world import SURFACE_NAMES, PuckWorld, Push
+from able.envs.friction.world import PuckWorld, Push
 from able.models.base import ConditionalModel, Dataset
 from able.models.flow_matching import FlowMatchingModel
 from able.models.kernel_regression import KernelRegressor
@@ -355,10 +355,17 @@ class POMCPOW(Generic[S, A, O]):
         return total
 
 
-# The push model's input and output sizes, and the value model's input size. A
-# training row's input is the push model's input followed by the value model's, and
-# its output is a push followed by a value; NaN marks a missing push or value.
-X_DIM, Y_DIM, VALUE_X_DIM = 13, 4, 9
+# The push model's output size. A training row's input is the push model's input
+# followed by the value model's (get_feature_dims), and its output is a push
+# followed by a value; NaN marks a missing push or value.
+Y_DIM = 4
+
+
+def get_feature_dims(world: PuckWorld) -> tuple[int, int]:
+    """The input sizes of get_push_features() and get_value_features() on the
+    world's map, which grow with its floors."""
+    num_floors = world.puck_map.num_surfaces
+    return 4 + 3 * num_floors, 5 + 2 * num_floors
 
 
 @dataclass(frozen=True)
@@ -405,21 +412,23 @@ class POMCPOWParams:
 @dataclass(frozen=True, eq=False)
 class PushValueModel(ConditionalModel):
     """The push model and the value model trained together on rows laid out as
-    X_DIM, Y_DIM, and VALUE_X_DIM describe. Each model fits the rows that have its
-    output; sample() takes the push model's input and proposes pushes."""
+    Y_DIM describes, whose first x_dim inputs are the push model's. Each model fits
+    the rows that have its output; sample() takes the push model's input and
+    proposes pushes."""
 
     push: ConditionalModel
+    x_dim: int
     value: KernelRegressor | None = None
 
     def fit(self, dataset: Dataset) -> "PushValueModel":
-        push, value = self.push, self.value
+        push, value, x_dim = self.push, self.value, self.x_dim
         rows = np.all(np.isfinite(dataset.y[:, :Y_DIM]), axis=1)
         if rows.any():
-            push = push.fit(_select(dataset, rows, slice(0, X_DIM), slice(0, Y_DIM)))
+            push = push.fit(_select(dataset, rows, slice(0, x_dim), slice(0, Y_DIM)))
         rows = np.isfinite(dataset.y[:, Y_DIM])
         if value is not None and rows.any():
             value = value.fit(
-                _select(dataset, rows, slice(X_DIM, None), slice(Y_DIM, None))
+                _select(dataset, rows, slice(x_dim, None), slice(Y_DIM, None))
             )
         return replace(self, push=push, value=value)
 
@@ -447,7 +456,7 @@ def get_push_features(
 ) -> NDArray[np.float64]:
     """The model's input for a push: puck, goal, the floor under the puck
     (one-hot), and the belief's mean and standard deviation."""
-    floor = np.zeros(len(SURFACE_NAMES))
+    floor = np.zeros(world.puck_map.num_surfaces)
     surface = world.surface_at(puck)
     if surface >= 0:
         floor[surface] = 1.0
@@ -456,12 +465,13 @@ def get_push_features(
 
 def get_value_features(
     puck: NDArray[np.float64] | tuple[float, float],
+    goal: tuple[float, float],
     pushes_left: int,
     belief: ParticleBelief,
 ) -> NDArray[np.float64]:
-    """The value model's input for a state: puck, pushes left, and the belief's
-    mean and standard deviation."""
-    return np.concatenate([puck, [pushes_left], belief.mean, belief.std])
+    """The value model's input for a state: puck, goal, pushes left, and the
+    belief's mean and standard deviation."""
+    return np.concatenate([puck, goal, [pushes_left], belief.mean, belief.std])
 
 
 def encode_push(push: Push) -> list[float]:
@@ -571,7 +581,7 @@ class LearnedLeafValue:
         if state.outcome != ONGOING:
             return value, 0.0
         pushes_left = pomdp.max_pushes - state.pushes
-        x = get_value_features(state.puck, pushes_left, self._belief)
+        x = get_value_features(state.puck, state.goal, pushes_left, self._belief)
         correction, weight = self._value_model.predict(x)
         return value + float(correction[0]), weight
 
@@ -721,7 +731,11 @@ class FrictionPOMCPOWPolicy(Policy[FrictionState, Push]):
             return None
         pomdp = self._planner.pomdp
         root = pomdp.initial_state(
-            state.puck_array, state.robot_array, tuple(self._belief.mean), state.pushes
+            state.puck_array,
+            state.robot_array,
+            tuple(self._belief.mean),
+            state.goal,
+            state.pushes,
         )
         value, weight = leaf_value.estimate(root)
         return value if weight >= self._params.min_target_weight else None
@@ -809,7 +823,8 @@ class FrictionPOMCPOWPlanner(
         return replace(params, config=config)
 
     def get_model(self, params: POMCPOWParams) -> PushValueModel:
-        return PushValueModel(params.model, params.value_model)
+        x_dim = get_feature_dims(self.pomdp.world)[0]
+        return PushValueModel(params.model, x_dim, params.value_model)
 
     def set_model(
         self, params: POMCPOWParams, model: ConditionalModel
@@ -880,7 +895,9 @@ class FrictionPOMCPOWPlanner(
                         get_push_features(
                             state.puck_array, task.goal, pomdp.world, search.belief
                         ),
-                        get_value_features(state.puck, pushes_left, search.belief),
+                        get_value_features(
+                            state.puck, task.goal, pushes_left, search.belief
+                        ),
                     ]
                 )
             )
@@ -888,14 +905,14 @@ class FrictionPOMCPOWPlanner(
             value = math.nan
             if returns is not None:
                 root = pomdp.initial_state(
-                    state.puck_array, state.robot_array, (), state.pushes
+                    state.puck_array, state.robot_array, (), task.goal, state.pushes
                 )
                 value = float(returns[i]) - pomdp.value(root)
             y.append([*push, value])
             values = [v for p, _, v in search.root_values if p == search.push]
             costs.append(-values[0] if values else 0.0)
         if not x:
-            return Dataset.empty(X_DIM + VALUE_X_DIM, Y_DIM + 1)
+            return Dataset.empty(sum(get_feature_dims(pomdp.world)), Y_DIM + 1)
         return Dataset(
             x=np.array(x),
             y=np.array(y),
@@ -918,7 +935,9 @@ class FrictionPOMCPOWPlanner(
         given."""
         pomdp = self.pomdp
         particles = [
-            pomdp.initial_state(state.puck_array, state.robot_array, f, state.pushes)
+            pomdp.initial_state(
+                state.puck_array, state.robot_array, f, state.goal, state.pushes
+            )
             for f in belief.particles
         ]
         solver: POMCPOW[PuckState, Push, PuckObservation] = POMCPOW(

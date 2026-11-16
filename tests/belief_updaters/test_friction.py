@@ -1,11 +1,17 @@
 """Tests for belief_updaters/friction.py."""
 
+import dataclasses
 import math
 
 import numpy as np
 import pytest
 
-from able.belief_updaters.friction import FrictionBeliefUpdater, push_log_likelihood
+from able.belief_updaters.friction import (
+    RELEASE_SHORTFALL,
+    FrictionBeliefUpdater,
+    crossed_floors,
+    push_log_likelihood,
+)
 from able.beliefs.particles import ParticleBelief
 from able.envs.friction.layout import make_world
 from able.envs.friction.model import FrictionState
@@ -37,15 +43,20 @@ def _record(puck, push: Push, release_speed: float, stop, fell=False) -> PushRec
 
 
 def _transition(record: PushRecord) -> tuple[FrictionState, FrictionState]:
-    state = FrictionState(record.puck, (0.0, 0.0), record.puck, (0.0, 0.0, 0.0))
+    goal = WORLD.puck_map.goal
+    state = FrictionState(record.puck, (0.0, 0.0), record.puck, (0.0, 0.0, 0.0), goal)
     next_state = FrictionState(
-        record.stop, (0.0, 0.0), record.stop, (0.0, 0.0, 0.0), 1, record
+        record.stop, (0.0, 0.0), record.stop, (0.0, 0.0, 0.0), goal, 1, record
     )
     return state, next_state
 
 
 def test_push_likelihood_matches_the_math():
-    """A clear straight slide along the blue corridor, by hand."""
+    """A clear straight slide along the blue corridor, by hand.
+
+    The release speed's noise moves the stop along the slide, and the heading's moves it
+    across, from the push's start. A measured start adds its noise.
+    """
     phys = WORLD.physics
     puck, speed = np.array([1.0, 3.4]), 0.5
     stop = np.array([1.45, 3.41])
@@ -53,20 +64,28 @@ def test_push_likelihood_matches_the_math():
     record = _record(puck, Push(0.0, speed), speed, stop)
     got = push_log_likelihood(WORLD, particles, record)
 
-    def by_hand(mu):
+    def by_hand(mu, measurements=1):
+        release = phys.accel_distance - RELEASE_SHORTFALL
         length = speed**2 / (2 * mu * GRAVITY)
-        along = stop[0] - (puck[0] + phys.accel_distance + length)
+        along = stop[0] - (puck[0] + release + length)
         across = stop[1] - puck[1]
+        position = measurements * phys.position_obs_noise**2
+        # One standard deviation faster, and turned by one.
+        faster = (speed + phys.speed_obs_noise) ** 2 / (2 * mu * GRAVITY) - length
+        turned = release + length
         var_along = (
-            phys.position_obs_noise**2
-            + (2 * length * phys.speed_obs_noise / speed) ** 2
+            position + faster**2 + (turned * (1 - math.cos(phys.angle_noise))) ** 2
         )
-        var_across = phys.position_obs_noise**2 + (length * phys.angle_noise) ** 2
+        var_across = position + (turned * math.sin(phys.angle_noise)) ** 2
         return -0.5 * (
             along**2 / var_along + across**2 / var_across
         ) - 0.5 * math.log(var_along * var_across)
 
     assert got == pytest.approx([by_hand(0.10), by_hand(0.06)], abs=1e-9)
+    measured = dataclasses.replace(record, start_measured=True)
+    assert push_log_likelihood(WORLD, particles, measured) == pytest.approx(
+        [by_hand(0.10, 2), by_hand(0.06, 2)], abs=1e-9
+    )
     fell = _record(puck, Push(0.0, speed), speed, stop, fell=True)
     assert push_log_likelihood(WORLD, particles, fell) == pytest.approx(
         got + math.log(0.05)
@@ -104,7 +123,11 @@ def test_pushes_concentrate_the_belief():
 
 
 def test_three_probes_narrow_each_floor():
-    """One probe per floor narrows every coefficient toward the truth."""
+    """One probe per floor narrows every coefficient toward the truth.
+
+    The floors are independent, so each learns only from its own probe, and the highest
+    friction, whose probe slides least, stays the widest.
+    """
     rng = np.random.default_rng(1)
     frictions = np.array([0.15, 0.03, 0.08])
     simulator = ProbeSimulator("2d")
@@ -115,9 +138,26 @@ def test_three_probes_narrow_each_floor():
     before = _prior(seed=1)
     belief = FrictionBeliefUpdater(WORLD).update_from_queries(before, data)
     assert isinstance(belief, ParticleBelief)
-    assert np.all(belief.std < 0.3 * before.std)
+    assert np.all(belief.std < 0.4 * before.std)
+    assert np.all(belief.std[1:] < 0.15 * before.std[1:])
     assert np.all(np.abs(belief.mean - frictions) < 0.2 * frictions)
     simulator.close()
+
+
+def test_pushes_resample_only_the_floors_they_cross():
+    """A push along blue leaves the other floors' particles as they were, and a push
+    from tan up into blue crosses both."""
+    belief = _prior()
+    record = _record((1.0, 3.4), Push(0.0, 0.5), 0.5, (1.45, 3.41))
+    assert crossed_floors(WORLD, record, belief.low) == [0]
+    posterior = FrictionBeliefUpdater(WORLD).update_from_transition(
+        belief, *_transition(record)[:1], record.push, _transition(record)[1]
+    )
+    assert isinstance(posterior, ParticleBelief)
+    assert np.array_equal(posterior.particles[:, 1:], belief.particles[:, 1:])
+    assert not np.array_equal(posterior.particles[:, 0], belief.particles[:, 0])
+    up = _record((1.0, 2.0), Push(math.pi / 2, 1.0), 1.0, (1.0, 3.5))
+    assert crossed_floors(WORLD, up, belief.low) == [0, 1]
 
 
 def test_steps_without_a_new_feasible_push_show_nothing():
