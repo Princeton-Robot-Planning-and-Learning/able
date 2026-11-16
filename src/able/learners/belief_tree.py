@@ -113,6 +113,13 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     current belief, and the tree grows in the second iteration, so its dreams
     plan with that training, as the robot will when it next executes a task
     under the current belief. The tree then picks the remaining beliefs.
+
+    cost_input="amount" replaces the distance in C with the amount of nearby
+    training, eta(b) = sum over trained beliefs t of exp(-dist(b, t)^2 /
+    amount_radius^2), so a belief keeps gaining from more training near it, as a
+    model that generalizes does. Before any data, C(b, eta) = exp(-eta). Later
+    sleeps add every belief they draw, and a pick adds exp(-dist^2 / r^2) to each
+    node. Distances between beliefs are not matched in this mode.
     """
 
     def __init__(
@@ -143,6 +150,10 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         num_later_sleep_draws: int = 8,
         expansion: str = "score",
         train_root_first: bool = False,
+        cost_input: str = "distance",
+        amount_radius: float = 1.0,
+        amount_bandwidth: float = 1.0,
+        max_amount: float = 16.0,
     ) -> None:
         assert 0 < num_training_beliefs <= num_expansions + 1, "Too few nodes to pick"
         assert max_depth >= 1 and wave_size >= 1
@@ -152,6 +163,8 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         assert expansion in ("score", "value")
         assert expansion == "score" or later_sleeps == "dreaming"
         assert max_children is not None or widening_constant is not None
+        assert cost_input in ("distance", "amount")
+        assert cost_input == "distance" or use_facility_gain
         assert max_children is None or max_children >= 1
         self._dreamer = dreamer
         self._get_features = get_features
@@ -171,7 +184,16 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         self._max_cost_rows = max_cost_rows
         self._match_threshold = match_threshold
         self._use_facility_gain = use_facility_gain
-        self._distance_grid = np.linspace(0.0, max_distance, 21)
+        self._cost_input = cost_input
+        self._amount_radius = amount_radius
+        # The cost model's second input: distance to, or amount of, training.
+        self._max_input = max_distance if cost_input == "distance" else max_amount
+        self._input_bandwidth = (
+            distance_bandwidth if cost_input == "distance" else amount_bandwidth
+        )
+        self._input_grid = np.linspace(
+            0.0, self._max_input, 21 if cost_input == "distance" else 33
+        )
         self._refit_per_iteration = refit_per_iteration
         self._use_leaf_counts = use_leaf_counts
         self._learn_cost_model = learn_cost_model
@@ -385,26 +407,58 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         over the draws of the later sleeps."""
         rows = self._get_cost_rows(nodes)
         features = np.array([n.features for n in nodes])
-        between = self._match(np.abs(features[:, None] - features[None]).max(axis=2))
+        gaps = np.abs(features[:, None] - features[None]).max(axis=2)
+        # Column c: each node's input once c is trained (distance or amount).
+        between = (
+            self._match(gaps)
+            if self._cost_input == "distance"
+            else (self._kernel(gaps))
+        )
         if self._later_sleeps == "dreaming":
             values = np.array([n.weight for n in nodes])
-            later = self._get_later_sleep_distances(nodes, between, rng)
+            drawn = self._draw_later_sleeps(nodes, rng)
         else:
             values = self._get_values(nodes)
-            later = self._get_ancestor_distances(nodes, between)
-        # Row n, draw r: n's distance to the beliefs trained before it is evaluated.
-        distances = np.minimum(self._get_distances_to(nodes, self._trained), later.T).T
+            drawn = self._get_ancestor_draws(nodes)
+        later = self._combine_drawn(between, drawn)
+        # Row n, draw r: n's input from the beliefs trained before it is evaluated.
+        inputs = self._join(self._get_inputs_to(nodes, self._trained)[:, None], later)
         self._log_coverage(nodes, later)
         available = np.ones(len(nodes), dtype=bool)
         picks = []
         for _ in range(num_picks):
-            gains, after = self._get_gains(rows, values, distances, between)
+            gains, after = self._get_gains(rows, values, inputs, between)
             gains[~available] = -np.inf
             best = int(np.argmax(gains))
             picks.append(nodes[best])
             available[best] = False
-            distances = after[:, best]
+            inputs = after[:, best]
         return picks
+
+    def _kernel(self, distances: NDArray) -> NDArray:
+        """The amount of training one belief this far away contributes."""
+        return np.exp(-((distances / self._amount_radius) ** 2))
+
+    def _join(self, inputs: NDArray, more: NDArray) -> NDArray:
+        """Inputs from two sets of trained beliefs together: the nearer distance,
+        or the summed amount."""
+        if self._cost_input == "distance":
+            return np.minimum(inputs, more)
+        return inputs + more
+
+    def _combine_drawn(self, between: NDArray, drawn: list[NDArray | None]) -> NDArray:
+        """Each node's input from its drawn beliefs, per draw."""
+        num_draws = next((d.shape[0] for d in drawn if d is not None), 1)
+        empty = self._max_input if self._cost_input == "distance" else 0.0
+        result = np.full((len(drawn), num_draws), empty)
+        for i, indices in enumerate(drawn):
+            if indices is None:
+                continue
+            values = between[i, indices]
+            result[i] = (
+                values.min(axis=1) if self._cost_input == "distance" else values.sum(1)
+            )
+        return result
 
     def _get_gains(
         self, rows: NDArray, values: NDArray, distances: NDArray, between: NDArray
@@ -414,25 +468,26 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         (node, candidate, draw)."""
         num_nodes, num_draws = distances.shape
         costs = self._cost_at(rows, distances).mean(axis=1)
-        after = np.minimum(distances[:, None, :], between[:, :, None])
+        after = self._join(distances[:, None, :], between[:, :, None])
         costs_after = self._cost_at(rows, after.reshape(num_nodes, -1))
         costs_after = costs_after.reshape(num_nodes, num_nodes, num_draws).mean(axis=2)
         return values @ (costs[:, None] - costs_after), after
 
-    def _get_ancestor_distances(self, nodes: list[_Node], between: NDArray) -> NDArray:
-        """Each node's distance to its ancestors below the root, as one draw."""
+    def _get_ancestor_draws(self, nodes: list[_Node]) -> list[NDArray | None]:
+        """Each node's ancestors below the root, as one draw of the beliefs
+        trained before it is evaluated."""
         index = {id(n): i for i, n in enumerate(nodes)}
-        distances = np.full((len(nodes), 1), self._max_distance)
-        for i, node in enumerate(nodes):
-            for ancestor in node.ancestors():
-                distances[i, 0] = min(distances[i, 0], between[i, index[id(ancestor)]])
-        return distances
+        drawn: list[NDArray | None] = []
+        for node in nodes:
+            ancestors = [index[id(a)] for a in node.ancestors()]
+            drawn.append(np.array([ancestors]) if ancestors else None)
+        return drawn
 
-    def _get_later_sleep_distances(
-        self, nodes: list[_Node], between: NDArray, rng: np.random.Generator
-    ) -> NDArray:
-        """Each node's distance to the beliefs later sleeps on its path train
-        under, per draw. The sleep at a node below the root trains under
+    def _draw_later_sleeps(
+        self, nodes: list[_Node], rng: np.random.Generator
+    ) -> list[NDArray | None]:
+        """For each node, the beliefs the later sleeps on its path train under,
+        per draw (draw, belief). The sleep at a node below the root trains under
         later_sleep_budget of its children, drawn by weight with replacement."""
         index = {id(n): i for i, n in enumerate(nodes)}
         shape = (self._num_later_sleep_draws, self._later_sleep_budget)
@@ -444,20 +499,21 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
                 trained_by[id(node)] = rng.choice(
                     children, size=shape, p=weights / weights.sum()
                 )
-        distances = np.full((len(nodes), shape[0]), self._max_distance)
-        for i, node in enumerate(nodes):
-            for ancestor in node.ancestors():
-                drawn = trained_by[id(ancestor)]
-                distances[i] = np.minimum(distances[i], between[i, drawn].min(axis=1))
-        return distances
+        drawn: list[NDArray | None] = []
+        for node in nodes:
+            parts = [trained_by[id(a)] for a in node.ancestors()]
+            drawn.append(np.concatenate(parts, axis=1) if parts else None)
+        return drawn
 
     def _log_coverage(self, nodes: list[_Node], later: NDArray) -> None:
-        """Logs the share of each depth's nodes (and draws) that later sleeps
-        train at distance 0, and each depth's total weight."""
+        """Logs, by depth, the share of nodes (and draws) that later sleeps train
+        at distance 0, or the mean amount of training they give, and the total
+        weight."""
         depths = np.array([n.depth for n in nodes])
         weights = np.array([n.weight for n in nodes])
+        covered = later == 0 if self._cost_input == "distance" else later
         coverage = {
-            int(d): round(float((later[depths == d] == 0).mean()), 3)
+            int(d): round(float(covered[depths == d].mean()), 3)
             for d in np.unique(depths)
         }
         mass = {
@@ -473,8 +529,11 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     def _scores(self, nodes: list[_Node], picked: list[Features]) -> NDArray:
         """Each node's own score, with the picked features counted as trained."""
         rows = self._get_cost_rows(nodes)
-        distances = self._get_distances(nodes, picked)
-        reduction = self._cost_at(rows, distances) - rows[:, 0]
+        inputs = self._get_inputs(nodes, picked)
+        if self._cost_input == "distance":
+            reduction = self._cost_at(rows, inputs) - rows[:, 0]
+        else:
+            reduction = self._cost_at(rows, inputs) - self._cost_at(rows, inputs + 1)
         return self._get_values(nodes) * reduction
 
     def _get_values(self, nodes: list[_Node]) -> NDArray:
@@ -489,29 +548,33 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         ]
         return np.array([n.weight for n in nodes]) * np.array(counts)
 
-    def _get_distances_to(self, nodes: list[_Node], trained: list[Features]) -> NDArray:
-        """Each node's matched distance to the nearest of the trained features."""
-        if not trained:
-            return self._match(np.full(len(nodes), np.inf))
-        features = np.array([n.features for n in nodes])
-        gaps = np.abs(features[:, None] - np.array(trained)[None]).max(axis=2)
-        return self._match(gaps.min(axis=1))
+    def _get_inputs_to(self, nodes: list[_Node], trained: list[Features]) -> NDArray:
+        """Each node's input from the trained features: the matched distance to
+        the nearest, or the amount of training near it."""
+        return self._get_input_of(np.array([n.features for n in nodes]), trained)
 
-    def _get_distances(self, nodes: list[_Node], picked: list[Features]) -> NDArray:
-        """Each node's distance to the trained beliefs, the picked ones, and its
+    def _get_input_of(self, features: NDArray, trained: list[Features]) -> NDArray:
+        if not trained:
+            empty = np.inf if self._cost_input == "distance" else 0.0
+            return self._clip(np.full(len(features), empty))
+        gaps = np.abs(features[:, None] - np.array(trained)[None]).max(axis=2)
+        if self._cost_input == "distance":
+            return self._match(gaps.min(axis=1))
+        return self._kernel(gaps).sum(axis=1)
+
+    def _get_inputs(self, nodes: list[_Node], picked: list[Features]) -> NDArray:
+        """Each node's input from the trained beliefs, the picked ones, and its
         ancestors."""
-        features = np.array([n.features for n in nodes])
-        distances = np.full(len(nodes), np.inf)
-        trained = self._trained + picked
-        if trained:
-            gaps = np.abs(features[:, None] - np.array(trained)[None]).max(axis=2)
-            distances = gaps.min(axis=1)
+        ancestors = [[a.features for a in n.ancestors()] for n in nodes]
+        inputs = self._get_inputs_to(nodes, self._trained + picked)
         for i, node in enumerate(nodes):
-            for ancestor in node.ancestors():
-                distances[i] = min(
-                    distances[i], _distance(node.features, ancestor.features)
-                )
-        return self._match(distances)
+            if ancestors[i]:
+                more = self._get_input_of(node.features[None], ancestors[i])
+                inputs[i] = self._join(inputs[i : i + 1], more)[0]
+        return inputs
+
+    def _clip(self, inputs: NDArray) -> NDArray:
+        return np.minimum(inputs, self._max_input)
 
     def _match(self, distances: NDArray) -> NDArray:
         if self._match_threshold is None:
@@ -519,10 +582,10 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         return np.where(distances < self._match_threshold, 0.0, self._max_distance)
 
     def _get_cost_rows(self, nodes: list[_Node]) -> NDArray:
-        """C(b_n, d) for each node and each d on the distance grid."""
+        """C(b_n, x) for each node and each input x on the grid."""
         missing = [n for n in nodes if n.cost_row is None]
         if missing:
-            grid = self._distance_grid
+            grid = self._input_grid
             features = np.repeat([n.features for n in missing], len(grid), axis=0)
             distances = np.tile(grid, len(missing))
             costs = self._predict_cost(features, distances).reshape(len(missing), -1)
@@ -531,9 +594,10 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         return np.array([n.cost_row for n in nodes])
 
     def _cost_at(self, rows: NDArray, distances: NDArray) -> NDArray:
-        """Each row's cost at its distances (shape (N,) or (N, M)), interpolated
-        on the grid."""
-        position = distances / self._max_distance * (len(self._distance_grid) - 1)
+        """Each row's cost at its inputs (shape (N,) or (N, M)), interpolated on
+        the grid; inputs past the grid cost what its end does."""
+        distances = self._clip(distances)
+        position = distances / self._max_input * (len(self._input_grid) - 1)
         low = np.minimum(np.floor(position).astype(int), rows.shape[1] - 2)
         fraction = position - low
         if distances.ndim == 1:
@@ -545,6 +609,8 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
 
     def _predict_cost(self, features: NDArray, distances: NDArray) -> NDArray:
         if self._cost_model is None:
+            if self._cost_input == "amount":
+                return np.exp(-distances)
             return 1.0 - np.exp(-((distances / self._init_radius) ** 2))
         inputs = np.column_stack([features, distances])
         return self._cost_model.predict_batch(inputs)[:, 0]
@@ -554,16 +620,13 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         plans: list[tuple[Belief[HiddenParamsType], dict[str, float] | None]],
         trained: list[Features],
     ) -> None:
-        """Rows of (features, distance to the beliefs the planning model was
+        """Rows of (features, input from the beliefs the planning model was
         trained under, cost) for plans."""
         rows = []
         for belief, stats in plans:
             features = self._get_features(belief)
-            distance = np.inf
-            if trained:
-                distance = min(_distance(features, t) for t in trained)
-            distance = float(self._match(np.array(distance)))
-            rows.append((np.append(features, distance), self._get_cost(stats)))
+            value = float(self._clip(self._get_input_of(features[None], trained))[0])
+            rows.append((np.append(features, value), self._get_cost(stats)))
         if rows:
             self._cost_data = Dataset.concatenate(
                 [
@@ -582,7 +645,7 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
             return
         num_features = self._cost_data.x.shape[1] - 1
         bandwidths = (self._feature_bandwidth,) * num_features + (
-            self._distance_bandwidth,
+            self._input_bandwidth,
         )
         data = self._cost_data
         if len(data) > self._max_cost_rows:

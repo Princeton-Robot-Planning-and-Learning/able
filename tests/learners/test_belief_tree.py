@@ -168,7 +168,7 @@ def test_cost_rows_interpolate_the_cost_model():
     source = _source()
     node = _Node(None, np.zeros(2), None, 0)
     rows = source._get_cost_rows([node])
-    grid = source._distance_grid
+    grid = source._input_grid
     assert np.allclose(rows[0], source._predict_cost(np.zeros((len(grid), 2)), grid))
     mid = (grid[1] + grid[2]) / 2
     expected = (rows[0, 1] + rows[0, 2]) / 2
@@ -220,7 +220,7 @@ def test_later_sleeps_leave_deep_nodes_to_later_dreaming():
     assert source._pick_by_gain(nodes, 1, rng)[0] is nodes[0]
     features = np.array([n.features for n in nodes])
     between = source._match(np.abs(features[:, None] - features[None]).max(axis=2))
-    later = source._get_later_sleep_distances(nodes, between, rng)
+    later = source._combine_drawn(between, source._draw_later_sleeps(nodes, rng))
     assert (later[1:] == 0).all()
 
 
@@ -237,10 +237,11 @@ def test_later_sleep_gain_matches_closed_form():
     )
     features = np.array([n.features for n in nodes])
     between = source._match(np.abs(features[:, None] - features[None]).max(axis=2))
-    later = source._get_later_sleep_distances(nodes, between, np.random.default_rng(0))
+    drawn = source._draw_later_sleeps(nodes, np.random.default_rng(0))
+    later = source._combine_drawn(between, drawn)
     rows = source._get_cost_rows(nodes)
     values = np.array([n.weight for n in nodes])
-    distances = np.minimum(source._get_distances_to(nodes, []), later.T).T
+    distances = np.minimum(source._get_inputs_to(nodes, [])[:, None], later)
     gains, _ = source._get_gains(rows, values, distances, between)
     gap = rows[0, -1] - rows[0, 0]
     assert np.isclose(gains[0], gap)
@@ -333,3 +334,52 @@ def test_train_root_first():
     picks = [source.get_training_belief(i, belief, params, rng) for i in (2, 3, 4)]
     assert len(source._picks) == 4 and source._picks[0] is belief
     assert all(p is not belief for p in picks)
+
+
+def test_amount_input_keeps_gaining_near_training():
+    """With the amount of nearby training as the cost model's input, a node
+    trained once still gains from more training, which the distance input
+    counts as nothing."""
+    # pylint: disable=protected-access
+    gains = {}
+    for cost_input in ("distance", "amount"):
+        # Fresh nodes, since nodes cache their cost rows.
+        nodes = _chain()
+        source = _source(later_sleeps="dreaming", cost_input=cost_input)
+        source._trained = [nodes[0].features]
+        features = np.array([n.features for n in nodes])
+        gaps = np.abs(features[:, None] - features[None]).max(axis=2)
+        between = (
+            source._match(gaps) if cost_input == "distance" else (source._kernel(gaps))
+        )
+        drawn = source._draw_later_sleeps(nodes, np.random.default_rng(0))
+        later = source._combine_drawn(between, drawn)
+        inputs = source._join(
+            source._get_inputs_to(nodes, source._trained)[:, None], later
+        )
+        rows = source._get_cost_rows(nodes)
+        values = np.array([n.weight for n in nodes])
+        gains[cost_input] = source._get_gains(rows, values, inputs, between)[0][0]
+    assert gains["distance"] == 0.0
+    # Before data, C = exp(-eta): from one training to two.
+    # The leaves, 3 apart, add about exp(-9) each.
+    assert np.isclose(gains["amount"], np.exp(-1) - np.exp(-2), atol=1e-3)
+
+
+def test_sleep_with_amount_input():
+    """A whole sleep runs with the amount input and learns its cost model."""
+    source = _source(
+        later_sleeps="dreaming",
+        cost_input="amount",
+        max_children=None,
+        widening_constant=1.0,
+    )
+    belief = IntervalBelief(JOINT_LIMIT_PRIOR)
+    params = RandomShootingPlanner(TwoLinkArmModel()).get_default_params()
+    rng = np.random.default_rng(0)
+    for _ in range(2):
+        picks = [
+            source.get_training_belief(i, belief, params, rng) for i in (1, 2, 3, 4)
+        ]
+    assert len(picks) == 4
+    assert source._cost_model is not None  # pylint: disable=protected-access

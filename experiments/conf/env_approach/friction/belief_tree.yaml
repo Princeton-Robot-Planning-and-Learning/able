@@ -11,7 +11,9 @@ tree:
   # Grow where a new child is worth the most to this sleep's picks.
   expansion: value
   max_children: null
+  # Progressive widening, used only with expansion: score.
   widening_constant: 1.0
+  widening_exponent: 0.7
   wave_size: 1
   # Beliefs closer than this are the same belief, and a branch whose belief moved
   # less than this for two cycles stops.
@@ -21,6 +23,12 @@ tree:
   init_radius: 0.6
   distance_bandwidth: 0.3
   max_distance: 3.0
+  # "amount": C's input is the amount of nearby training, sum of
+  # exp(-dist^2 / amount_radius^2) over trained beliefs, instead of the distance.
+  cost_input: distance
+  amount_radius: 0.6
+  amount_bandwidth: 1.0
+  max_amount: 16.0
 # Training tasks rolled out under each training belief.
 num_training_tasks: 1
 # Most POMCPOW simulations per push at evaluation and execution, and the
