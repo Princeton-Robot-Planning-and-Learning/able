@@ -288,3 +288,15 @@ def test_success_against_the_simulation_budget(tmp_path: Path) -> None:
     assert "| Dreaming | 0.25 ± 0.00 | 0.75 ± 0.00 | 316 |" in table
     assert "| Prior only (first sleep) | 0.25 ± 0.00 | 0.25 ± 0.00 | > 1000 |" in table
     assert "| Plan from scratch | 0.25 ± 0.00 | 0.50 ± 0.00 | reference |" in table
+
+
+def test_oracle_runs_get_their_own_approach(tmp_path: Path) -> None:
+    """Runs with the belief anticipation oracle are labeled apart from their
+    approach."""
+    _write_run(tmp_path / "plain", "current_belief", 0, [1.0] * 4)
+    _write_run(tmp_path / "oracle", "current_belief", 0, [1.0] * 4)
+    config = OmegaConf.load(tmp_path / "oracle" / "config.yaml")
+    config.belief_anticipation_oracle = True
+    OmegaConf.save(config, tmp_path / "oracle" / "config.yaml")
+    df = _load_analysis_utils().combine_results_csvs(tmp_path, "eval_results.csv")
+    assert set(df["approach"]) == {"current_belief", "current_belief_oracle"}

@@ -24,6 +24,8 @@ def combine_results_csvs(directory: Path, results_filename: str) -> pd.DataFrame
         df = pd.read_csv(results_path)
         df["env"] = cfg.env_name
         df["approach"] = cfg.approach_name
+        if OmegaConf.select(cfg, "belief_anticipation_oracle", default=False):
+            df["approach"] = f"{cfg.approach_name}_oracle"
         df["seed"] = cfg.seed
         budget = OmegaConf.select(cfg, "approach.num_sims")
         if budget is not None:
