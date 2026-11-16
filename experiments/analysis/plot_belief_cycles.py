@@ -7,10 +7,10 @@ prior's standard deviation. Cycle -1 is the prior. The prior's moments and the t
 parameters come from rebuilding each run's domain from its config.yaml, so run this
 at the runs' code version.
 
-Writes belief_cycles.png (averaged over parameters, one row per environment) and
-belief_per_parameter_<env>.png, and prints a table of both measures at a few cycles.
-Runs that differ in queries per cycle (budgets.information_gathering) get one line
-per setting.
+Writes belief_error.png and belief_std.png (averaged over parameters; one row per
+environment, one column per number of queries per cycle,
+budgets.information_gathering) and belief_per_parameter_<env>.png, and prints a
+table of both measures at a few cycles. The dotted line is the prior's.
 
 Example:
     python experiments/analysis/plot_belief_cycles.py --results_dir logs/belief
@@ -24,11 +24,13 @@ import hydra
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
+from matplotlib.lines import Line2D
 from matplotlib.ticker import MaxNLocator
 from omegaconf import DictConfig, OmegaConf
 from plot_cycle_results import (
     APPROACH_TO_COLOR,
     APPROACH_TO_DISPLAY_NAME,
+    APPROACH_TO_LINESTYLE,
     ENV_TO_DISPLAY_NAME,
     EXTRA_COLORS,
 )
@@ -38,13 +40,14 @@ from able.learners.belief_features import (  # pylint: disable=wrong-import-orde
 )
 
 MEASURES = [
-    ("std_ratio", "Belief std ÷ prior std"),
-    ("error_ratio", "|Mean − truth| ÷ prior std"),
+    ("error_ratio", "Belief error (prior std)", "belief_error.png"),
+    ("std_ratio", "Belief std (prior std)", "belief_std.png"),
 ]
 TABLE_CYCLES = [-1, 0, 3, 6, 9, 11, 14, 19]
 CAPTION = (
-    "Lines show the mean over seeds (of the mean over parameters); shaded bands show "
-    "one standard error. Cycle −1 is the prior."
+    "Error is the distance from the belief's mean to the true parameter. Lines show "
+    "the mean over seeds of the mean over parameters; shaded bands show one standard "
+    "error; the dotted line is the prior's."
 )
 
 
@@ -103,120 +106,131 @@ def load_belief_rows(results_dir: Path) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def _summarize(df: pd.DataFrame, measure: str, keys: list[str]) -> pd.DataFrame:
-    per_seed = df.groupby(keys + ["seed", "cycle"], as_index=False)[measure].mean()
-    summary = per_seed.groupby(keys + ["cycle"], as_index=False)[measure].agg(
-        mean="mean", sem="sem"
-    )
-    summary["sem"] = summary["sem"].fillna(0.0)
-    return summary
+def _per_seed(df: pd.DataFrame, measure: str) -> pd.DataFrame:
+    """The measure averaged over parameters, per approach, setting, seed and cycle."""
+    keys = ["approach", "queries", "seed", "cycle"]
+    return df.groupby(keys)[measure].mean().reset_index()
 
 
-def _line_styles(df: pd.DataFrame) -> dict[tuple[str, int], dict]:
-    """A label, color and line style for each approach and query setting."""
-    many_query_settings = df["queries"].nunique() > 1
+def _query_title(queries: int) -> str:
+    if queries == 0:
+        return "no queries"
+    return f"{queries} quer{'y' if queries == 1 else 'ies'} per cycle"
+
+
+def _approach_styles(df: pd.DataFrame) -> dict[str, dict]:
     extra = iter(EXTRA_COLORS)
-    colors: dict[str, str] = {}
     styles = {}
-    for approach, queries in sorted(
-        df[["approach", "queries"]].drop_duplicates().itertuples(index=False)
-    ):
-        if approach not in colors:
-            colors[approach] = APPROACH_TO_COLOR.get(approach) or next(extra)
-        label = APPROACH_TO_DISPLAY_NAME.get(approach, approach)
-        if many_query_settings:
-            label += f", {queries} quer{'y' if queries == 1 else 'ies'} per cycle"
-        styles[(approach, queries)] = {
-            "label": label,
-            "color": colors[approach],
-            "linestyle": "--" if many_query_settings and queries > 0 else "-",
+    for approach in sorted(df["approach"].unique()):
+        styles[approach] = {
+            "label": APPROACH_TO_DISPLAY_NAME.get(approach, approach),
+            "color": APPROACH_TO_COLOR.get(approach) or next(extra),
+            "linestyle": APPROACH_TO_LINESTYLE.get(approach, "-"),
         }
     return styles
 
 
-def _plot_lines(ax, summary: pd.DataFrame, styles: dict) -> None:
-    for (approach, queries), group in summary.groupby(["approach", "queries"]):
-        style = styles[(approach, queries)]
-        group = group.sort_values("cycle")
-        ax.plot(group["cycle"], group["mean"], marker=".", **style)
+def _plot_panel(ax, df: pd.DataFrame, measure: str, styles: dict) -> None:
+    """One line per approach from cycle 0, and the prior (cycle -1) dotted."""
+    per_seed = _per_seed(df, measure)
+    prior = per_seed[per_seed["cycle"] == -1][measure].mean()
+    ax.axhline(prior, color="0.3", linestyle=":", linewidth=1.2)
+    cycles = per_seed[per_seed["cycle"] >= 0]
+    for approach, group in cycles.groupby("approach"):
+        summary = group.groupby("cycle")[measure].agg(["mean", "sem"]).fillna(0.0)
+        style = styles[approach]
+        ax.plot(summary.index, summary["mean"], **style)
         ax.fill_between(
-            group["cycle"],
-            group["mean"] - group["sem"],
-            group["mean"] + group["sem"],
+            summary.index,
+            summary["mean"] - summary["sem"],
+            summary["mean"] + summary["sem"],
             color=style["color"],
             alpha=0.2,
             linewidth=0,
         )
-    ax.axhline(0.0, color="0.6", linewidth=0.8)
     ax.set_xlabel("Cycle")
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-    ax.set_ylim(bottom=0.0)
+    ax.set_ylim(0.0, max(1.1, ax.get_ylim()[1]))
     ax.grid(alpha=0.3)
 
 
-def _add_legend(fig, ax, top_inches: float = 0.0) -> float:
+def _add_legend(fig, styles: dict, top_inches: float = 0.0) -> float:
     """Puts the legend above the panels; returns the panels' top as a fraction."""
-    handles, labels = ax.get_legend_handles_labels()
-    ncol = min(3, len(labels))
+    handles = [
+        Line2D([], [], color=s["color"], linestyle=s["linestyle"])
+        for s in styles.values()
+    ]
+    labels = [s["label"] for s in styles.values()]
+    ncol = min(5, len(labels))
     rows = -(-len(labels) // ncol)
     fig.legend(handles, labels, loc="upper center", ncol=ncol, frameon=False)
     return 1.0 - (0.28 * rows + 0.15 + top_inches) / fig.get_figheight()
 
 
-def plot_average(df: pd.DataFrame, path: Path) -> None:
-    """Both measures averaged over parameters, one row per environment."""
-    styles = _line_styles(df)
+def plot_measure(df: pd.DataFrame, measure: str, label: str, path: Path) -> None:
+    """Rows are environments, columns are query settings."""
+    styles = _approach_styles(df)
     envs = sorted(df["env"].unique())
-    # Average over parameters within each seed and cycle first.
-    per_run = df.groupby(
-        ["env", "approach", "queries", "seed", "cycle"], as_index=False
-    )[[m for m, _ in MEASURES]].mean()
+    settings = sorted(df["queries"].unique())
     fig, axes = plt.subplots(
-        len(envs), len(MEASURES), figsize=(11, 3.4 * len(envs)), squeeze=False
+        len(envs),
+        len(settings),
+        figsize=(4.6 * len(settings), 3.4 * len(envs)),
+        squeeze=False,
     )
     for row, env in enumerate(envs):
-        for col, (measure, label) in enumerate(MEASURES):
+        for col, queries in enumerate(settings):
             ax = axes[row][col]
-            env_df = per_run[per_run["env"] == env]
-            summary = _summarize(env_df, measure, ["approach", "queries"])
-            _plot_lines(ax, summary, styles)
-            num_seeds = env_df["seed"].nunique()
-            ax.set_title(f"{ENV_TO_DISPLAY_NAME.get(env, env)} ({num_seeds} seeds)")
-            ax.set_ylabel(label)
-    top = _add_legend(fig, axes[0][0])
-    fig.text(0.5, 0.005, CAPTION, ha="center", fontsize=9, color="0.4")
-    fig.tight_layout(rect=(0, 0.3 / fig.get_figheight(), 1, top))
+            panel = df[(df["env"] == env) & (df["queries"] == queries)]
+            if panel.empty:
+                ax.set_visible(False)
+                continue
+            _plot_panel(ax, panel, measure, styles)
+            num_seeds = panel["seed"].nunique()
+            ax.set_title(
+                f"{ENV_TO_DISPLAY_NAME.get(env, env)}, {_query_title(queries)} "
+                f"({num_seeds} seeds)",
+                fontsize=10,
+            )
+            if col == 0:
+                ax.set_ylabel(label)
+    top = _add_legend(fig, styles)
+    fig.text(0.5, 0.005, CAPTION, ha="center", fontsize=8, color="0.4", wrap=True)
+    fig.tight_layout(rect=(0, 0.35 / fig.get_figheight(), 1, top))
     fig.savefig(path, dpi=150)
     plt.close(fig)
     print(f"Wrote {path}")
 
 
 def plot_per_parameter(df: pd.DataFrame, env: str, path: Path) -> None:
-    """Both measures for each parameter of one environment."""
+    """Both measures for each parameter of one environment and query setting."""
     env_df = df[df["env"] == env]
-    styles = _line_styles(env_df)
+    styles = _approach_styles(env_df)
     params = sorted(env_df["parameter"].unique())
+    rows = [
+        (measure, label, queries)
+        for measure, label, _ in MEASURES
+        for queries in sorted(env_df["queries"].unique())
+    ]
     fig, axes = plt.subplots(
-        len(MEASURES),
+        len(rows),
         len(params),
-        figsize=(3.2 * len(params), 6.2),
+        figsize=(2.8 * len(params), 2.7 * len(rows)),
         squeeze=False,
     )
     for col, param in enumerate(params):
-        for row, (measure, label) in enumerate(MEASURES):
+        param_df = env_df[env_df["parameter"] == param]
+        for row, (measure, label, queries) in enumerate(rows):
             ax = axes[row][col]
-            summary = _summarize(
-                env_df[env_df["parameter"] == param], measure, ["approach", "queries"]
-            )
-            _plot_lines(ax, summary, styles)
-            ax.set_title(f"Parameter {param}")
+            _plot_panel(ax, param_df[param_df["queries"] == queries], measure, styles)
+            ax.set_title(f"Parameter {param}, {_query_title(queries)}", fontsize=9)
             if col == 0:
                 ax.set_ylabel(label)
-    top = _add_legend(fig, axes[0][0], top_inches=0.3)
+    top = _add_legend(fig, styles, top_inches=0.3)
     num_seeds = env_df["seed"].nunique()
     fig.text(
         0.5,
-        top + 0.15 / fig.get_figheight(),
+        top + 0.12 / fig.get_figheight(),
         f"{ENV_TO_DISPLAY_NAME.get(env, env)} ({num_seeds} seeds)",
         ha="center",
         fontsize=11,
@@ -228,25 +242,24 @@ def plot_per_parameter(df: pd.DataFrame, env: str, path: Path) -> None:
 
 
 def print_table(df: pd.DataFrame) -> None:
-    """Std / error at a few cycles, averaged over parameters and seeds."""
+    """Error / std at a few cycles, averaged over parameters and seeds."""
+    measures = [m for m, _, _ in MEASURES]
     per_run = df.groupby(
         ["env", "approach", "queries", "seed", "cycle"], as_index=False
-    )[[m for m, _ in MEASURES]].mean()
-    means = per_run.groupby(["env", "approach", "queries", "cycle"])[
-        [m for m, _ in MEASURES]
-    ].mean()
+    )[measures].mean()
+    means = per_run.groupby(["env", "approach", "queries", "cycle"])[measures].mean()
     cycles = [c for c in TABLE_CYCLES if c in set(per_run["cycle"])]
     header = " / ".join("prior" if c == -1 else str(c) for c in cycles)
     print(
-        f"\n| Env | Approach | Queries | Std ÷ prior std, cycle {header} "
-        f"| Error ÷ prior std, same cycles |"
+        f"\n| Env | Approach | Queries | Error (prior std), cycle {header} "
+        "| Std (prior std), same cycles |"
     )
     print("| --- | --- | --- | --- | --- |")
     for key, group in means.groupby(level=["env", "approach", "queries"]):
         group = group.droplevel(["env", "approach", "queries"])
         cells = [
             " / ".join(f"{value:.2f}" for c, value in group[m].items() if c in cycles)
-            for m, _ in MEASURES
+            for m in measures
         ]
         env, approach, queries = (str(k) for k in key)
         print(f"| {env} | {approach} | {queries} | {cells[0]} | {cells[1]} |")
@@ -261,7 +274,8 @@ def _main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     df = load_belief_rows(args.results_dir)
     df.to_csv(output_dir / "belief_cycles.csv", index=False)
-    plot_average(df, output_dir / "belief_cycles.png")
+    for measure, label, filename in MEASURES:
+        plot_measure(df, measure, label, output_dir / filename)
     for env in sorted(df["env"].unique()):
         plot_per_parameter(df, env, output_dir / f"belief_per_parameter_{env}.png")
     print_table(df)
