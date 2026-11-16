@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from able.beliefs.particles import ParticleBelief
+from able.envs.base import FiniteTaskDistribution
 from able.envs.friction.model import FrictionModel
 from able.envs.friction.pomdp import PuckPushingModel
 from able.envs.friction.tasks import FrictionTaskDistribution, make_domain
@@ -87,3 +88,18 @@ def test_seeds_and_given_frictions():
     assert not np.allclose(frictions[0], frictions[1])
     domain = make_domain(seed=0, num_holes=0, true_frictions=[0.1, 0.05, 0.03])
     assert np.allclose(_get_parts(domain)[1].hidden_params, [0.1, 0.05, 0.03])
+
+
+def test_fixed_tasks():
+    """num_tasks samples that many tasks once per seed, and keeps the person."""
+    domain = make_domain(seed=0, num_tasks=3)
+    tasks = domain.task_distribution
+    assert isinstance(tasks, FiniteTaskDistribution)
+    assert len(tasks.get_tasks()) == 3
+    again = make_domain(seed=0, num_tasks=3).task_distribution
+    assert isinstance(again, FiniteTaskDistribution)
+    assert [t.goal for t in tasks.get_tasks()] == [t.goal for t in again.get_tasks()]
+    frictions = _get_parts(make_domain(seed=0))[1].hidden_params
+    real_env = domain.real_env
+    assert isinstance(real_env, SimulatedEnvironment)
+    assert np.allclose(real_env.hidden_params, frictions)

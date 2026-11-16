@@ -6,7 +6,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from able.beliefs.particles import ParticleBelief
-from able.envs.base import Domain, TaskDistribution
+from able.envs.base import Domain, FiniteTaskDistribution, TaskDistribution
 from able.envs.friction.model import (
     FrictionModel,
     FrictionState,
@@ -132,21 +132,30 @@ def make_domain(
     prior: FrictionPrior = DEFAULT_FRICTION_PRIOR,
     rewards: PuckRewards = PuckRewards(),
     true_frictions: ArrayLike | None = None,
+    num_tasks: int | None = None,
 ) -> FrictionDomain:
     """A friction domain on the maze with num_holes holes, the goal radius, and
     num_floors floors, with floor frictions drawn from the prior unless given.
     Each task's start is task_distances (least, most) from its goal along the
-    shortest pushable path. The robot's initial belief is particles from the
-    prior."""
+    shortest pushable path. With num_tasks, the tasks are that many, sampled once
+    per seed. The robot's initial belief is particles from the prior."""
     rng = np.random.default_rng(seed)
     model = FrictionModel(sim, num_holes, goal_radius, horizon, rewards, num_floors)
     prior = dataclasses.replace(prior, num_surfaces=num_floors)  # a draw per floor
     frictions = prior.sample(rng) if true_frictions is None else true_frictions
     frictions = np.asarray(frictions, dtype=np.float64)
     assert frictions.shape == (num_floors,), "Need one friction per floor"
+    tasks: TaskDistribution[FrictionTask] = FrictionTaskDistribution(
+        model, *task_distances
+    )
+    if num_tasks is not None:
+        task_rng = np.random.default_rng([seed, 1])
+        tasks = FiniteTaskDistribution(
+            [tasks.sample(task_rng) for _ in range(num_tasks)]
+        )
     return Domain(
         env_model=model,
-        task_distribution=FrictionTaskDistribution(model, *task_distances),
+        task_distribution=tasks,
         initial_belief=make_prior_belief(prior, num_particles, rng),
         real_env=SimulatedEnvironment(model, frictions, rng),
     )

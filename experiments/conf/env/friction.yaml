@@ -16,6 +16,9 @@ env:
     # colors along x (layout.FLOOR_SPLITS), so each task crosses some of them. The
     # value model's bandwidths need one per floor for the belief's mean and std.
     num_floors: 8
+    # Tasks sampled once per seed and shared by training and evaluation; null
+    # samples a new task each time.
+    num_tasks: null
     num_particles: 500
   # Instantiated with the domain's environment model, only when recording videos.
   renderer:
