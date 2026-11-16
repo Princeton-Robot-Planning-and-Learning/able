@@ -29,6 +29,8 @@ class _Node:
     weight: float = 1.0
     # One plus the expansions made at this node or below it.
     visits: int = 1
+    # The predicted cost if trained here, cached because C is fixed in a sleep.
+    trained_cost: float | None = None
 
     def ancestors(self) -> list["_Node"]:
         """Ancestors below the root: beliefs future sleeps will train near."""
@@ -54,9 +56,9 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     the distance to the nearest belief trained before n is evaluated (trained
     beliefs, this sleep's picks, and n's ancestors). C is a kernel regression of
     the cost of every imagined and training plan on (features, distance), refit at
-    the start of every sleep; before any data it is 1 - exp(-delta^2 /
-    init_radius^2). refit_per_iteration says whether a training plan's model
-    already holds this sleep's earlier picks.
+    the start of every sleep on the latest max_cost_rows plans; before any data it
+    is 1 - exp(-delta^2 / init_radius^2). refit_per_iteration says whether a
+    training plan's model already holds this sleep's earlier picks.
 
     The first iteration of each sleep grows the tree with num_expansions dreams,
     wave_size at a time from the highest-scoring open nodes, and picks
@@ -85,6 +87,7 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         feature_bandwidth: float = 2.0,
         distance_bandwidth: float = 0.5,
         max_distance: float = 10.0,
+        max_cost_rows: int = 2048,
         refit_per_iteration: bool = True,
     ) -> None:
         assert 0 < num_training_beliefs <= num_expansions + 1, "Too few nodes to pick"
@@ -106,6 +109,7 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         self._feature_bandwidth = feature_bandwidth
         self._distance_bandwidth = distance_bandwidth
         self._max_distance = max_distance
+        self._max_cost_rows = max_cost_rows
         self._refit_per_iteration = refit_per_iteration
         self._trained: list[Features] = []
         self._num_trained_before_sleep = 0
@@ -243,9 +247,13 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
                     distances[i], _distance(node.features, ancestor.features)
                 )
         distances = np.minimum(distances, self._max_distance)
-        reduction = self._predict_cost(features, distances) - self._predict_cost(
-            features, np.zeros(len(nodes))
-        )
+        missing = [i for i, n in enumerate(nodes) if n.trained_cost is None]
+        if missing:
+            costs = self._predict_cost(features[missing], np.zeros(len(missing)))
+            for i, cost in zip(missing, costs):
+                nodes[i].trained_cost = float(cost)
+        trained_costs = np.array([n.trained_cost for n in nodes])
+        reduction = self._predict_cost(features, distances) - trained_costs
         counts = np.array(
             [1 if n.children else self._max_depth - n.depth + 1 for n in nodes]
         )
@@ -292,7 +300,14 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         bandwidths = (self._feature_bandwidth,) * num_features + (
             self._distance_bandwidth,
         )
-        self._cost_model = KernelRegressor(bandwidths=bandwidths).fit(self._cost_data)
+        data = self._cost_data
+        if len(data) > self._max_cost_rows:
+            last = slice(len(data) - self._max_cost_rows, None)
+            data = Dataset(
+                data.x[last], data.y[last], data.costs[last], data.groups[last]
+            )
+            self._cost_data = data
+        self._cost_model = KernelRegressor(bandwidths=bandwidths).fit(data)
 
 
 def _set_weights(node: _Node) -> None:
