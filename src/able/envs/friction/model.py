@@ -73,6 +73,8 @@ class FrictionState:
     pushes: int = 0
     last_push: PushRecord | None = None
     outcome: str | None = None
+    # Whether `puck` is a measured stop, rather than known exactly.
+    puck_measured: bool = False
 
     @property
     def ended(self) -> bool:
@@ -178,7 +180,7 @@ class FrictionModel(
         }
         sim.reset(seed=int(rng.integers(2**31)), options=options)
         terminated, info = execute_push(sim, action)
-        record = PushRecord.from_info(info, state.puck, action)
+        record = PushRecord.from_info(info, state.puck, action, state.puck_measured)
         robot = state.robot
         if record.feasible:
             world = self.world
@@ -191,11 +193,12 @@ class FrictionModel(
         # A noisy measurement can land the puck slightly inside a wall.
         puck = self.world.nearest_free_puck_position(np.array(record.stop))
         true_puck, pose = np.asarray(sim.puck_position), sim.robot_pose
+        measured = True
         if outcome is None:
             rest = self.world.shed(true_puck, state.goal)
             if not np.array_equal(rest, true_puck):
                 # The robot sees where a shed puck comes to rest.
-                puck, true_puck = rest, rest
+                puck, true_puck, measured = rest, rest, False
         return FrictionState(
             puck=(float(puck[0]), float(puck[1])),
             robot=robot,
@@ -205,6 +208,7 @@ class FrictionModel(
             pushes=state.pushes + 1,
             last_push=record,
             outcome=outcome,
+            puck_measured=measured,
         )
 
     def get_cost(

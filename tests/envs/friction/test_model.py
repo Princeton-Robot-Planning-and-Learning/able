@@ -50,6 +50,13 @@ def test_a_push_moves_the_puck_and_the_robot(model):
     assert next_state.pushes == 1 and not next_state.ended
     assert next_state.robot != state.robot
     assert np.linalg.norm(np.subtract(next_state.puck, next_state.true_puck)) < 0.1
+    # The task's start is known; the next start is the measured stop.
+    assert not state.puck_measured and not record.start_measured
+    assert next_state.puck_measured
+    after = model.sample_next_state(
+        next_state, Push(-math.pi / 2, 0.3, 0.0), FRICTIONS, np.random.default_rng(1)
+    )
+    assert after.last_push is not None and after.last_push.start_measured
     cost = model.get_cost(task, state, push, next_state, FRICTIONS)
     assert cost == pytest.approx(1.0 + 0.5 * record.drive_distance)
     assert not model.check_goal(task, next_state, FRICTIONS)
@@ -66,6 +73,7 @@ def test_a_puck_stopped_in_the_slot_is_shed(model):
     record = next_state.last_push
     assert record is not None and record.stop[0] > 2.1  # inside the slot
     assert next_state.puck == next_state.true_puck and next_state.puck[0] < 2.0
+    assert not next_state.puck_measured
     rest = np.array(next_state.puck)
     assert np.array_equal(model.world.shed(rest, state.goal), rest)
 

@@ -1,11 +1,13 @@
 """Tests for belief_updaters/friction.py."""
 
+import dataclasses
 import math
 
 import numpy as np
 import pytest
 
 from able.belief_updaters.friction import (
+    RELEASE_SHORTFALL,
     FrictionBeliefUpdater,
     crossed_floors,
     push_log_likelihood,
@@ -50,7 +52,11 @@ def _transition(record: PushRecord) -> tuple[FrictionState, FrictionState]:
 
 
 def test_push_likelihood_matches_the_math():
-    """A clear straight slide along the blue corridor, by hand."""
+    """A clear straight slide along the blue corridor, by hand.
+
+    The release speed's noise moves the stop along the slide, and the heading's moves it
+    across, from the push's start. A measured start adds its noise.
+    """
     phys = WORLD.physics
     puck, speed = np.array([1.0, 3.4]), 0.5
     stop = np.array([1.45, 3.41])
@@ -58,20 +64,28 @@ def test_push_likelihood_matches_the_math():
     record = _record(puck, Push(0.0, speed), speed, stop)
     got = push_log_likelihood(WORLD, particles, record)
 
-    def by_hand(mu):
+    def by_hand(mu, measurements=1):
+        release = phys.accel_distance - RELEASE_SHORTFALL
         length = speed**2 / (2 * mu * GRAVITY)
-        along = stop[0] - (puck[0] + phys.accel_distance + length)
+        along = stop[0] - (puck[0] + release + length)
         across = stop[1] - puck[1]
+        position = measurements * phys.position_obs_noise**2
+        # One standard deviation faster, and turned by one.
+        faster = (speed + phys.speed_obs_noise) ** 2 / (2 * mu * GRAVITY) - length
+        turned = release + length
         var_along = (
-            phys.position_obs_noise**2
-            + (2 * length * phys.speed_obs_noise / speed) ** 2
+            position + faster**2 + (turned * (1 - math.cos(phys.angle_noise))) ** 2
         )
-        var_across = phys.position_obs_noise**2 + (length * phys.angle_noise) ** 2
+        var_across = position + (turned * math.sin(phys.angle_noise)) ** 2
         return -0.5 * (
             along**2 / var_along + across**2 / var_across
         ) - 0.5 * math.log(var_along * var_across)
 
     assert got == pytest.approx([by_hand(0.10), by_hand(0.06)], abs=1e-9)
+    measured = dataclasses.replace(record, start_measured=True)
+    assert push_log_likelihood(WORLD, particles, measured) == pytest.approx(
+        [by_hand(0.10, 2), by_hand(0.06, 2)], abs=1e-9
+    )
     fell = _record(puck, Push(0.0, speed), speed, stop, fell=True)
     assert push_log_likelihood(WORLD, particles, fell) == pytest.approx(
         got + math.log(0.05)

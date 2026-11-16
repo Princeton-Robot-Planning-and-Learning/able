@@ -408,13 +408,14 @@ class PuckWorld:
         direction: NDArray[np.float64],
         inflate: float,
     ) -> tuple[float, NDArray[np.float64]]:
-        """(distance, entry-face normal axes) of the first entry into inflated rects.
+        """(distance, unit outward normal) of the first entry into the rects inflated by
+        `inflate`, with rounded corners, as a disc meets a box.
 
         Exit faces are ignored, so a point resting on a face and moving away misses it.
         """
-        best, best_axes = math.inf, np.zeros(2)
+        best, best_normal = math.inf, np.zeros(2)
         if len(rects) == 0:
-            return best, best_axes
+            return best, best_normal
         lo = rects[:, :2] - inflate
         hi = rects[:, 2:] + inflate
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -432,17 +433,35 @@ class PuckWorld:
         enter = tmin.max(axis=1)
         leave = tmax.min(axis=1)
         eps = 1e-9
-        candidates = np.nonzero((enter <= leave) & (leave > eps) & (enter > -1e-6))[0]
+        candidates = np.nonzero((enter <= leave) & (leave > eps))[0]
         for i in candidates:
-            t = float(enter[i])
+            t = max(float(enter[i]), 0.0)
             if t >= best:
                 continue
-            axes = (np.abs(tmin[i] - t) < 1e-9).astype(float)
+            # Where the ray enters the square-cornered box, or starts inside it.
+            point = origin + t * direction
+            vertex = np.clip(point, rects[i, :2], rects[i, 2:])
+            if np.all(np.abs(point - vertex) > 1e-9):
+                # A corner square: the disc meets the rect's corner, or misses it.
+                rel = origin - vertex
+                b = float(rel @ direction)
+                disc = b * b - float(rel @ rel) + inflate * inflate
+                if b >= 0.0 or disc < 0.0:
+                    continue
+                t = max(-b - math.sqrt(disc), 0.0)
+                normal = rel + t * direction
+                size = float(np.linalg.norm(normal))
+                if t < best and size > 1e-12:
+                    best, best_normal = t, normal / size
+                continue
+            if enter[i] <= -1e-6:
+                continue
+            axes = (np.abs(tmin[i] - enter[i]) < 1e-9).astype(float)
             # Skip unless moving into the entry face.
             if not np.any(axes * np.abs(direction) > 0):
                 continue
-            best, best_axes = max(t, 0.0), axes
-        return best, best_axes
+            best, best_normal = t, -axes * np.sign(direction)
+        return best, best_normal
 
     def _segment_hits_rects(
         self,
@@ -716,13 +735,10 @@ class PuckWorld:
 
         half_w = phys.paddle_width / 2
         rect = np.array([[-phys.paddle_thickness, -half_w, 0.0, half_w]])
-        t, axes = self._ray_hit(
+        t, local_normal = self._ray_hit(
             rect, to_local(origin - robot.face), to_local(direction), phys.puck_radius
         )
         if t < best[0]:
-            local_dir = to_local(direction)
-            local_normal = -axes * np.sign(local_dir)
-            local_normal /= max(float(np.linalg.norm(local_normal)), 1e-12)
             normal = np.array(
                 [
                     cos_a * local_normal[0] - sin_a * local_normal[1],
@@ -731,6 +747,30 @@ class PuckWorld:
             )
             best = (t, normal)
         return best
+
+    def _first_hit(
+        self,
+        point: NDArray[np.float64],
+        direction: NDArray[np.float64],
+        robot: StrikeEnd | None,
+    ) -> tuple[float, NDArray[np.float64]]:
+        """(distance, unit normal) of the puck's first contact with a wall or the robot
+        along `direction`, or (inf, zeros) if none."""
+        hit = self._ray_hit(self.walls, point, direction, self.physics.puck_radius)
+        if robot is not None:
+            s_robot, normal = self._robot_hit(robot, point, direction)
+            if s_robot < hit[0]:
+                assert normal is not None
+                hit = (s_robot, normal)
+        return hit
+
+    def _bounce(
+        self, direction: NDArray[np.float64], normal: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        """The velocity, per unit speed before, after a bounce off a surface with
+        the normal: its normal part reverses, scaled by the restitution."""
+        restitution = self.physics.wall_restitution
+        return direction - (1.0 + restitution) * float(direction @ normal) * normal
 
     # ------------------------------------------------------------------ slides
 
@@ -770,13 +810,8 @@ class PuckWorld:
                 boundary = (idx + 1) * h if d > 0 else idx * h
                 s_cell = min(s_cell, (boundary - point[axis]) / d)
             s_cell = max(s_cell, 0.0)
-            s_wall, axes = self._ray_hit(self.walls, point, direction, phys.puck_radius)
-            s_robot, normal = (
-                self._robot_hit(robot, point, direction)
-                if robot is not None
-                else (math.inf, None)
-            )
-            step = min(s_stop, s_cell, s_wall, s_robot)
+            s_hit, normal = self._first_hit(point, direction, robot)
+            step = min(s_stop, s_cell, s_hit)
             end = point + step * direction
             hole = self._segment_hole(point, end, phys.hole_radius)
             if hole is not None:
@@ -792,24 +827,9 @@ class PuckWorld:
                 path.append(point.copy())
                 break
             v = math.sqrt(max(v * v - 2.0 * decel * step, 0.0))
-            if s_wall == step < s_cell + 1e-12:
+            if s_hit == step < s_cell + 1e-12:
                 path.append(point.copy())
-                velocity = v * direction
-                velocity = np.where(
-                    axes > 0, -phys.wall_restitution * velocity, velocity
-                )
-                v = float(np.linalg.norm(velocity))
-                if v <= 1e-6:
-                    break
-                direction = velocity / v
-            elif s_robot == step < s_cell + 1e-12:
-                assert normal is not None
-                path.append(point.copy())
-                velocity = v * direction
-                velocity = (
-                    velocity
-                    - (1.0 + phys.wall_restitution) * float(velocity @ normal) * normal
-                )
+                velocity = v * self._bounce(direction, normal)
                 v = float(np.linalg.norm(velocity))
                 if v <= 1e-6:
                     break
@@ -887,13 +907,8 @@ class PuckWorld:
                 boundary = (idx + 1) * h if d > 0 else idx * h
                 s_cell = min(s_cell, (boundary - point[axis]) / d)
             s_cell = max(s_cell, 0.0)
-            s_wall, axes = self._ray_hit(self.walls, point, direction, phys.puck_radius)
-            s_robot, normal = (
-                self._robot_hit(robot, point, direction)
-                if robot is not None
-                else (math.inf, None)
-            )
-            step = min(s_cell, s_wall, s_robot)
+            s_hit, normal = self._first_hit(point, direction, robot)
+            step = min(s_cell, s_hit)
             s_stop = np.full(num, math.inf)
             s_stop[moving] = v[moving] ** 2 / (2.0 * decel[moving])
             hole = self._segment_hole(point, point + step * direction, phys.hole_radius)
@@ -914,16 +929,9 @@ class PuckWorld:
             )
             point = point + step * direction
             total += step
-            if s_wall == step < s_cell + 1e-12:
-                turned = np.where(
-                    axes > 0, -phys.wall_restitution * direction, direction
-                )
-            elif s_robot == step < s_cell + 1e-12:
-                assert normal is not None
-                bounce = (1.0 + phys.wall_restitution) * float(direction @ normal)
-                turned = direction - bounce * normal
-            else:
+            if not s_hit == step < s_cell + 1e-12:
                 continue
+            turned = self._bounce(direction, normal)
             factor = float(np.linalg.norm(turned))
             v[moving] *= factor
             previous_corner, corner = corner, point.copy()
