@@ -119,13 +119,14 @@ class FrictionModel(
         goal_radius: float = 0.3,
         horizon: int = 15,
         rewards: PuckRewards = PuckRewards(),
+        num_floors: int = 3,
     ) -> None:
         self.sim_name = sim
         self.rewards = rewards
-        self.world = make_world(num_holes, goal_radius)
+        self.world = make_world(num_holes, goal_radius, num_floors)
         self._horizon = horizon
         self._sim: Any = None
-        self._probes = ProbeSimulator(sim, num_holes, goal_radius)
+        self._probes = ProbeSimulator(sim, num_holes, goal_radius, num_floors)
 
     @property
     def horizon(self) -> int:
