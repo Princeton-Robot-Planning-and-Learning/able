@@ -9,7 +9,7 @@ along the straight line to the goal.
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import pybullet as p
@@ -152,13 +152,26 @@ def solve_grasp_ik(
 
 @dataclass(frozen=True)
 class TaskBox:
-    """How tasks are drawn, as on the two-link arm: start and goal configurations of
-    the active joints are uniform within the person's true range, and far enough
-    apart. There are no goals at the limits, which would reveal them in one
-    execution. Beyond max_separation, MPC does not converge."""
+    """How tasks are drawn: start and goal configurations of the active joints lie
+    within the person's true range, far enough apart. Beyond max_separation, MPC
+    does not converge.
+
+    Starts are uniform. Each active joint of a goal lies a fraction of the way
+    along its range, from the far end to the person's limit, drawn from
+    Beta(goal_lean, 1) and scaled by max_goal_fraction. With goal_lean > 1 goals
+    lean toward the limits, so the floor of the belief, which follows the farthest
+    motion so far, rises a little with each task: the farthest of n goals lies
+    about n * goal_lean / (n * goal_lean + 1) of the way. No goal lies at a limit,
+    which would raise the floor to it in one execution. goal_lean = 1 and
+    max_goal_fraction = 1 make goals uniform, as starts are. Where the robot
+    cannot hold the limb near a limit, few leaning goals are reachable; if none of
+    max_start_draws starts has one, the goal is drawn uniformly instead.
+    """
 
     min_separation: float = 0.5
     max_separation: float = 1.5
+    goal_lean: float = 4.0
+    max_goal_fraction: float = 0.98
     robot_jitter: float = 0.2
     # Some starts cannot be grasped or carried to any goal, so allow many.
     max_start_draws: int = 400
@@ -215,6 +228,19 @@ class LimbTaskDistribution(TaskDistribution[LimbTask]):
             self._sim = None
 
     def sample(self, rng: np.random.Generator) -> LimbTask:
+        """A task with a goal that leans toward the limits or, if no start draw
+        has one, a uniform goal."""
+        for draw_goal in (self.draw_limb_goal, self.draw_limb_configuration):
+            task = self._sample_with(draw_goal, rng)
+            if task is not None:
+                return task
+        raise RuntimeError("No reachable task found")
+
+    def _sample_with(
+        self,
+        draw_goal: Callable[[np.random.Generator], NDArray[np.float64]],
+        rng: np.random.Generator,
+    ) -> LimbTask | None:
         sim, box = self.sim, self._box
         assert self._grasp is not None
         for _ in range(box.max_start_draws):
@@ -224,14 +250,14 @@ class LimbTaskDistribution(TaskDistribution[LimbTask]):
             if start is None:
                 continue
             for _ in range(box.max_goal_draws):
-                limb_goal = self.draw_limb_configuration(rng)
+                limb_goal = draw_goal(rng)
                 separation = sim.get_limb_error(limb_init, limb_goal)
                 if not box.min_separation <= separation <= box.max_separation:
                     continue
                 if self._can_carry(limb_init, limb_goal, start, rng):
                     initial_state = self._model.get_initial_state(start, limb_goal)
                     return LimbTask(initial_state=initial_state, goal=limb_goal)
-        raise RuntimeError("No reachable task found")
+        return None
 
     def _in_furniture(self, limb_positions: NDArray[np.float64]) -> bool:
         sim = self.sim
@@ -246,10 +272,29 @@ class LimbTaskDistribution(TaskDistribution[LimbTask]):
     def draw_limb_configuration(self, rng: np.random.Generator) -> NDArray[np.float64]:
         """Active joints uniform within the person's range, clear of the furniture.
         The other joints keep the variant's values."""
+        return self._draw_clear(lambda: rng.uniform(0.0, 1.0))
+
+    def draw_limb_goal(self, rng: np.random.Generator) -> NDArray[np.float64]:
+        """Active joints leaning toward the person's limits, short of them, clear
+        of the furniture. The other joints keep the variant's values."""
+        box = self._box
+        return self._draw_clear(
+            lambda: box.max_goal_fraction * rng.beta(box.goal_lean, 1.0)
+        )
+
+    def _draw_clear(self, draw_fraction: Callable[[], float]) -> NDArray[np.float64]:
+        """A configuration clear of the furniture, with each active joint a drawn
+        fraction of the way along its range from the far end to the limit of its
+        motion."""
+        variant = self._model.variant
         for _ in range(self._box.max_configuration_draws):
             positions = self._nominal_limb.copy()
-            for joint in self._model.variant.active_joints:
-                positions[joint] = rng.uniform(self._low[joint], self._high[joint])
+            for joint, sign in zip(
+                variant.active_joints, variant.active_signs, strict=True
+            ):
+                low, high = self._low[joint], self._high[joint]
+                far, limit = (low, high) if sign > 0 else (high, low)
+                positions[joint] = far + draw_fraction() * (limit - far)
             if not self._in_furniture(positions):
                 return positions
         raise RuntimeError("No limb configuration clear of the furniture")
@@ -351,14 +396,15 @@ def make_domain(
     horizon: int = 300,
     min_separation: float = TaskBox.min_separation,
     max_separation: float = TaskBox.max_separation,
+    goal_lean: float = TaskBox.goal_lean,
     prior: RangeOfMotionPrior = RangeOfMotionPrior(),
     true_theta: NDArray[np.float64] | None = None,
     settings: LimbSimSettings = LimbSimSettings(),
 ) -> LimbDomain:
     """A limb domain for the variant, with a person drawn from the prior unless
     true_theta is given. Tasks lie within the person's range, with start and goal
-    min_separation to max_separation apart, and the robot's initial belief is the
-    prior."""
+    min_separation to max_separation apart and goals leaning toward the limits by
+    goal_lean (see TaskBox), and the robot's initial belief is the prior."""
     limb_variant: LimbVariant = get_variant(variant)
     num_motions = len(limb_variant.active_motions)
     rng = np.random.default_rng(seed)
@@ -371,7 +417,11 @@ def make_domain(
             model,
             load_fixed_setup(variant),
             np.asarray(true_theta),
-            TaskBox(min_separation=min_separation, max_separation=max_separation),
+            TaskBox(
+                min_separation=min_separation,
+                max_separation=max_separation,
+                goal_lean=goal_lean,
+            ),
         ),
         initial_belief=RangeOfMotionBelief.from_prior(
             prior.mean, prior.stddev, prior.low, prior.high, num_motions
