@@ -32,6 +32,7 @@ APPROACH_TO_COLOR = {
     "scratch": "#eb6834",
     "current_belief": "#1baf7a",
     "prior_only": "#eda100",
+    "belief_tree": "#6250d6",
 }
 EXTRA_COLORS = ["#e87ba4", "#008300", "#6250d6", "#e34948"]
 
