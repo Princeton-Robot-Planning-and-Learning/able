@@ -316,6 +316,12 @@ class ObjectCentricPuckPushing3DEnv(
         self._outcome: str | None = None  # "goal", "hole" or None
         self._last_info: dict[str, Any] = {}
 
+    def close(self) -> None:
+        """Disconnect the PyBullet client. Kinder's kinematic 3D env keeps gym's
+        close, which does nothing, so each closed env kept its world in memory."""
+        if p.isConnected(physicsClientId=self.physics_client_id):
+            p.disconnect(physicsClientId=self.physics_client_id)
+
     @property
     def puck_z(self) -> float:
         """Height of the puck's center, resting on the floor."""
