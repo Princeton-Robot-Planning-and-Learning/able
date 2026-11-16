@@ -17,10 +17,11 @@ from kinder.envs.dynamic3d.limb_utils import NUM_LIMB_JOINTS, NUM_ROBOT_JOINTS
 from kinder.envs.dynamic3d.limbrepositioning3d import create_variant_config
 from numpy.typing import NDArray
 from pybullet_helpers.geometry import Pose, SE2Pose, matrix_from_quat, multiply_poses
-from pybullet_helpers.inverse_kinematics import (
-    InverseKinematicsError,
-    inverse_kinematics,
+from pybullet_helpers.ikfast.utils import (
+    IKFastHyperparameters,
+    ikfast_closest_inverse_kinematics,
 )
+from pybullet_helpers.inverse_kinematics import add_fingers_to_joint_positions
 from pybullet_helpers.motion_planning import (
     check_collisions_with_held_object,
     run_motion_planning,
@@ -47,6 +48,10 @@ from able.envs.simulated import SimulatedEnvironment
 FIXED_SETUPS_PATH = Path(__file__).with_name("fixed_setups.json")
 # The number of points on the line from start to goal where the grasp must hold.
 NUM_REACH_CHECKS = 3
+# IKFast tries this many values of the arm's free joint per grasp. A count, unlike
+# pybullet_helpers' default of 0.05 s, draws the same tasks under any load; 1000
+# take about 0.05 s.
+IK_FREE_JOINT_SAMPLES = 1000
 
 
 @dataclass(frozen=True)
@@ -140,10 +145,16 @@ def solve_grasp_ik(
             seed_positions if attempt == 0 else _with_fingers(rng.uniform(lower, upper))
         )
         arm.set_joints(list(seed))
-        try:
-            solution = inverse_kinematics(arm, target, validate=True, set_joints=False)
-        except InverseKinematicsError:
+        solutions = ikfast_closest_inverse_kinematics(
+            arm,
+            target,
+            hyperparameters=IKFastHyperparameters(
+                max_time=np.inf, max_attempts=IK_FREE_JOINT_SAMPLES
+            ),
+        )
+        if not solutions:
             continue
+        solution = add_fingers_to_joint_positions(arm, solutions[0])
         arm.set_joints(list(solution))
         if not arm_in_collision(sim):
             return list(solution)
