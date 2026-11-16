@@ -34,15 +34,22 @@ def test_weights_split_among_children():
 
 def test_sleep_picks_distinct_beliefs_in_order():
     """The first iteration grows the tree; each iteration returns the next pick,
-    and later sleeps learn a cost model from the dreams' plans."""
+    and later sleeps learn a cost model from imagined and training plans."""
     source = _source()
     belief = IntervalBelief(JOINT_LIMIT_PRIOR)
     params = RandomShootingPlanner(TwoLinkArmModel()).get_default_params()
     rng = np.random.default_rng(0)
     picks = [source.get_training_belief(i, belief, params, rng) for i in (1, 2, 3, 4)]
     assert len({id(p) for p in picks}) == 4
-    assert source._cost_model is not None  # pylint: disable=protected-access
+    source.observe_training_plans(2, picks[1], [{"num_samples": 64.0}, None])
+    # pylint: disable=protected-access
+    num_imagined = 12
+    assert len(source._cost_data) == num_imagined + 2
+    # The second training plan failed, so it costs 1.
+    assert source._cost_data.y[-1, 0] == 1.0
+    assert source._cost_model is None
     source.get_training_belief(1, belief, params, rng)
+    assert source._cost_model is not None
 
 
 def test_known_belief_stops_growing():

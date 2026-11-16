@@ -117,7 +117,10 @@ class ModelLearner(
             training_belief = self._belief_source.get_training_belief(
                 num_iterations, belief, params, rng
             )
-            examples = self.plan_training_tasks(training_belief, params, rng)
+            examples, stats = self.plan_training_tasks(training_belief, params, rng)
+            self._belief_source.observe_training_plans(
+                num_iterations, training_belief, stats
+            )
             self._dataset = Dataset.concatenate([self._dataset, examples])
             if self._refit == "per_iteration":
                 params = self._fit(params)
@@ -149,11 +152,17 @@ class ModelLearner(
             for iteration in range(num_iterations)
         ]
         plan_rngs = rng.spawn(num_iterations)
-        examples = pool.map(
+        plans = pool.map(
             _plan_training_tasks_in_worker,
             [(b, params, r) for b, r in zip(training_beliefs, plan_rngs)],
         )
-        self._dataset = Dataset.concatenate([self._dataset, *examples])
+        for iteration, (belief_i, (_, stats)) in enumerate(
+            zip(training_beliefs, plans), start=1
+        ):
+            self._belief_source.observe_training_plans(iteration, belief_i, stats)
+        self._dataset = Dataset.concatenate(
+            [self._dataset, *(examples for examples, _ in plans)]
+        )
         return self._fit(params)
 
     def _fit(self, params: PlannerParamsType) -> PlannerParamsType:
@@ -174,20 +183,24 @@ class ModelLearner(
         belief: Belief[HiddenParamsType],
         params: PlannerParamsType,
         rng: np.random.Generator,
-    ) -> Dataset:
+    ) -> tuple[Dataset, list[dict[str, float] | None]]:
         """Plan for the training tasks under the belief, with the planner's
-        training parameters, and return the planner's rows."""
+        training parameters, and return the planner's rows and each plan's
+        statistics (None if planning failed)."""
         params = self._planner.get_training_params(params)
-        examples = []
+        examples: list[Dataset] = []
+        stats: list[dict[str, float] | None] = []
         for task in self._get_training_tasks(rng):
             try:
                 policy = self._planner.plan(
                     task, belief, params, self._planning_budget, rng
                 )
             except PlanningFailure:
+                stats.append(None)
                 continue
+            stats.append(policy.get_planning_stats())
             examples.append(self._planner.get_plan_examples(task, belief, policy))
-        return Dataset.concatenate(examples)
+        return Dataset.concatenate(examples), stats
 
 
 def _draw_in_worker(
@@ -205,7 +218,7 @@ def _draw_in_worker(
 
 def _plan_training_tasks_in_worker(
     context: WorkerContext, belief: Belief[Any], params: Any, rng: np.random.Generator
-) -> Dataset:
+) -> tuple[Dataset, list[dict[str, float] | None]]:
     """A worker's training plans under one training belief, with its own copy of
     the learner."""
     learner = context.learner

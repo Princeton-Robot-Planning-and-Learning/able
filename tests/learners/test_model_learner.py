@@ -16,6 +16,7 @@ from able.learners.belief_sources import CurrentBeliefSource, PriorSource
 from able.learners.model_learner import ModelLearner
 from able.models.base import Dataset
 from able.models.exact_match_cache import ExactMatchCache
+from able.parallel import SerialPool, WorkerContext
 from able.planners.random_shooting import (
     RandomShootingParams,
     RandomShootingPlanner,
@@ -182,3 +183,38 @@ def test_sampled_training_tasks():
             Budget(),
             num_training_tasks=0,
         )
+
+
+class _ObservingSource(CurrentBeliefSource):
+    """Records the training plans' statistics it is shown."""
+
+    def __init__(self) -> None:
+        self.seen: list[tuple[int, int]] = []
+
+    def observe_training_plans(self, iteration, belief, stats) -> None:
+        assert all(s is not None and s["num_samples"] > 0 for s in stats)
+        self.seen.append((iteration, len(stats)))
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+def test_source_sees_training_plans(parallel):
+    """The belief source sees every training plan's statistics, in order, with
+    or without a pool."""
+    planner = _make_planner()
+    source = _ObservingSource()
+    learner: ModelLearner = ModelLearner(
+        planner,
+        FiniteTaskDistribution(TASKS),
+        source,
+        Budget(),
+        refit="per_sleep" if parallel else "per_iteration",
+    )
+    pool = SerialPool(WorkerContext(None, planner, learner)) if parallel else None
+    learner.learn(
+        IntervalBelief(JOINT_LIMIT_PRIOR),
+        planner.get_default_params(),
+        Budget(max_iterations=2),
+        np.random.default_rng(0),
+        pool,
+    )
+    assert source.seen == [(1, len(TASKS)), (2, len(TASKS))]

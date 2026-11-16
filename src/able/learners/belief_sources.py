@@ -68,6 +68,15 @@ class BeliefSource(ABC, Generic[HiddenParamsType, PlannerParamsType]):
         assert len(draws) == 1, "Need exactly one draw"
         return draws[0]
 
+    def observe_training_plans(
+        self,
+        iteration: int,
+        belief: Belief[HiddenParamsType],
+        stats: list[dict[str, float] | None],
+    ) -> None:
+        """Sees the planning statistics (None if planning failed) of an
+        iteration's training plans. By default ignores them."""
+
 
 class CurrentBeliefSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     """Trains under the robot's current belief, never anticipating belief

@@ -62,12 +62,14 @@ class RolloutModelLearner(
         belief: Belief[HiddenParamsType],
         params: PlannerParamsType,
         rng: np.random.Generator,
-    ) -> Dataset:
+    ) -> tuple[Dataset, list[dict[str, float] | None]]:
         """Run the plans for the training tasks, made with the planner's training
         parameters, in simulated environments and return the planner's rows for
-        each episode."""
+        each episode and each episode's planning statistics (None if planning
+        failed)."""
         params = self._planner.get_training_params(params)
-        examples = []
+        examples: list[Dataset] = []
+        stats: list[dict[str, float] | None] = []
         for task in self._get_training_tasks(rng):
             env = SimulatedEnvironment(self._env_model, belief.sample(rng), rng)
             try:
@@ -76,11 +78,13 @@ class RolloutModelLearner(
                 )
                 trajectory = run_episode(env, task, policy)
             except PlanningFailure:
+                stats.append(None)
                 continue
+            stats.append(policy.get_planning_stats())
             solved = env.check_goal(task, trajectory.states[-1])
             examples.append(
                 self._planner.get_rollout_examples(
                     task, belief, policy, trajectory, solved
                 )
             )
-        return Dataset.concatenate(examples)
+        return Dataset.concatenate(examples), stats

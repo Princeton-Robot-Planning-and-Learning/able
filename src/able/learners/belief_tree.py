@@ -51,15 +51,17 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     evaluations n stands for (1, or max_depth - depth + 1 at a leaf), and delta_n
     the distance to the nearest belief trained before n is evaluated (trained
     beliefs, this sleep's picks, and n's ancestors). C is a kernel regression of
-    the cost of every imagined plan on (features, distance), refit every sleep;
-    before any data it is 1 - exp(-delta^2 / init_radius^2).
+    the cost of every imagined and training plan on (features, distance), refit at
+    the start of every sleep; before any data it is 1 - exp(-delta^2 /
+    init_radius^2). refit_per_iteration says whether a training plan's model
+    already holds this sleep's earlier picks.
 
     The first iteration of each sleep grows the tree with num_expansions dreams,
     wave_size at a time from the highest-scoring open nodes, and picks
     num_training_beliefs nodes greedily (all of them if the tree is smaller); each
-    iteration returns the next pick. A
-    node is terminal at max_depth, or once its belief moved less than
-    stop_threshold over two consecutive cycles. Runs in one process only.
+    iteration returns the next pick. A node is terminal at max_depth, or once its
+    belief moved less than stop_threshold over two consecutive cycles. Runs in one
+    process only.
     """
 
     def __init__(
@@ -77,6 +79,7 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         feature_bandwidth: float = 2.0,
         distance_bandwidth: float = 0.5,
         max_distance: float = 10.0,
+        refit_per_iteration: bool = True,
     ) -> None:
         assert 0 < num_training_beliefs <= num_expansions + 1, "Too few nodes to pick"
         assert max_depth >= 1 and max_children >= 1 and wave_size >= 1
@@ -93,7 +96,9 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         self._feature_bandwidth = feature_bandwidth
         self._distance_bandwidth = distance_bandwidth
         self._max_distance = max_distance
+        self._refit_per_iteration = refit_per_iteration
         self._trained: list[Features] = []
+        self._num_trained_before_sleep = 0
         self._cost_data = Dataset.empty()
         self._cost_model: KernelRegressor | None = None
         self._picks: list[Belief[HiddenParamsType]] = []
@@ -110,6 +115,18 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         # A tree smaller than the budget repeats its picks.
         return self._picks[(iteration - 1) % len(self._picks)]
 
+    def observe_training_plans(
+        self,
+        iteration: int,
+        belief: Belief[HiddenParamsType],
+        stats: list[dict[str, float] | None],
+    ) -> None:
+        """Adds the training plans' costs to the cost model's data."""
+        num_seen = self._num_trained_before_sleep
+        if self._refit_per_iteration:
+            num_seen += min(iteration - 1, len(self._picks))
+        self._add_cost_data([(belief, s) for s in stats], self._trained[:num_seen])
+
     def draw(
         self,
         index: int,
@@ -125,6 +142,8 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         params: PlannerParamsType,
         rng: np.random.Generator,
     ) -> list[Belief[HiddenParamsType]]:
+        self._refit_cost_model()
+        self._num_trained_before_sleep = len(self._trained)
         nodes = self._grow_tree(belief, params, rng)
         picks: list[_Node] = []
         for _ in range(min(self._num_training_beliefs, len(nodes))):
@@ -132,7 +151,6 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
             scores = self._scores(open_nodes, [p.features for p in picks])
             picks.append(open_nodes[int(np.argmax(scores))])
         self._trained.extend(p.features for p in picks)
-        self._refit_cost_model()
         logging.info(
             "Belief tree: %d nodes, depths %s, picked depths %s",
             len(nodes),
@@ -183,7 +201,7 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
                 )
                 node.children.append(child)
                 nodes.append(child)
-                self._add_cost_data(cycle.plans)
+                self._add_cost_data(cycle.plans, self._trained)
             spent += len(wave)
             _set_weights(root)
         return nodes
@@ -218,18 +236,18 @@ class BeliefTreeSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         return self._cost_model.predict_batch(inputs)[:, 0]
 
     def _add_cost_data(
-        self, plans: list[tuple[Belief[HiddenParamsType], dict[str, float] | None]]
+        self,
+        plans: list[tuple[Belief[HiddenParamsType], dict[str, float] | None]],
+        trained: list[Features],
     ) -> None:
-        """Rows of (features, distance to trained beliefs, cost) for imagined
-        plans, which used the model trained on the beliefs trained so far."""
+        """Rows of (features, distance to the beliefs the planning model was
+        trained under, cost) for plans."""
         rows = []
         for belief, stats in plans:
             features = self._get_features(belief)
             distance = self._max_distance
-            if self._trained:
-                distance = min(
-                    distance, min(_distance(features, t) for t in self._trained)
-                )
+            if trained:
+                distance = min(distance, min(_distance(features, t) for t in trained))
             rows.append((np.append(features, distance), self._get_cost(stats)))
         if rows:
             self._cost_data = Dataset.concatenate(
