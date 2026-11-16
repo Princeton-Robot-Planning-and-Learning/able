@@ -36,7 +36,6 @@ from able.envs.friction.world import (
     HOLE_RGB,
     MAPS,
     PUCK_RGB,
-    SURFACE_RGB,
     WALL_RGB,
     FrictionPrior,
     PuckPhysics,
@@ -152,6 +151,9 @@ class ObjectCentricDynPuckPushing2DEnv(
         if map_name is not None:
             config = dataclasses.replace(config, map_name=map_name)
         puck_map = MAPS[config.map_name]
+        assert (
+            config.friction_prior.num_surfaces == puck_map.num_surfaces
+        ), "Need a prior over the map's floors"
         config = dataclasses.replace(
             config,
             world_min_x=0.0,
@@ -162,6 +164,8 @@ class ObjectCentricDynPuckPushing2DEnv(
         self.world = PuckWorld(puck_map, config.physics)
         # Puck (x, y) and robot (x, y, heading) at reset.
         self._start = (puck_map.puck_start, (*puck_map.robot_start, 0.0))
+        # Center of the goal circle.
+        self._goal: tuple[float, float] = puck_map.goal
         super().__init__(config, **kwargs)
         self._frictions: tuple[float, ...] = tuple(
             float(f) for f in config.friction_prior.mean
@@ -208,11 +212,11 @@ class ObjectCentricDynPuckPushing2DEnv(
             state[Object(f"wall{i}", KinRectangleType)] = _rect_features(
                 x0, y0, x1, y1, WALL_RGB, ZOrder.SURFACE
             )
-        for i, (surface, (x0, y0, x1, y1)) in enumerate(
-            self.world.puck_map.surface_rects()
-        ):
+        puck_map = self.world.puck_map
+        rgbs = puck_map.surface_rgb
+        for i, (surface, (x0, y0, x1, y1)) in enumerate(puck_map.surface_rects()):
             state[Object(f"patch{i}", KinRectangleType)] = _rect_features(
-                x0, y0, x1, y1, SURFACE_RGB[surface], ZOrder.FLOOR
+                x0, y0, x1, y1, rgbs[surface], ZOrder.FLOOR
             )
         return state
 
@@ -259,8 +263,8 @@ class ObjectCentricDynPuckPushing2DEnv(
         )
         goal = Object("goal", GoalMarkerType)
         state[goal] = _circle_features(
-            float(self.world.goal[0]),
-            float(self.world.goal[1]),
+            float(self._goal[0]),
+            float(self._goal[1]),
             phys.goal_radius,
             GOAL_RGB,
             ZOrder.SURFACE,
@@ -429,17 +433,19 @@ class ObjectCentricDynPuckPushing2DEnv(
     def reset(
         self, *, seed: int | None = None, options: dict | None = None
     ) -> tuple[ObjectCentricState, dict]:
-        """Reset; `options` may fix "frictions", and the "puck" (x, y) and "robot"
-        (x, y, heading) start."""
+        """Reset; `options` may fix "frictions", the "puck" (x, y) and "robot"
+        (x, y, heading) start, and the "goal" (x, y). Each defaults to the map's."""
         opts, puck_map = options or {}, self.world.puck_map
         self._start = (
             opts.get("puck", puck_map.puck_start),
             opts.get("robot", (*puck_map.robot_start, 0.0)),
         )
+        goal = opts.get("goal", puck_map.goal)
+        self._goal = (float(goal[0]), float(goal[1]))
         obs, info = super().reset(seed=seed, options=options)
         if options is not None and "frictions" in options:
             frictions = tuple(float(f) for f in options["frictions"])
-            assert len(frictions) == self.config.friction_prior.num_surfaces
+            assert len(frictions) == self.world.puck_map.num_surfaces
             self._frictions = frictions
         elif options is None or "init_state" not in options:
             self._frictions = sample_frictions(
@@ -470,7 +476,7 @@ class ObjectCentricDynPuckPushing2DEnv(
         stop = np.array([self._puck_body.position.x, self._puck_body.position.y])
         if info["fell_in_hole"]:
             self._outcome = "hole"
-        elif self.world.in_goal(stop):
+        elif self.world.in_goal(stop, self._goal):
             self._outcome = "goal"
         info["goal_reached"] = self._outcome == "goal"
         self._last_info = info

@@ -1,11 +1,14 @@
 """Tests for envs/friction/world.py."""
 
-import collections
+import dataclasses
 import math
 
 import numpy as np
+import pytest
 
 from able.envs.friction.world import (
+    COLOR_NAMES,
+    COLOR_RGB,
     GRAVITY,
     MAPS,
     THREE_ROUTES,
@@ -18,15 +21,42 @@ from able.envs.friction.world import (
 FRICTIONS = (0.03, 0.07, 0.15)
 
 
-def test_map_rectangles_tile_the_grid():
+@pytest.mark.parametrize("splits", [(), (2.0, 3.2)])
+def test_map_rectangles_tile_the_grid(splits):
     """Walls and floor patches cover every cell exactly once."""
-    puck_map = THREE_ROUTES
+    puck_map = dataclasses.replace(THREE_ROUTES, floor_splits=splits)
     area = sum((x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in puck_map.wall_rects())
     area += sum(
         (x1 - x0) * (y1 - y0) for _, (x0, y0, x1, y1) in puck_map.surface_rects()
     )
     assert math.isclose(area, puck_map.width * puck_map.height, rel_tol=1e-9)
     assert "threeroutes" in MAPS
+
+
+def test_floor_splits_cut_each_color_into_floors():
+    """Splits cut each color into a floor per stretch, numbered by color and then
+    from the left, and named and shaded after the color."""
+    puck_map = dataclasses.replace(THREE_ROUTES, floor_splits=(2.0, 3.2))
+    assert puck_map.num_surfaces == 8
+    assert puck_map.surface_names == (
+        "blue 1",
+        "blue 2",
+        "blue 3",
+        "tan 1",
+        "tan 2",
+        "green 1",
+        "green 2",
+        "green 3",
+    )
+    world = PuckWorld(puck_map)
+    points = [(x, y) for y in (3.4, 2.2, 1.0) for x in (1.0, 2.6, 4.0)]
+    floors = [world.surface_at(np.array(p)) for p in points]
+    # The central block's slot, at (2.6, 2.2), is blue.
+    assert floors == [0, 1, 2, 3, 1, 4, 5, 6, 7]
+    rgb = np.array(puck_map.surface_rgb)
+    assert np.allclose(rgb[0], COLOR_RGB[0]) and np.all(rgb[:2] > rgb[1:3])
+    assert THREE_ROUTES.surface_names == COLOR_NAMES
+    assert THREE_ROUTES.surface_rgb == COLOR_RGB
 
 
 def test_slide_on_one_surface_stops_at_the_coulomb_distance():
@@ -225,22 +255,27 @@ def test_push_stance():
     assert world.push_feasible(near, -math.pi / 2) == (len(blocked) < 3)
 
 
-def test_friction_prior_shuffles_the_levels():
-    """The prior deals its levels to the floors in a random order, each scaled within
-    the jitter."""
+def test_friction_prior_draws_each_floor_on_its_own():
+    """Each floor draws one of the prior's levels on its own, scaled within the jitter,
+    so every level is as likely on every floor whatever the others drew."""
     rng = np.random.default_rng(0)
     prior = FrictionPrior(levels=(0.03, 0.08, 0.15), jitter=0.2)
-    slippery: collections.Counter[int] = collections.Counter()
-    for _ in range(600):
-        sample = prior.sample(rng)
-        ratios = np.sort(sample) / np.array(prior.levels)
-        assert np.all((ratios >= 0.8 - 1e-9) & (ratios <= 1.2 + 1e-9))
-        slippery[int(np.argmin(sample))] += 1
-    assert all(150 <= slippery[k] <= 250 for k in range(3))
+    samples = prior.sample(rng, 3000)
+    assert samples.shape == (3000, 3) and prior.sample(rng).shape == (3,)
+    levels = np.array(prior.levels)
+    picks = np.argmin(np.abs(samples[..., None] / levels - 1.0), axis=-1)
+    ratios = samples / levels[picks]
+    assert np.all((ratios >= 0.8 - 1e-9) & (ratios <= 1.2 + 1e-9))
+    counts = np.array([np.bincount(picks[:, k], minlength=3) for k in range(3)])
+    assert np.all(np.abs(counts - 1000) < 100)
+    # Floors are independent: two floors share a level a third of the time.
+    same = np.mean(picks[:, 0] == picks[:, 1])
+    assert same == pytest.approx(1 / 3, abs=0.03)
     low, high = prior.bounds
-    samples = prior.sample(rng, 50)
-    assert samples.shape == (50, 3)
     assert np.all((low <= samples) & (samples <= high))
+    assert np.allclose(prior.mean, np.mean(levels))
+    prior = FrictionPrior(num_surfaces=8)
+    assert prior.sample(rng, 5).shape == (5, 8) and prior.bounds[0].shape == (8,)
 
 
 def test_walls_shed_pucks():
@@ -253,14 +288,19 @@ def test_walls_shed_pucks():
         return float(np.mean([world.push_feasible(point, float(a)) for a in angles]))
 
     start = np.array(THREE_ROUTES.puck_start)
-    assert np.array_equal(world.shed(start), start)
+    goal = THREE_ROUTES.goal
+    assert np.array_equal(world.shed(start, goal), start) and world.has_room(start)
     # In the central block's slot, the robot cannot push at all.
     in_slot = np.array([2.2, 2.2])
-    rest = world.shed(in_slot)
-    assert fraction(in_slot) == 0.0
+    rest = world.shed(in_slot, goal)
+    assert fraction(in_slot) == 0.0 and not world.has_room(in_slot)
     assert fraction(rest) >= world.physics.min_push_fraction
     assert world.puck_position_free(rest) and np.linalg.norm(rest - in_slot) < 0.5
-    assert np.array_equal(world.shed(rest), rest)
+    assert np.array_equal(world.shed(rest, goal), rest)
+    # A puck is never shed into the goal.
+    goal_at_rest = (float(rest[0]), float(rest[1]))
+    elsewhere = world.shed(in_slot, goal_at_rest)
+    assert not world.in_goal(elsewhere, goal_at_rest)
     # Without a minimum fraction, pucks stop anywhere.
     anywhere = PuckWorld(THREE_ROUTES, PuckPhysics(min_push_fraction=0.0))
-    assert np.array_equal(anywhere.shed(in_slot), in_slot)
+    assert np.array_equal(anywhere.shed(in_slot, goal), in_slot)

@@ -9,6 +9,13 @@ env:
     goal_radius: 0.3
     # Pushes per episode.
     horizon: 15
+    # Each task's start and goal are sampled with the shortest pushable path
+    # between them this long (least, most; m).
+    task_distances: [1.5, 3.5]
+    # Floors, each with its own friction: 3 (one per color), 6, or 8, cutting the
+    # colors along x (layout.FLOOR_SPLITS), so each task crosses some of them. The
+    # value model's bandwidths need one per floor for the belief's mean and std.
+    num_floors: 8
     num_particles: 500
   # Instantiated with the domain's environment model, only when recording videos.
   renderer:

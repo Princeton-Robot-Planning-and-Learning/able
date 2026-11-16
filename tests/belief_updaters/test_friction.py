@@ -41,9 +41,10 @@ def _record(puck, push: Push, release_speed: float, stop, fell=False) -> PushRec
 
 
 def _transition(record: PushRecord) -> tuple[FrictionState, FrictionState]:
-    state = FrictionState(record.puck, (0.0, 0.0), record.puck, (0.0, 0.0, 0.0))
+    goal = WORLD.puck_map.goal
+    state = FrictionState(record.puck, (0.0, 0.0), record.puck, (0.0, 0.0, 0.0), goal)
     next_state = FrictionState(
-        record.stop, (0.0, 0.0), record.stop, (0.0, 0.0, 0.0), 1, record
+        record.stop, (0.0, 0.0), record.stop, (0.0, 0.0, 0.0), goal, 1, record
     )
     return state, next_state
 
@@ -108,7 +109,11 @@ def test_pushes_concentrate_the_belief():
 
 
 def test_three_probes_narrow_each_floor():
-    """One probe per floor narrows every coefficient toward the truth."""
+    """One probe per floor narrows every coefficient toward the truth.
+
+    The floors are independent, so each learns only from its own probe, and the highest
+    friction, whose probe slides least, stays the widest.
+    """
     rng = np.random.default_rng(1)
     frictions = np.array([0.15, 0.03, 0.08])
     simulator = ProbeSimulator("2d")
@@ -119,7 +124,8 @@ def test_three_probes_narrow_each_floor():
     before = _prior(seed=1)
     belief = FrictionBeliefUpdater(WORLD).update_from_queries(before, data)
     assert isinstance(belief, ParticleBelief)
-    assert np.all(belief.std < 0.3 * before.std)
+    assert np.all(belief.std < 0.4 * before.std)
+    assert np.all(belief.std[1:] < 0.15 * before.std[1:])
     assert np.all(np.abs(belief.mean - frictions) < 0.2 * frictions)
     simulator.close()
 

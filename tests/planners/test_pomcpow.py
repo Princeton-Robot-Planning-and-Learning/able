@@ -8,16 +8,14 @@ import pytest
 
 from able.belief_updaters.friction import FrictionBeliefUpdater
 from able.envs.friction.model import NO_PUSH, FrictionModel
-from able.envs.friction.tasks import make_domain
-from able.envs.friction.world import Push
+from able.envs.friction.tasks import make_domain, make_prior_belief
+from able.envs.friction.world import DEFAULT_FRICTION_PRIOR, Push
 from able.envs.simulated import SimulatedEnvironment
 from able.episodes import run_episode
 from able.models.base import ConditionalModel, Dataset
 from able.models.kernel_regression import KernelRegressor
 from able.planners.pomcpow import (
     POMCPOW,
-    VALUE_X_DIM,
-    X_DIM,
     Y_DIM,
     EarlyStopConfig,
     FrictionPOMCPOWPlanner,
@@ -30,6 +28,7 @@ from able.planners.pomcpow import (
     _ActionNode,
     _ObservationNode,
     encode_push,
+    get_feature_dims,
     get_push_features,
     get_value_features,
 )
@@ -231,13 +230,18 @@ def _close(model: FrictionModel) -> None:
     model.close()
 
 
+def _default_task(model: FrictionModel) -> Task:
+    """The map's default task, whose start the fixed pushes below suit."""
+    return Task(model.get_initial_state(), model.world.puck_map.goal)
+
+
 @pytest.fixture(name="setup", scope="module")
 def _setup():
     domain = make_domain(seed=0, num_particles=50)
     model = domain.env_model
     assert isinstance(model, FrictionModel)
     planner = _make_planner(model)
-    task = domain.task_distribution.sample(np.random.default_rng(0))
+    task = _default_task(model)
     yield domain, planner, task
     _close(model)
 
@@ -346,7 +350,9 @@ def test_plan_examples(setup):
     policy = _plan(planner, task, belief)
     run_episode(domain.real_env, task, policy, max_steps=2)
     rows = planner.get_plan_examples(task, belief, policy)
-    assert rows.x.shape == (2, X_DIM + VALUE_X_DIM) and rows.y.shape == (2, Y_DIM + 1)
+    x_dim, value_x_dim = get_feature_dims(planner.pomdp.world)
+    assert (x_dim, value_x_dim) == (13, 11)
+    assert rows.x.shape == (2, x_dim + value_x_dim) and rows.y.shape == (2, Y_DIM + 1)
     assert list(rows.groups) == [0, 1]
     first, second = policy.searches
     assert first.belief is belief and second.belief is not belief
@@ -355,10 +361,12 @@ def test_plan_examples(setup):
         features = get_push_features(
             state.puck_array, task.goal, planner.pomdp.world, search.belief
         )
-        assert np.allclose(rows.x[row, :X_DIM], features)
+        assert np.allclose(rows.x[row, :x_dim], features)
         pushes_left = planner.pomdp.max_pushes - state.pushes
-        value_features = get_value_features(state.puck, pushes_left, search.belief)
-        assert np.allclose(rows.x[row, X_DIM:], value_features)
+        value_features = get_value_features(
+            state.puck, task.goal, pushes_left, search.belief
+        )
+        assert np.allclose(rows.x[row, x_dim:], value_features)
         assert np.allclose(rows.y[row, :Y_DIM], encode_push(search.push))
         assert np.isnan(rows.y[row, Y_DIM])
         value = next(v for p, _, v in search.root_values if p == search.push)
@@ -372,7 +380,7 @@ def test_rollout_examples(setup, solved):
     path-distance value there."""
     domain, planner, task = setup
     belief = domain.initial_belief
-    rng = np.random.default_rng(0)
+    rng = np.random.default_rng(1)
     env = SimulatedEnvironment(domain.env_model, belief.sample(rng), rng)
     policy = _plan(planner, task, belief)
     trajectory = run_episode(env, task, policy, max_steps=3)
@@ -383,10 +391,26 @@ def test_rollout_examples(setup, solved):
         state = search.state
         assert np.all(np.isnan(rows.y[row, :Y_DIM])) != solved
         root = pomdp.initial_state(
-            state.puck_array, state.robot_array, (), state.pushes
+            state.puck_array, state.robot_array, (), task.goal, state.pushes
         )
         excess = -sum(trajectory.costs[row:]) - pomdp.value(root)
         assert rows.y[row, Y_DIM] == pytest.approx(excess)
+
+
+def test_features_cover_every_floor():
+    """The push model sees which floor the puck is on, and both models see every
+    floor's mean and standard deviation under the belief."""
+    model = FrictionModel(num_floors=8)
+    world = model.world
+    prior = replace(DEFAULT_FRICTION_PRIOR, num_surfaces=8)
+    belief = make_prior_belief(prior, 20, np.random.default_rng(0))
+    puck = np.array([2.6, 2.2])  # in the slot, on the second blue floor
+    x = get_push_features(puck, (3.9, 2.2), world, belief)
+    value_x = get_value_features(puck, (3.9, 2.2), 5, belief)
+    assert get_feature_dims(world) == (len(x), len(value_x)) == (28, 21)
+    assert np.array_equal(x[4:12], np.eye(8)[1])
+    assert np.allclose(x[12:], np.concatenate([belief.mean, belief.std]))
+    model.close()
 
 
 def test_push_and_value_models_fit_their_rows(setup):
@@ -394,18 +418,19 @@ def test_push_and_value_models_fit_their_rows(setup):
     proposes."""
     _, planner, _ = setup
     nan = np.nan
-    x = np.arange(3 * (X_DIM + VALUE_X_DIM), dtype=float).reshape(3, -1)
+    x_dim, value_x_dim = get_feature_dims(planner.pomdp.world)
+    x = np.arange(3 * (x_dim + value_x_dim), dtype=float).reshape(3, -1)
     y = np.array([[1.0, 0.0, 0.5, 0.0, nan], [nan] * Y_DIM + [2.0], [0.0] * 5])
     rows = Dataset(x, y, np.zeros(3), np.arange(3))
-    params = replace(PARAMS, value_model=KernelRegressor((1.0,) * VALUE_X_DIM))
+    params = replace(PARAMS, value_model=KernelRegressor((1.0,) * value_x_dim))
     model = planner.get_model(params).fit(rows)
     assert isinstance(model, PushValueModel) and model.value is not None
     assert model.value.x is not None and model.value.y is not None
-    assert np.array_equal(model.value.x, x[1:, X_DIM:])
+    assert np.array_equal(model.value.x, x[1:, x_dim:])
     assert np.array_equal(model.value.y, y[1:, Y_DIM:])
     trained = planner.set_model(params, model)
     assert trained.model is model.push and trained.value_model is model.value
-    draws = trained.model.sample(x[0, :X_DIM], 4, np.random.default_rng(0))
+    draws = trained.model.sample(x[0, :x_dim], 4, np.random.default_rng(0))
     assert draws.shape == (4, Y_DIM)
     # Without a value model, only the push model trains.
     assert planner.get_model(PARAMS).fit(rows).value is None
@@ -417,10 +442,12 @@ def test_a_trained_value_model_corrects_the_leaves(setup):
     domain, planner, task = setup
     belief = domain.initial_belief
     assert planner.make_leaf_value(belief, PARAMS) is None
-    state = planner.pomdp.initial_state(np.array([1.2, 2.2]), np.zeros(2), (0.1,) * 3)
-    x = get_value_features(state.puck, planner.pomdp.max_pushes, belief)
+    state = planner.pomdp.initial_state(
+        np.array([1.2, 2.2]), np.zeros(2), (0.1,) * 3, task.goal
+    )
+    x = get_value_features(state.puck, task.goal, planner.pomdp.max_pushes, belief)
     rows = Dataset(x[None], np.array([[-4.0]]), np.zeros(1), np.zeros(1, np.int64))
-    value_model = KernelRegressor((1.0,) * VALUE_X_DIM, prior_weight=1.0).fit(rows)
+    value_model = KernelRegressor((1.0,) * len(x), prior_weight=1.0).fit(rows)
     params = replace(PARAMS, value_model=value_model)
     leaf_value = planner.make_leaf_value(belief, params)
     assert leaf_value is not None
@@ -438,10 +465,10 @@ def test_searches_aspire_where_the_value_model_has_data(setup):
     domain, planner, task = setup
     belief = domain.initial_belief
     start = task.initial_state
-    x = get_value_features(start.puck, planner.pomdp.max_pushes, belief)
+    x = get_value_features(start.puck, task.goal, planner.pomdp.max_pushes, belief)
     rows = Dataset(x[None], np.array([[-4.0]]), np.zeros(1), np.zeros(1, np.int64))
     # One row at the start state gives half of the weight there.
-    value_model = KernelRegressor((1.0,) * VALUE_X_DIM, prior_weight=1.0).fit(rows)
+    value_model = KernelRegressor((1.0,) * len(x), prior_weight=1.0).fit(rows)
     rule = EarlyStopConfig(min_sims=10, check_every=5, aspiration=3.0)
     config = replace(PARAMS.config, early_stop=rule)
     for min_weight, targeted in [(0.5, 1), (0.6, 0)]:

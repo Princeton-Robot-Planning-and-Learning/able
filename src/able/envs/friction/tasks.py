@@ -1,5 +1,7 @@
 """Tasks and domains for the friction environment."""
 
+import dataclasses
+
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
@@ -11,6 +13,7 @@ from able.envs.friction.model import (
     FrictionTask,
     PuckRewards,
 )
+from able.envs.friction.pomdp import PuckPushingModel
 from able.envs.friction.query import FrictionQuery, PushRecord
 from able.envs.friction.world import DEFAULT_FRICTION_PRIOR, FrictionPrior, Push
 from able.envs.simulated import SimulatedEnvironment
@@ -26,19 +29,86 @@ FrictionDomain = Domain[
 
 
 class FrictionTaskDistribution(TaskDistribution[FrictionTask]):
-    """Every task pushes the puck from the map's start to its goal.
+    """Each task pushes the puck from a random start to a random goal.
 
-    Tasks differ only in the execution and measurement noise of their episodes,
-    so each sample is a new task with the same start and goal.
+    The goal is a pushable spot on the floor whose goal circle is clear of the
+    holes. The start is a pushable spot clear of the holes, which the puck is not
+    shed from, whose shortest pushable path to the goal is min_distance to
+    max_distance long. So one task crosses some of the floors, and later tasks
+    reach floors that earlier ones did not. Both lie on the grid of the paths
+    behind the planner's leaf values (PuckPushingModel.value_resolution). The robot
+    starts at a random spot robot_distance from the puck, facing +x.
     """
 
-    def __init__(self, model: FrictionModel) -> None:
+    def __init__(
+        self,
+        model: FrictionModel,
+        min_distance: float = 1.5,
+        max_distance: float = 3.5,
+        robot_distance: tuple[float, float] = (0.6, 1.2),
+        hole_clearance: float = 0.1,
+    ) -> None:
+        assert 0.0 < min_distance <= max_distance, "Need 0 < min <= max distance"
         self._model = model
+        self._min_distance = min_distance
+        self._max_distance = max_distance
+        self._robot_distance = robot_distance
+        world = model.world
+        phys = world.physics
+        self._paths = PuckPushingModel(world)
+        pushable = self._paths.pushable_cells
+        res = self._paths.value_resolution
+        j, i = np.nonzero(pushable)
+        points = np.stack([(i + 0.5) * res, (j + 0.5) * res], axis=1)
+        gaps = np.full(len(points), np.inf)
+        for hole in world.holes:
+            gaps = np.minimum(gaps, np.linalg.norm(points - hole, axis=1))
+        clear = phys.hole_radius + hole_clearance
+        self._goals = points[gaps >= clear + phys.goal_radius]
+        starts = (gaps >= clear + phys.puck_radius) & np.array(
+            [world.has_room(p) for p in points], dtype=bool
+        )
+        self._starts = points[starts]
+        self._start_cells = (j * pushable.shape[1] + i)[starts]
 
     def sample(self, rng: np.random.Generator) -> FrictionTask:
-        del rng  # unused because the start and goal are fixed
-        goal = self._model.world.puck_map.goal
-        return FrictionTask(self._model.get_initial_state(), (goal[0], goal[1]))
+        world = self._model.world
+        for _ in range(1000):
+            goal = self._goals[rng.integers(len(self._goals))]
+            goal_point = (round(float(goal[0]), 4), round(float(goal[1]), 4))
+            distances = self._paths.path_distances(goal_point).flat[self._start_cells]
+            ok = (distances >= self._min_distance) & (distances <= self._max_distance)
+            starts = [p for p in self._starts[ok] if not world.in_goal(p, goal_point)]
+            if not starts:
+                continue
+            start = starts[rng.integers(len(starts))]
+            robot = self._sample_robot(start, rng)
+            if robot is None:
+                continue
+            puck = (round(float(start[0]), 4), round(float(start[1]), 4))
+            state = self._model.get_initial_state(puck, robot, goal_point)
+            return FrictionTask(state, goal_point)
+        raise RuntimeError("Found no start and goal for a friction task")
+
+    def _sample_robot(
+        self, puck: NDArray[np.float64], rng: np.random.Generator
+    ) -> tuple[float, float] | None:
+        """A random spot on the robot's driving grid, robot_distance from the
+        puck, where the robot clears the walls at any heading, or None if there is
+        none."""
+        world = self._model.world
+        res = world.physics.nav_resolution
+        low, high = self._robot_distance
+        steps = np.arange(-high, high + 1e-9, res)
+        candidates = puck + np.stack(np.meshgrid(steps, steps), -1).reshape(-1, 2)
+        candidates = np.round((candidates - res / 2) / res) * res + res / 2
+        gaps = np.linalg.norm(candidates - puck, axis=1)
+        candidates = candidates[(gaps >= low) & (gaps <= high)]
+        free = [c for c in candidates if world.robot_position_free(c)]
+        if not free:
+            return None
+        robot = free[rng.integers(len(free))]
+        return (round(float(robot[0]), 4), round(float(robot[1]), 4))
 
 
 def make_prior_belief(
@@ -57,19 +127,26 @@ def make_domain(
     goal_radius: float = 0.3,
     horizon: int = 15,
     num_particles: int = 500,
+    task_distances: tuple[float, float] = (1.5, 3.5),
+    num_floors: int = 3,
     prior: FrictionPrior = DEFAULT_FRICTION_PRIOR,
     rewards: PuckRewards = PuckRewards(),
     true_frictions: ArrayLike | None = None,
 ) -> FrictionDomain:
-    """A friction domain on the maze with num_holes holes and the goal radius, with
-    floor frictions drawn from the prior unless given. The robot's initial belief
-    is particles from the prior."""
+    """A friction domain on the maze with num_holes holes, the goal radius, and
+    num_floors floors, with floor frictions drawn from the prior unless given.
+    Each task's start is task_distances (least, most) from its goal along the
+    shortest pushable path. The robot's initial belief is particles from the
+    prior."""
     rng = np.random.default_rng(seed)
+    model = FrictionModel(sim, num_holes, goal_radius, horizon, rewards, num_floors)
+    prior = dataclasses.replace(prior, num_surfaces=num_floors)  # a draw per floor
     frictions = prior.sample(rng) if true_frictions is None else true_frictions
-    model = FrictionModel(sim, num_holes, goal_radius, horizon, rewards)
+    frictions = np.asarray(frictions, dtype=np.float64)
+    assert frictions.shape == (num_floors,), "Need one friction per floor"
     return Domain(
         env_model=model,
-        task_distribution=FrictionTaskDistribution(model),
+        task_distribution=FrictionTaskDistribution(model, *task_distances),
         initial_belief=make_prior_belief(prior, num_particles, rng),
-        real_env=SimulatedEnvironment(model, np.asarray(frictions, np.float64), rng),
+        real_env=SimulatedEnvironment(model, frictions, rng),
     )

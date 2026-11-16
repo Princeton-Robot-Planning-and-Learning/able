@@ -17,23 +17,22 @@ from numpy.typing import NDArray
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 
-SURFACE_NAMES: tuple[str, ...] = ("blue", "tan", "green")
-# Map chars, in SURFACE_NAMES order.
-SURFACE_CHARS: tuple[str, ...] = ("b", "t", "g")
+# Floor colors and their map chars. A map may split a color into several floors
+# (PuckMap.floor_splits).
+COLOR_NAMES: tuple[str, ...] = ("blue", "tan", "green")
+COLOR_CHARS: tuple[str, ...] = ("b", "t", "g")
 WALL_CHAR = "#"
 
 
 @dataclass(frozen=True)
 class FrictionPrior:
-    """Friction prior: `levels` shuffled over surfaces, each scaled by U[1+-jitter]."""
+    """Friction prior: each of num_surfaces floors draws one of `levels` on its own,
+    uniformly, scaled by U[1+-jitter]. The floors are independent, so what the robot
+    learns of some says nothing of the others."""
 
     levels: tuple[float, ...] = (0.03, 0.08, 0.15)
     jitter: float = 0.2
-
-    @property
-    def num_surfaces(self) -> int:
-        """The number of floors."""
-        return len(self.levels)
+    num_surfaces: int = 3
 
     @property
     def bounds(self) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
@@ -54,20 +53,22 @@ class FrictionPrior:
         """One coefficient vector, or `size` of them stacked."""
         n = 1 if size is None else size
         levels = np.asarray(self.levels, dtype=np.float64)
-        order = np.argsort(rng.random((n, self.num_surfaces)), axis=1)
+        picks = rng.integers(len(levels), size=(n, self.num_surfaces))
         scale = rng.uniform(
             1.0 - self.jitter, 1.0 + self.jitter, (n, self.num_surfaces)
         )
-        samples = levels[order] * scale
+        samples = levels[picks] * scale
         return samples[0] if size is None else samples
 
 
 DEFAULT_FRICTION_PRIOR = FrictionPrior()
-SURFACE_RGB: tuple[tuple[float, float, float], ...] = (
+COLOR_RGB: tuple[tuple[float, float, float], ...] = (
     (0.80, 0.86, 0.92),  # blue
     (0.76, 0.60, 0.42),  # tan
     (0.30, 0.50, 0.32),  # green
 )
+# How much darker a color's rightmost floor is than its leftmost.
+_SHADE = 0.3
 WALL_RGB = (0.25, 0.25, 0.25)
 HOLE_RGB = (0.9, 0.1, 0.1)
 GOAL_RGB = (0.2, 0.8, 0.2)
@@ -75,13 +76,22 @@ PUCK_RGB = (0.95, 0.75, 0.1)
 
 GRAVITY = 9.81
 
-# One friction coefficient per floor, in SURFACE_NAMES order.
+# One friction coefficient per floor, in PuckMap.surface_names order.
 Frictions = Sequence[float] | NDArray[np.float64]
 
 
 @dataclass(frozen=True)
 class PuckMap:
-    """A floor maze (m); `rows` are top to bottom, row indices count from the bottom."""
+    """A floor maze (m); `rows` are top to bottom, row indices count from the bottom.
+
+    The puck start, robot start, and goal are the map's default task. Tasks may
+    push the puck between other points (FrictionTaskDistribution).
+
+    Each color is one floor, with its own friction, unless floor_splits (x, m) cut
+    the colors into stretches: each stretch of a color is then a floor of its own.
+    A cell belongs to the stretch holding its center. Floors are numbered by color,
+    then from left to right.
+    """
 
     name: str
     rows: tuple[str, ...]
@@ -90,6 +100,7 @@ class PuckMap:
     robot_start: tuple[float, float]
     goal: tuple[float, float]
     holes: tuple[tuple[float, float], ...] = ()
+    floor_splits: tuple[float, ...] = ()
 
     @property
     def num_cols(self) -> int:
@@ -111,16 +122,65 @@ class PuckMap:
         """Extent along y (m)."""
         return self.num_rows * self.cell_size
 
+    @property
+    def num_surfaces(self) -> int:
+        """The number of floors."""
+        return len(self._floor_codes())
+
+    @property
+    def surface_names(self) -> tuple[str, ...]:
+        """Each floor's color, numbered from the left if the color has several
+        floors."""
+        return tuple(
+            COLOR_NAMES[color] + (f" {rank + 1}" if count > 1 else "")
+            for color, rank, count in self._floor_colors()
+        )
+
+    @property
+    def surface_rgb(self) -> tuple[tuple[float, float, float], ...]:
+        """Each floor's color, darker the further right among its color's floors."""
+        rgbs = []
+        for color, rank, count in self._floor_colors():
+            dark = _SHADE * rank / max(count - 1, 1)
+            r, g, b = (v * (1.0 - dark) for v in COLOR_RGB[color])
+            rgbs.append((r, g, b))
+        return tuple(rgbs)
+
     def surface_grid(self) -> NDArray[np.int64]:
-        """Surface index per cell, indexed [row_from_bottom, col]; -1 is a wall."""
+        """Floor index per cell, indexed [row_from_bottom, col]; -1 is a wall."""
+        codes = self._code_grid()
+        floors = np.searchsorted(self._floor_codes(), codes)
+        return np.where(codes >= 0, floors, -1)
+
+    def _code_grid(self) -> NDArray[np.int64]:
+        """Each cell's color times the number of stretches plus its stretch, or -1
+        for a wall."""
+        stretches = len(self.floor_splits) + 1
+        centers = (np.arange(self.num_cols) + 0.5) * self.cell_size
+        stretch = np.searchsorted(np.asarray(self.floor_splits), centers)
         grid = np.full((self.num_rows, self.num_cols), -1, dtype=np.int64)
         for r, line in enumerate(self.rows):
             assert len(line) == self.num_cols, f"Ragged map row {r} in {self.name}"
             for c, char in enumerate(line):
                 if char == WALL_CHAR:
                     continue
-                grid[self.num_rows - 1 - r, c] = SURFACE_CHARS.index(char)
+                code = COLOR_CHARS.index(char) * stretches + stretch[c]
+                grid[self.num_rows - 1 - r, c] = code
         return grid
+
+    def _floor_codes(self) -> NDArray[np.int64]:
+        """The codes of _code_grid() that some cell holds, in floor order."""
+        codes = self._code_grid()
+        return np.unique(codes[codes >= 0])
+
+    def _floor_colors(self) -> list[tuple[int, int, int]]:
+        """Per floor: its color, its rank from the left among that color's floors,
+        and how many floors that color has."""
+        colors = self._floor_codes() // (len(self.floor_splits) + 1)
+        return [
+            (int(color), int(np.sum(colors[:i] == color)), int(np.sum(colors == color)))
+            for i, color in enumerate(colors)
+        ]
 
     def wall_rects(self) -> list[tuple[float, float, float, float]]:
         """Walls as few axis-aligned rectangles (x0, y0, x1, y1)."""
@@ -130,7 +190,7 @@ class PuckMap:
         """Floor patches as (surface index, rectangle) pairs."""
         return [
             (surface, rect)
-            for surface in range(len(SURFACE_CHARS))
+            for surface in range(self.num_surfaces)
             for rect in self.cell_rects(surface)
         ]
 
@@ -306,16 +366,18 @@ class PuckWorld:
         self.surfaces = self.puck_map.surface_grid()
         self.walls = np.asarray(self.puck_map.wall_rects(), dtype=np.float64)
         self.holes = np.asarray(self.puck_map.holes, dtype=np.float64).reshape(-1, 2)
-        self.goal = np.asarray(self.puck_map.goal, dtype=np.float64)
         self._nav_cache: dict[int, tuple[NDArray[np.float64], NDArray[np.int32]]] = {}
         # LRU, keyed by (start node, puck x, puck y).
         self._nav_puck_cache: OrderedDict[
             tuple[int, float, float], tuple[NDArray[np.float64], NDArray[np.int32]]
         ] = OrderedDict()
         # Per shed grid cell: whether its center leaves the robot enough headings,
-        # and where a puck stopped in it without enough comes to rest.
+        # and where a puck stopped in it without enough comes to rest (keyed by the
+        # cell and the goal).
         self._room_cache: dict[tuple[int, int], bool] = {}
-        self._shed_cache: dict[tuple[int, int], NDArray[np.float64] | None] = {}
+        self._shed_cache: dict[
+            tuple[int, int, float, float], NDArray[np.float64] | None
+        ] = {}
 
     # ------------------------------------------------------------------ surfaces
 
@@ -498,8 +560,10 @@ class PuckWorld:
                     return candidate
         return point
 
-    def shed(self, point: NDArray[np.float64]) -> NDArray[np.float64]:
-        """Where a puck that stops at `point` comes to rest.
+    def shed(
+        self, point: NDArray[np.float64], goal: Sequence[float]
+    ) -> NDArray[np.float64]:
+        """Where a puck that stops at `point`, outside the goal, comes to rest.
 
         It stays if its shed grid cell leaves the robot enough headings (see
         PuckPhysics.min_push_fraction). Otherwise it moves along the floor, around
@@ -515,10 +579,20 @@ class PuckWorld:
         j = min(max(int(point[1] // res), 0), ny - 1)
         if self._has_room(i, j):
             return point
-        if (i, j) not in self._shed_cache:
-            self._shed_cache[(i, j)] = self._nearest_room(i, j)
-        rest = self._shed_cache[(i, j)]
+        key = (i, j, float(goal[0]), float(goal[1]))
+        if key not in self._shed_cache:
+            self._shed_cache[key] = self._nearest_room(i, j, goal)
+        rest = self._shed_cache[key]
         return point if rest is None else rest.copy()
+
+    def has_room(self, point: NDArray[np.float64]) -> bool:
+        """Whether a puck at `point` stays there rather than being shed: whether
+        its shed grid cell leaves the robot enough headings."""
+        nx, ny = self._shed_grid_shape
+        res = self.physics.shed_resolution
+        i = min(max(int(point[0] // res), 0), nx - 1)
+        j = min(max(int(point[1] // res), 0), ny - 1)
+        return self.physics.min_push_fraction <= 0 or self._has_room(i, j)
 
     @cached_property
     def _shed_grid_shape(self) -> tuple[int, int]:
@@ -528,7 +602,9 @@ class PuckWorld:
             int(round(self.puck_map.height / res)),
         )
 
-    def _nearest_room(self, i: int, j: int) -> NDArray[np.float64] | None:
+    def _nearest_room(
+        self, i: int, j: int, goal: Sequence[float]
+    ) -> NDArray[np.float64] | None:
         """The center of the shed grid cell with enough headings that is nearest
         to (i, j) along the floor, through cells whose centers are clear of walls,
         holes, and the goal, or None if there is none."""
@@ -543,7 +619,7 @@ class PuckWorld:
             return (
                 self.puck_position_free(point)
                 and not self.over_hole(point)
-                and not self.in_goal(point)
+                and not self.in_goal(point, goal)
             )
 
         distances = {(i, j): 0.0}
@@ -595,9 +671,11 @@ class PuckWorld:
         gaps = np.linalg.norm(self.holes - point, axis=1)
         return bool(np.any(gaps <= self.physics.hole_radius))
 
-    def in_goal(self, point: NDArray[np.float64]) -> bool:
-        """Whether a puck stopped at `point` is in the goal."""
-        return float(np.linalg.norm(point - self.goal)) <= self.physics.goal_radius
+    def in_goal(self, point: NDArray[np.float64], goal: Sequence[float]) -> bool:
+        """Whether a puck stopped at `point` is in the goal circle centered at
+        `goal`."""
+        gap = math.hypot(float(point[0]) - goal[0], float(point[1]) - goal[1])
+        return gap <= self.physics.goal_radius
 
     def strike_end(
         self, station: NDArray[np.float64], puck: NDArray[np.float64], angle: float
