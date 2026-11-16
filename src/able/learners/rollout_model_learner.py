@@ -65,8 +65,8 @@ class RolloutModelLearner(
     ) -> tuple[Dataset, list[dict[str, float] | None]]:
         """Run the plans for the training tasks, made with the planner's training
         parameters, in simulated environments and return the planner's rows for
-        each episode and each episode's planning statistics (None if planning
-        failed)."""
+        each episode and each episode's planning statistics, with "solved" (1 if
+        the episode solved its task, else 0), or None if planning failed."""
         params = self._planner.get_training_params(params)
         examples: list[Dataset] = []
         stats: list[dict[str, float] | None] = []
@@ -80,8 +80,8 @@ class RolloutModelLearner(
             except PlanningFailure:
                 stats.append(None)
                 continue
-            stats.append(policy.get_planning_stats())
             solved = env.check_goal(task, trajectory.states[-1])
+            stats.append({**policy.get_planning_stats(), "solved": float(solved)})
             examples.append(
                 self._planner.get_rollout_examples(
                     task, belief, policy, trajectory, solved

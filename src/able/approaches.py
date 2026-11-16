@@ -906,6 +906,89 @@ def make_friction_belief_coverage_robot(
     )
 
 
+def _get_friction_planning_cost(
+    max_sims: float, stats: dict[str, float] | None
+) -> float:
+    """1 if planning failed or the episode did not solve its task, else the
+    episode's POMCPOW simulations as a fraction of max_sims."""
+    if stats is None or stats.get("solved", 1.0) < 0.5:
+        return 1.0
+    return min(stats["num_sims"] / max_sims, 1.0)
+
+
+def make_friction_belief_tree_robot(
+    domain: FrictionDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_training_beliefs: int,
+    num_training_tasks: int = 1,
+    num_sims: int = 1000,
+    max_depth: int = 8,
+    early_stop: EarlyStopConfig | None = None,
+    proposal: ProposalConfig | None = None,
+    training_num_sims: int | None = None,
+    value_model: KernelRegressor | None = None,
+    tree: dict[str, Any] | None = None,
+    recorder: CycleRecorder[FrictionState, FrictionTask, ArmArray] | None = None,
+) -> FrictionRobot:
+    """A friction robot that, while it sleeps, grows a tree of dreams and trains
+    under the beliefs where it predicts training saves the most planning
+    (BeliefTreeSource). Beliefs are compared by each floor's mean and standard
+    deviation in units of the prior's, and a plan's cost is its share of the
+    planning budget's simulations, or 1 if it failed or did not solve its task.
+    tree holds BeliefTreeSource's options. The model is refit once per sleep, as
+    for dreaming. num_training_beliefs must match the sleep budget."""
+    env_model, planner, belief_updater, gatherer = _make_friction_parts(
+        domain,
+        num_sims,
+        max_depth,
+        model,
+        early_stop,
+        proposal,
+        training_num_sims,
+        value_model,
+    )
+    dreamer = _make_dreamer(
+        domain,
+        env_model,
+        planner,
+        belief_updater,
+        gatherer,
+        gathering_budget,
+        execution_budget,
+        planning_budget,
+        recorder,
+    )
+    assert planning_budget.max_iterations is not None, "Need a simulation budget"
+    belief_source: BeliefTreeSource = BeliefTreeSource(
+        dreamer,
+        make_moment_features(domain.initial_belief),
+        functools.partial(
+            _get_friction_planning_cost, float(planning_budget.max_iterations)
+        ),
+        num_training_beliefs,
+        refit_per_iteration=False,
+        **(tree or {}),
+    )
+    return Robot(
+        planner=planner,
+        learner=RolloutModelLearner(
+            planner,
+            domain.task_distribution,
+            belief_source,
+            planning_budget,
+            env_model,
+            refit="per_sleep",
+            num_training_tasks=num_training_tasks,
+        ),
+        belief_updater=belief_updater,
+        info_gatherer=gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
 def _make_reach_parts(
     domain: ReachDomain,
     max_time: float,

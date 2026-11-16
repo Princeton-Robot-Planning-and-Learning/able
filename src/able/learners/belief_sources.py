@@ -113,7 +113,8 @@ class PriorSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
 @dataclass(frozen=True)
 class ImaginedCycle(Generic[HiddenParamsType]):
     """A dream's resulting belief, and each imagined plan's belief and planning
-    statistics (None if planning failed)."""
+    statistics after its episode, with "solved" (1 if the episode solved its task,
+    else 0), or None if planning failed."""
 
     belief: Belief[HiddenParamsType]
     plans: list[tuple[Belief[HiddenParamsType], dict[str, float] | None]]
@@ -227,14 +228,16 @@ class ImaginedNextBeliefSource(BeliefSource[HiddenParamsType, PlannerParamsType]
                 policy = self._planner.plan(
                     task, belief, params, self._planning_budget, rng
                 )
-                plans.append((planned_under, policy.get_planning_stats()))
                 trajectory = run_episode(env, task, policy, on_step=update)
             except PlanningFailure:
-                if len(plans) < num_tasks:
-                    plans.append((planned_under, None))
+                plans.append((planned_under, None))
                 self._recorder.end_episode("planning failed")
                 continue
             success = env.check_goal(task, trajectory.states[-1])
+            # After the episode, so that a policy that searches as it acts has
+            # counted all of its searches.
+            stats = {**policy.get_planning_stats(), "solved": float(success)}
+            plans.append((planned_under, stats))
             self._recorder.end_episode(
                 "imagined success" if success else "imagined failure"
             )

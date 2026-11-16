@@ -6,12 +6,14 @@ from unittest import mock
 import numpy as np
 
 from able.approaches import (
+    _get_friction_planning_cost,
     get_cache_key_features,
     make_belief_coverage_robot,
     make_belief_tree_robot,
     make_current_belief_robot,
     make_dreaming_robot,
     make_friction_belief_coverage_robot,
+    make_friction_belief_tree_robot,
     make_friction_current_belief_robot,
     make_friction_dreaming_robot,
     make_friction_prior_only_robot,
@@ -491,3 +493,32 @@ def test_make_human_reach_belief_coverage_robot():
         robot.sleep(Budget(max_iterations=2), np.random.default_rng(0))
     assert fit.call_count == 1
     _close(domain, robot)
+
+
+def test_make_friction_belief_tree_robot():
+    """Tests that the friction belief-tree robot grows a tree and sleeps, and
+    that a plan's cost counts unsolved episodes as failures."""
+    domain = make_friction_domain(seed=0, horizon=1, num_particles=10)
+    budgets = _budgets(num_dreams=0)
+    robot = make_friction_belief_tree_robot(
+        domain,
+        budgets.information_gathering,
+        budgets.execution,
+        Budget(max_iterations=100),
+        MLPRegressor(num_steps=5),
+        num_training_beliefs=2,
+        num_sims=10,
+        max_depth=2,
+        tree={
+            "num_expansions": 3,
+            "later_sleeps": "dreaming",
+            "expansion": "value",
+            "max_children": None,
+            "widening_constant": 1.0,
+            "wave_size": 1,
+        },
+    )
+    robot.sleep(Budget(max_iterations=2), np.random.default_rng(0))
+    assert _get_friction_planning_cost(100.0, None) == 1.0
+    assert _get_friction_planning_cost(100.0, {"num_sims": 50.0, "solved": 0.0}) == 1.0
+    assert _get_friction_planning_cost(100.0, {"num_sims": 50.0, "solved": 1.0}) == 0.5

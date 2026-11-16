@@ -1,0 +1,61 @@
+_target_: able.approaches.make_friction_belief_tree_robot
+# The belief tree (BeliefTreeSource). Distances are in prior standard deviations
+# of each floor's mean and spread; the value model's 0.03 bandwidth is about 0.6.
+tree:
+  # Dreams per sleep: belief coverage's 4 candidates per training belief.
+  num_expansions: 16
+  max_depth: 4
+  # Later sleeps as dreaming, under as many beliefs as this sleep trains.
+  later_sleeps: dreaming
+  num_later_sleep_draws: 8
+  # Grow where a new child is worth the most to this sleep's picks.
+  expansion: value
+  max_children: null
+  widening_constant: 1.0
+  wave_size: 1
+  # Beliefs closer than this are the same belief, and a branch whose belief moved
+  # less than this for two cycles stops.
+  stop_threshold: 0.2
+  # Cost model: 1 - exp(-d^2 / init_radius^2) before data, then a kernel
+  # regression on (features, distance) tabulated up to max_distance.
+  init_radius: 0.6
+  distance_bandwidth: 0.3
+  max_distance: 3.0
+# Training tasks rolled out under each training belief.
+num_training_tasks: 1
+# Most POMCPOW simulations per push at evaluation and execution, and the
+# search depth in pushes.
+num_sims: 100
+max_depth: 8
+# A push's search may stop before num_sims: from min_sims on, every check_every
+# simulations, it stops if the most visited push's lower confidence bound (z
+# standard errors) is at least every other push's upper bound minus epsilon, or
+# at least the value model's estimate for the root minus aspiration, where the
+# model has enough data there.
+early_stop:
+  _target_: able.planners.pomcpow.EarlyStopConfig
+  min_sims: 10
+  check_every: 5
+  epsilon: 1.0
+  z: 2.0
+  aspiration: 3.0
+# Simulations per push when rolling out training tasks while sleeping. Searching
+# harder while sleeping gives the model better pushes to learn.
+training_num_sims: 100
+# The model that proposes pushes, refit once per sleep.
+model:
+  _target_: able.models.flow_matching.FlowMatchingModel
+  width: 128
+  depth: 3
+  num_steps: 4000
+# Corrects the leaf values with the returns of the rollouts while sleeping, by
+# kernel regression on the puck, the goal, pushes left, and each floor's mean and
+# then each floor's standard deviation under the belief, with these bandwidths.
+# Where the data are sparse, the correction falls back to its mean over all
+# rollouts, with the weight of prior_weight rollouts.
+value_model:
+  _target_: able.models.kernel_regression.KernelRegressor
+  bandwidths: [0.25, 0.25, 0.5, 0.5, 2.0,
+    0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03,
+    0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03]
+  prior_weight: 2.0
