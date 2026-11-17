@@ -9,6 +9,9 @@ env:
     # clutter moved off the few usable spots take longer plans.
     horizon: 60
     num_particles: 2000
+    # The person grasps a placed item with probability sigmoid(margin / scale), the
+    # model of a query's answers.
+    delivery_scale: 0.03
   # Instantiated with the domain's environment model, only when recording videos.
   renderer:
     _target_: able.rendering.human_reach.HumanReachRenderer

@@ -21,6 +21,7 @@ from able.envs.human_reach.scene import (
     BedsideStocking3DEnvConfig,
     ObjectCentricBedsideStocking3DEnv,
     reach_margin,
+    reach_probability,
 )
 from able.envs.human_reach.streams import (
     CARRY_JOINTS,
@@ -30,9 +31,8 @@ from able.envs.human_reach.streams import (
     _base_candidates,
 )
 
-# Margin scale of P(reached | theta) = sigmoid(margin / scale), for queries and
-# deliveries alike.
-REACH_SCALE = 0.03
+# Margin scale of a query answer's P(yes | theta) = sigmoid(margin / scale).
+QUERY_SCALE = 0.03
 # The answers to a query: each presented gripper point and whether it was reached.
 ReachResponse = tuple[tuple[tuple[float, float, float], bool], ...]
 
@@ -110,7 +110,7 @@ class QuerySimulator:
     def __init__(
         self,
         config: BedsideStocking3DEnvConfig = BedsideStocking3DEnvConfig(),
-        scale: float = REACH_SCALE,
+        scale: float = QUERY_SCALE,
         noisy: bool = True,
         stop_at_miss: bool = True,
         seed: int = 0,
@@ -167,7 +167,7 @@ class QuerySimulator:
                 continue  # blocked on the way
             m = float(reach_margin(point, sim.reach_theta, sim.shoulder))
             if self.noisy:
-                reached = bool(rng.random() < 1 / (1 + np.exp(-m / self.scale)))
+                reached = bool(rng.random() < reach_probability(m, self.scale))
             else:
                 reached = m >= 0
             xyz = (float(point[0]), float(point[1]), float(point[2]))

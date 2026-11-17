@@ -45,9 +45,16 @@ def test_make_domain():
 
 
 def test_given_reach():
-    """A given reach overrides the prior."""
+    """A given reach and delivery scale override the defaults."""
     model, real_env, _, _ = _get_parts(
-        make_domain(seed=0, num_requested=2, num_clutter=0, true_theta=[0.7, 0.6, 0.65])
+        make_domain(
+            seed=0,
+            num_requested=2,
+            num_clutter=0,
+            true_theta=[0.7, 0.6, 0.65],
+            delivery_scale=0.05,
+        )
     )
     assert np.allclose(real_env.hidden_params, [0.7, 0.6, 0.65])
+    assert model.delivery_scale == 0.05
     _close(model)

@@ -123,8 +123,8 @@ def _describe(state: ReachState) -> str:
     lines = [f"Action {state.num_actions}"]
     if state.delivery is not None:
         name, _, reached = state.delivery
-        lines.append(f"placed {name} {'in' if reached else 'out of'} reach")
-    lines.append(f"{total - state.num_unreached} of {total} items within reach")
+        lines.append(f"placed {name}, {'grasped' if reached else 'missed'}")
+    lines.append(f"{total - state.num_unreached} of {total} items reached")
     if state.goal_reached:
         lines.append("goal reached")
     return ", ".join(lines)

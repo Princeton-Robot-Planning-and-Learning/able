@@ -35,9 +35,11 @@ def test_no_action_changes_nothing(model):
 
 
 def test_actions_deliver_the_items(model, tmp_path, monkeypatch):
-    """A plan found with the true reach, executed one action at a time, delivers
-    both items within reach; a fresh simulator continues a state with a held
-    item."""
+    """A plan found with a reach, executed one action at a time for a person whose
+    reach is 30% longer, delivers both items, which the person grasps; a fresh
+    simulator continues a state with a held item. A person whose reach ends at the
+    last item grasps it about half the time, and the task succeeds exactly when
+    they do."""
     monkeypatch.chdir(tmp_path)
     task = _task(model)
     planner_sim = ObjectCentricBedsideStocking3DEnv(2, 0, allow_state_access=True)
@@ -47,23 +49,43 @@ def test_actions_deliver_the_items(model, tmp_path, monkeypatch):
     )
     planner_sim.close()
     assert plan is not None
-    rng = np.random.default_rng(0)
+    rng, theta = np.random.default_rng(0), 1.3 * THETA
     state, deliveries = task.initial_state, []
     first_pick = next(i for i, (name, _) in enumerate(plan) if name == "pick")
+    last_place = max(i for i, (name, _) in enumerate(plan) if name == "place")
+    before_last = state
     for i, action in enumerate(plan):
+        if i == last_place:
+            before_last = state
         if i == first_pick + 1:
             # Continue in a fresh simulator while holding the item.
             fresh = ReachModel(num_requested=2, num_clutter=0)
-            state = fresh.sample_next_state(state, action, THETA, rng)
+            state = fresh.sample_next_state(state, action, theta, rng)
             fresh.close()
         else:
-            state = model.sample_next_state(state, action, THETA, rng)
+            state = model.sample_next_state(state, action, theta, rng)
         if state.delivery is not None:
             deliveries.append((state.delivery[0], state.delivery[2]))
     assert state.num_actions == len(plan)
     assert sorted(deliveries) == [("req0", True), ("req1", True)]
-    assert model.check_goal(task, state, THETA)
-    assert model.get_terminal_cost(task, state, THETA) == 0.0
+    assert state.grasped == {"req0", "req1"}
+    assert model.check_goal(task, state, theta)
+    assert model.get_terminal_cost(task, state, theta) == 0.0
+
+    assert state.delivery is not None
+    point = np.array(state.delivery[1]) - model.sim.shoulder
+    edge = theta * np.linalg.norm(point / theta)
+    grasps = []
+    for seed in range(16):
+        after = model.sample_next_state(
+            before_last, plan[last_place], edge, np.random.default_rng(seed)
+        )
+        assert after.delivery is not None
+        grasped = after.delivery[2]
+        assert model.check_goal(task, after, edge) == grasped
+        assert after.num_unreached == int(not grasped)
+        grasps.append(grasped)
+    assert 0 < sum(grasps) < len(grasps)
 
 
 def test_queries_run_in_their_own_simulator(model):

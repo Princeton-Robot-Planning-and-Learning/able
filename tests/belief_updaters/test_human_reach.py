@@ -3,9 +3,7 @@
 import numpy as np
 
 from able.belief_updaters.human_reach import (
-    DELIVERY_LAPSE,
     ReachBeliefUpdater,
-    delivered_log_likelihood,
     reached_log_likelihood,
 )
 from able.beliefs.particles import ParticleBelief
@@ -35,18 +33,28 @@ def test_likelihood_sign():
         assert gap > 0 if reached else gap < 0
 
 
-def test_a_delivery_weighs_every_agreeing_particle_alike():
-    """A delivered item the person reaches rules out the reaches that miss it and
-    favors none of those that cover it, however far inside they cover it; a missed
-    item does the reverse."""
-    point = SHOULDER + [0.6, 0.0, 0.0]
-    particles = np.array([[0.61, 0.6, 0.6], [0.9, 0.6, 0.6], [0.5, 0.6, 0.6]])
-    reached = delivered_log_likelihood(point, True, particles, SHOULDER)
-    assert reached[0] == reached[1] == np.log1p(-DELIVERY_LAPSE)
-    assert reached[2] == np.log(DELIVERY_LAPSE)
-    missed = delivered_log_likelihood(point, False, particles, SHOULDER)
-    assert missed[0] == missed[1] == np.log(DELIVERY_LAPSE)
-    assert missed[2] == np.log1p(-DELIVERY_LAPSE)
+def test_a_delivery_weighs_like_a_point_at_the_delivery_scale():
+    """A delivered item weighs the particles as a query point does, with the
+    delivery scale: a grasp favors longer reaches, and a miss shorter ones."""
+    belief = _prior()
+    point = tuple(SHOULDER + [0.6, 0.0, 0.0])
+    updater = ReachBeliefUpdater(SHOULDER, query_scale=0.03, delivery_scale=0.05)
+    for grasped in (True, False):
+        after = ReachState(scene=None, num_actions=1, delivery=("req0", point, grasped))
+        posterior = updater.update_from_transition(
+            belief, ReachState(scene=None), NO_ACTION, after
+        )
+        assert isinstance(posterior, ParticleBelief)
+        log_weights = reached_log_likelihood(
+            [point], [grasped], belief.particles, SHOULDER, 0.05
+        )
+        expected = belief.resample(log_weights)
+        assert np.array_equal(posterior.particles, expected.particles)
+        assert (
+            posterior.mean[0] > belief.mean[0]
+            if grasped
+            else posterior.mean[0] < belief.mean[0]
+        )
 
 
 def test_query_points_weigh_like_separate_points():
