@@ -44,6 +44,13 @@ class QuerySpace(ABC, Generic[QueryType]):
     def sample(self, belief: Belief[Any], rng: np.random.Generator) -> QueryType | None:
         """A query drawn uniformly from the belief's range, or None if none is left."""
 
+    def sample_finite(
+        self, belief: Belief[Any], rng: np.random.Generator
+    ) -> QueryType | None:
+        """A query drawn uniformly from get_queries(), or None if it is empty."""
+        queries = self.get_queries(belief)
+        return queries[int(rng.integers(len(queries)))] if queries else None
+
 
 class QueryDistribution(ABC, Generic[QueryType]):
     """Draws a query under a belief."""
@@ -60,8 +67,7 @@ class FiniteQueryDistribution(QueryDistribution[QueryType]):
     """Uniform over the space's fixed set of queries."""
 
     def sample(self, belief: Belief[Any], rng: np.random.Generator) -> QueryType | None:
-        queries = self.space.get_queries(belief)
-        return queries[int(rng.integers(len(queries)))] if queries else None
+        return self.space.sample_finite(belief, rng)
 
 
 class InfiniteQueryDistribution(QueryDistribution[QueryType]):
@@ -163,53 +169,98 @@ class LimbQueries(QuerySpace[LimbQuery]):
 
 
 class ReachQueries(QuerySpace[ReachQuery]):
-    """Points along directions from the shoulder, between the shortest and longest
-    reach the belief's particles allow along each.
+    """Points along the directions from the shoulder to the bedside slots, within
+    the shortest and longest reach the belief's particles allow along each, where
+    the robot can present its gripper.
 
-    The fixed set uses the directions to the bedside slots; samples mix two of
-    them at random. Points the robot cannot present are skipped when asked.
+    Presentable points come from a grid of distances, checked by IK once per
+    direction when first needed and cached.
     """
 
     def __init__(
         self,
         config: BedsideStocking3DEnvConfig = BedsideStocking3DEnvConfig(),
         num_points: int = 4,
+        grid_step: float = 0.025,
     ) -> None:
         self._config = config
         self._num_points = num_points
+        self._grid_step = grid_step
+        self._presenter = QuerySimulator(config)
         self._directions: NDArray[np.float64] | None = None
+        self._presentable: dict[int, NDArray[np.bool_]] = {}
 
     @property
     def directions(self) -> NDArray[np.float64]:
         """Unit vectors from the shoulder to every bedside slot."""
         if self._directions is None:
-            presenter = QuerySimulator(self._config)
-            self._directions = bedside_directions(self._config, presenter.sim.shoulder)
-            presenter.close()
+            shoulder = self._presenter.sim.shoulder
+            self._directions = bedside_directions(self._config, shoulder)
         return self._directions
 
-    def _span(self, belief: Belief[Any], direction: NDArray) -> tuple[float, float]:
+    @property
+    def distances(self) -> NDArray[np.float64]:
+        """Grid distances spanning the prior's reach along every direction."""
+        lb = np.array(self._config.reach_theta_lb)
+        ub = np.array(self._config.reach_theta_ub)
+        r = reach_distance(self.directions, np.stack([lb, ub])[:, None])
+        return np.arange(r[0].min(), r[1].max() + 1e-9, self._grid_step)
+
+    def close(self) -> None:
+        """Close the IK simulator."""
+        self._presenter.close()
+
+    def _cells(self, belief: Belief[Any], k: int) -> NDArray[np.float64]:
+        """Presentable grid distances along direction k within the belief's span."""
         assert isinstance(belief, ParticleBelief), "Need a ParticleBelief"
-        r = reach_distance(direction, belief.particles)
-        return float(r.min()), float(r.max())
+        dist = self.distances
+        if k not in self._presentable:
+            shoulder = self._presenter.sim.shoulder
+            self._presentable[k] = np.array(
+                [
+                    self._presenter.can_present(shoulder + d * self.directions[k])
+                    for d in dist
+                ]
+            )
+        r = reach_distance(self.directions[k], belief.particles)
+        inside = (dist >= r.min()) & (dist <= r.max())
+        return dist[inside & self._presentable[k]]
+
+    def _query(self, k: int, distances: NDArray[np.float64]) -> ReachQuery:
+        return ReachQuery(self.directions[k].copy(), tuple(float(d) for d in distances))
+
+    def _fixed_query(self, belief: Belief[Any], k: int) -> ReachQuery | None:
+        cells = self._cells(belief, k)
+        if not len(cells):
+            return None
+        picks = np.unique((_fractions(self._num_points) * len(cells)).astype(int))
+        return self._query(k, cells[picks])
 
     def get_queries(self, belief: Belief[Any]) -> list[ReachQuery]:
-        queries = []
-        for direction in self.directions:
-            lo, hi = self._span(belief, direction)
-            distances = tuple(
-                float(lo + f * (hi - lo)) for f in _fractions(self._num_points)
-            )
-            queries.append(ReachQuery(direction.copy(), distances))
-        return queries
+        queries = [self._fixed_query(belief, k) for k in range(len(self.directions))]
+        return [q for q in queries if q is not None]
 
-    def sample(self, belief: Belief[Any], rng: np.random.Generator) -> ReachQuery:
-        a, b = self.directions[rng.choice(len(self.directions), 2)]
-        direction = a + rng.uniform() * (b - a)
-        direction /= np.linalg.norm(direction)
-        lo, hi = self._span(belief, direction)
-        distances = np.sort(rng.uniform(lo, hi, self._num_points))
-        return ReachQuery(direction, tuple(float(d) for d in distances))
+    def sample_finite(
+        self, belief: Belief[Any], rng: np.random.Generator
+    ) -> ReachQuery | None:
+        # One fixed query per direction, so a uniform direction is a uniform query.
+        for k in rng.permutation(len(self.directions)):
+            query = self._fixed_query(belief, int(k))
+            if query is not None:
+                return query
+        return None
+
+    def sample(
+        self, belief: Belief[Any], rng: np.random.Generator
+    ) -> ReachQuery | None:
+        for k in rng.permutation(len(self.directions)):
+            cells = self._cells(belief, int(k))
+            if len(cells):
+                picks = rng.choice(cells, self._num_points)
+                half = self._grid_step / 2
+                distances = np.sort(picks + rng.uniform(-half, half, self._num_points))
+                return self._query(int(k), distances)
+        return None
 
 
 class FrictionQueries(QuerySpace[FrictionQuery]):
