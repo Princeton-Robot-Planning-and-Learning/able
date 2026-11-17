@@ -18,6 +18,32 @@ def test_walls():
     assert torque == pytest.approx([-40.0, 40.0])
 
 
+def test_band():
+    """Tests that the band resists only within its width inside the limits, damps
+    there, and stays within its torque limit."""
+    person = PersonModel(band_width=0.15, band_stiffness=30.0, band_damping=1.0)
+    still = np.zeros(2)
+    assert np.array_equal(
+        person.get_band_torque(np.array([0.8, -0.3]), np.array([1.0, 1.0]), LIMITS),
+        np.zeros(2),
+    )
+    torque = person.get_band_torque(np.array([0.95, -0.45]), still, LIMITS)
+    assert torque == pytest.approx([-3.0, 3.0])
+    moving = person.get_band_torque(np.array([0.95, -0.45]), np.ones(2), LIMITS)
+    assert moving == pytest.approx([-4.0, 2.0])
+    assert person.get_band_torque(np.array([3.0, 0.0]), still, LIMITS)[0] == -15.0
+    with_band = person.get_torque(
+        np.array([0.95, 0.0]), still, still, LIMITS, "human-left-arm", band=True
+    )
+    assert with_band == pytest.approx([-3.0, 0.0])
+    assert np.array_equal(
+        person.get_torque(
+            np.array([0.95, 0.0]), still, still, LIMITS, "human-left-arm"
+        ),
+        still,
+    )
+
+
 def test_torque():
     """Tests that the person holds up the limb, damps, adds effort and walls, and stays
     within their strength."""

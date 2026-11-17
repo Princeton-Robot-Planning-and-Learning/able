@@ -21,6 +21,12 @@ env:
     prior:
       _target_: able.envs.limb.human.RangeOfMotionPrior
       scales: null
+    # While the robot moves the limb, the person resists in a band this wide
+    # (rad) inside each limit, 30 N m/rad deep into it, as in safe-limb-mjx. The
+    # robot senses that resistance with a Gaussian error of torque_noise (N m),
+    # drawn once per task.
+    band_width: 0.15
+    torque_noise: 1.0
   # Instantiated with the domain's environment model, only when recording videos.
   renderer:
     _target_: able.rendering.limb.LimbRenderer

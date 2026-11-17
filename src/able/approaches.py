@@ -364,7 +364,12 @@ def _make_limb_parts(
         model=default.model if model is None else model,
         seed=seed,
     )
-    belief_updater = RangeOfMotionBeliefUpdater(env_model.variant)
+    belief_updater = RangeOfMotionBeliefUpdater(
+        env_model.variant,
+        env_model.query_model,
+        env_model.settings.person,
+        env_model.torque_noise,
+    )
     return (
         env_model,
         LimbMPCPlanner(env_model, params),

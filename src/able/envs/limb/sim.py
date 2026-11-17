@@ -5,7 +5,8 @@ a weld, and actions are torque corrections on top of the torque that holds the
 coupled system still. The person holds up their own limb with their joint torques
 (see person.py), so the robot holds only its arm. The limb's joint limits are the
 widest range the prior allows; the person's range of motion enters the physics only
-through the walls their joints put past it, when a step is given the limits.
+through the walls their joints put past it and the soft band just inside it, when a
+step is given the limits.
 """
 
 import dataclasses
@@ -79,7 +80,7 @@ class CoupledState:
 class HumanTorques:
     """The torque on the limb's joints over one step, the static loads in it, and
     the person's resistance: their joint torque beyond holding up the limb, such as
-    the walls past their limits."""
+    the walls past their limits and the bands inside them."""
 
     total: NDArray[np.float64]
     tone: NDArray[np.float64]
@@ -337,7 +338,8 @@ class LimbSim:
     ) -> HumanTorques:
         """Step once under the robot torque, clipped to the limits, with the
         person's joint torque, and return the torque on the limb. The person's
-        joints put walls past person_limits, if given."""
+        joints put walls past person_limits, if given, and resist in a band inside
+        them."""
         env = self.env
         space = env.torque_action_space
         positions, velocities = self._get_limb_state()
@@ -351,6 +353,7 @@ class LimbSim:
             gravity,
             person_limits,
             limb_name,
+            band=True,
         )
         # The environment adds muscle tone itself.
         clipped = list(np.clip(torque, space.low, space.high))

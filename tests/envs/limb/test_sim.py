@@ -104,8 +104,8 @@ def test_person_holds_up_their_limb(sim):
 
 
 def test_walls_push_back_and_load_the_person(sim):
-    """Tests that the person's walls act only past their limits, and that holding
-    the limb past them counts as the robot loading the person's joints."""
+    """Tests that the person's walls and bands act only near their limits, and that
+    holding the limb past them counts as the robot loading the person's joints."""
     start = sim.capture()
     positions = np.array(start.limb_positions)
     wide = (positions - 1.0, positions + 1.0)
@@ -123,8 +123,9 @@ def test_walls_push_back_and_load_the_person(sim):
     narrow = (positions - 1.0, positions + 1.0)
     narrow[1][3] = positions[3] - 0.05
     torques = sim.advance_corrected(np.zeros(7), narrow)
-    assert torques.resistance[3] == pytest.approx(-20.0, abs=1.0)
-    assert torques.robot[3] == pytest.approx(20.0, abs=5.0)
+    # The wall's 20 N m and the whole band's 6 N m.
+    assert torques.resistance[3] == pytest.approx(-26.0, abs=1.0)
+    assert torques.robot[3] == pytest.approx(26.0, abs=5.0)
     for _ in range(100):
         sim.advance_corrected(np.zeros(7), narrow)
     assert sim.capture().limb_positions[3] < positions[3]

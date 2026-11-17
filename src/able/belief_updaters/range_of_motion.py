@@ -10,6 +10,7 @@ from able.beliefs.base import Belief
 from able.beliefs.range_of_motion import RangeOfMotionBelief
 from able.envs.limb.human import LimbVariant
 from able.envs.limb.model import LimbState
+from able.envs.limb.person import PersonModel
 from able.envs.limb.query import LimbQuery, QueryModel, QueryOutcome
 from able.structs import QueryResponse
 
@@ -32,14 +33,27 @@ class RangeOfMotionBeliefUpdater(
 
     Motion: when the person signals that the limb passed their limit, the signalled
     angle measures the limit. Until then, the farthest the limb has gone raises the
-    floor.
+    floor, and so does the resistance sensed there. Resistance of at least
+    num_stddevs times the sensor noise puts the farthest angle that many N m into
+    the band, which measures the limit; less resistance raises the floor to where
+    the band starts, less the noise's num_stddevs. Each task counts only its
+    farthest angle, so a farther one replaces the measurement.
     """
 
     def __init__(
-        self, variant: LimbVariant, query_model: QueryModel = QueryModel()
+        self,
+        variant: LimbVariant,
+        query_model: QueryModel = QueryModel(),
+        person: PersonModel = PersonModel(),
+        torque_noise: float = 1.0,
+        num_stddevs: float = 2.0,
     ) -> None:
+        assert torque_noise > 0.0, "Need noisy torque sensing"
         self._magnitudes = variant.default_magnitudes
         self._query_model = query_model
+        self._person = person
+        self._torque_noise = torque_noise
+        self._num_stddevs = num_stddevs
 
     def update_from_transition(
         self,
@@ -56,11 +70,51 @@ class RangeOfMotionBeliefUpdater(
                 reach = next_state.max_reach[motion]
                 if reach > belief.lower[motion] + FLOOR_STEP:
                     belief = belief.with_floor(motion, reach)
+                belief = self._update_from_resistance(
+                    belief, motion, state.resistance, next_state.resistance
+                )
             elif state.signalled[motion] is None:
                 belief = belief.with_measurement(
                     motion, signalled / magnitude, noise / magnitude
                 )
         return belief
+
+    def _update_from_resistance(
+        self,
+        belief: RangeOfMotionBelief,
+        motion: int,
+        before: tuple[tuple[float, float, float] | None, ...],
+        after: tuple[tuple[float, float, float] | None, ...],
+    ) -> RangeOfMotionBelief:
+        old = before[motion] if before else None
+        new = after[motion] if after else None
+        if new is None or new == old:
+            return belief
+        magnitude = self._magnitudes[motion]
+        threshold = self._num_stddevs * self._torque_noise
+        stiffness = self._person.band_stiffness
+        noise = self._torque_noise / stiffness / magnitude
+        if old is not None and old[1] >= threshold:
+            belief = belief.with_measurement(
+                motion, self._get_limit(*old) / magnitude, noise, weight=-1.0
+            )
+        angle, torque, speed = new
+        if torque >= threshold:
+            return belief.with_measurement(
+                motion, self._get_limit(angle, torque, speed) / magnitude, noise
+            )
+        limit = self._get_limit(angle, torque + threshold, speed)
+        floor = min(limit, angle + self._person.band_width) / magnitude
+        if floor > belief.lower[motion] + FLOOR_STEP:
+            belief = belief.with_floor(motion, floor)
+        return belief
+
+    def _get_limit(self, angle: float, torque: float, speed: float) -> float:
+        """The limit where the band would resist with the torque at the angle and
+        speed toward the limit."""
+        person = self._person
+        depth = (torque - person.band_damping * speed) / person.band_stiffness
+        return angle + person.band_width - depth
 
     def update_from_queries(
         self,

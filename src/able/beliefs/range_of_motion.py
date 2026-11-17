@@ -92,13 +92,15 @@ class RangeOfMotionBelief(Belief[NDArray[np.float64]]):
         return dataclasses.replace(self, floor=floor)
 
     def with_measurement(
-        self, motion: int, scale: float, noise_stddev: float
+        self, motion: int, scale: float, noise_stddev: float, weight: float = 1.0
     ) -> "RangeOfMotionBelief":
-        """The belief after measuring a motion's scale with Gaussian noise."""
+        """The belief after measuring a motion's scale with Gaussian noise. A weight
+        of -1 takes back an earlier measurement."""
         prior_var = self.stddev[motion] ** 2
-        posterior_var = 1.0 / (1.0 / prior_var + 1.0 / noise_stddev**2)
+        precision = weight / noise_stddev**2
+        posterior_var = 1.0 / (1.0 / prior_var + precision)
         posterior_mean = posterior_var * (
-            self.mean[motion] / prior_var + scale / noise_stddev**2
+            self.mean[motion] / prior_var + scale * precision
         )
         mean, stddev = self.mean.copy(), self.stddev.copy()
         mean[motion], stddev[motion] = posterior_mean, np.sqrt(posterior_var)
