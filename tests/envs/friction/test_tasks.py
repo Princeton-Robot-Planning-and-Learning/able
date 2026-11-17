@@ -90,16 +90,22 @@ def test_seeds_and_given_frictions():
     assert np.allclose(_get_parts(domain)[1].hidden_params, [0.1, 0.05, 0.03])
 
 
-def test_fixed_tasks():
-    """num_tasks samples that many tasks once per seed, and keeps the person."""
-    domain = make_domain(seed=0, num_tasks=3)
-    tasks = domain.task_distribution
-    assert isinstance(tasks, FiniteTaskDistribution)
-    assert len(tasks.get_tasks()) == 3
-    again = make_domain(seed=0, num_tasks=3).task_distribution
-    assert isinstance(again, FiniteTaskDistribution)
-    assert [t.goal for t in tasks.get_tasks()] == [t.goal for t in again.get_tasks()]
-    frictions = _get_parts(make_domain(seed=0))[1].hidden_params
+def _get_frictions(domain):
     real_env = domain.real_env
     assert isinstance(real_env, SimulatedEnvironment)
-    assert np.allclose(real_env.hidden_params, frictions)
+    return real_env.hidden_params
+
+
+def _get_goals(domain):
+    distribution = domain.task_distribution
+    assert isinstance(distribution, FiniteTaskDistribution)
+    return [task.goal for task in distribution.get_tasks()]
+
+
+def test_fixed_tasks():
+    """num_tasks samples that many tasks once per seed, and keeps the person."""
+    goals = _get_goals(make_domain(seed=0, num_tasks=3))
+    assert len(goals) == 3
+    assert goals == _get_goals(make_domain(seed=0, num_tasks=3))
+    fixed = _get_frictions(make_domain(seed=0, num_tasks=3))
+    assert np.allclose(fixed, _get_frictions(make_domain(seed=0)))

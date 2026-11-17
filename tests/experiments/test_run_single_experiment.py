@@ -367,7 +367,7 @@ def test_friction(tmp_path: Path) -> None:
             "env=friction",
             "approach=scratch",
             "num_cycles=1",
-            "num_eval_tasks=1",
+            "env.domain.num_tasks=1",
             "env.domain.horizon=2",
             "env.domain.num_particles=20",
             "approach.num_sims=20",
@@ -402,7 +402,7 @@ def test_worker_processes(tmp_path: Path) -> None:
     friction = [
         "env=friction",
         "approach=belief_coverage",
-        "num_eval_tasks=3",
+        "env.domain.num_tasks=3",
         "env.domain.horizon=2",
         "env.domain.num_particles=20",
         "approach.num_sims=20",

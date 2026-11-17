@@ -18,7 +18,7 @@ env:
     num_floors: 8
     # Tasks sampled once per seed and shared by training and evaluation; null
     # samples a new task each time.
-    num_tasks: null
+    num_tasks: 8
     num_particles: 500
   # Instantiated with the domain's environment model, only when recording videos.
   renderer:
