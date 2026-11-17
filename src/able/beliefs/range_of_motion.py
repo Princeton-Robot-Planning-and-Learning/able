@@ -83,6 +83,18 @@ class RangeOfMotionBelief(Belief[NDArray[np.float64]]):
         """The standard deviation of each truncated Gaussian."""
         return np.asarray(self._truncated().std(), dtype=np.float64)
 
+    def get_log_density(
+        self, motion: int, scales: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        """The log density of a motion's truncated Gaussian at the scales."""
+        mean, stddev = self.mean[motion], self.stddev[motion]
+        lower = (self.lower[motion] - mean) / stddev
+        upper = (self.high[motion] - mean) / stddev
+        return np.asarray(
+            truncnorm.logpdf(scales, lower, upper, loc=mean, scale=stddev),
+            dtype=np.float64,
+        )
+
     def with_floor(self, motion: int, scale: float) -> "RangeOfMotionBelief":
         """The belief after seeing the person reach the scale of a motion safely."""
         floor = self.floor.copy()
@@ -92,15 +104,13 @@ class RangeOfMotionBelief(Belief[NDArray[np.float64]]):
         return dataclasses.replace(self, floor=floor)
 
     def with_measurement(
-        self, motion: int, scale: float, noise_stddev: float, weight: float = 1.0
+        self, motion: int, scale: float, noise_stddev: float
     ) -> "RangeOfMotionBelief":
-        """The belief after measuring a motion's scale with Gaussian noise. A weight
-        of -1 takes back an earlier measurement."""
+        """The belief after measuring a motion's scale with Gaussian noise."""
         prior_var = self.stddev[motion] ** 2
-        precision = weight / noise_stddev**2
-        posterior_var = 1.0 / (1.0 / prior_var + precision)
+        posterior_var = 1.0 / (1.0 / prior_var + 1.0 / noise_stddev**2)
         posterior_mean = posterior_var * (
-            self.mean[motion] / prior_var + scale * precision
+            self.mean[motion] / prior_var + scale / noise_stddev**2
         )
         mean, stddev = self.mean.copy(), self.stddev.copy()
         mean[motion], stddev[motion] = posterior_mean, np.sqrt(posterior_var)

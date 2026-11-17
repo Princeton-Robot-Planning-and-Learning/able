@@ -1,5 +1,7 @@
 """Tests for belief_updaters/range_of_motion.py."""
 
+import dataclasses
+
 import numpy as np
 import pytest
 from pybullet_helpers.geometry import SE2Pose
@@ -108,46 +110,47 @@ def test_random_motion_never_excludes_the_person():
 
 
 def test_update_from_resistance():
-    """Tests that little resistance raises the floor to where the band could start,
-    more measures the limit, and a farther angle replaces the task's measurement."""
+    """Tests that a task's farthest resistance counts once, when it ends: little
+    resistance raises the floor to where the band could start, more measures the
+    limit, unless the belief finds the angle unlikely to be inside the band."""
     person = PersonModel(band_width=0.15, band_stiffness=30.0)
     updater = RangeOfMotionBeliefUpdater(VARIANT, MODEL, person, torque_noise=1.0)
     belief = _prior()
     magnitude = MAGNITUDES[0]
     start = _state([0.0] * 3, resistance=(None,) * 3)
 
-    def moved(angle, torque, speed=0.0):
-        return _state([0.0] * 3, resistance=((angle, torque, speed), None, None))
+    def moved(angle, torque, speed=0.0, reached=True):
+        state = _state([0.0] * 3, resistance=((angle, torque, speed), None, None))
+        return dataclasses.replace(state, reached=reached)
 
-    quiet = moved(0.75 * magnitude, 0.5)
-    floored = updater.update_from_transition(belief, start, np.zeros(7), quiet)
+    quiet = moved(0.75 * magnitude, 0.5, reached=False)
+    assert updater.update_from_transition(belief, start, np.zeros(7), quiet) == belief
+    floored = updater.update_from_transition(
+        belief, quiet, np.zeros(7), moved(0.75 * magnitude, 0.5)
+    )
     expected = (0.75 * magnitude + 0.15 - 2.5 / 30.0) / magnitude
     assert floored.lower[0] == pytest.approx(expected)
     assert np.array_equal(floored.mean, belief.mean)
-    assert updater.update_from_transition(floored, quiet, np.zeros(7), quiet) == floored
     # Moving away, the band's damping could hide resistance, so the floor is lower.
     leaving = updater.update_from_transition(
         belief, start, np.zeros(7), moved(0.75 * magnitude, 0.5, -1.0)
     )
     assert leaving.lower[0] == pytest.approx(expected - 1.0 / 30.0 / magnitude)
+    done = moved(0.75 * magnitude, 0.5)
+    assert updater.update_from_transition(floored, done, np.zeros(7), done) == floored
 
-    pushed = moved(0.8 * magnitude, 3.0)
-    measured = updater.update_from_transition(floored, quiet, np.zeros(7), pushed)
+    measured = updater.update_from_transition(
+        floored, start, np.zeros(7), moved(0.8 * magnitude, 3.0)
+    )
     once = floored.with_measurement(
         0, (0.8 * magnitude + 0.05) / magnitude, 1.0 / 30.0 / magnitude
     )
     assert measured == once
-    farther = moved(0.81 * magnitude, 3.5)
-    replaced = updater.update_from_transition(measured, pushed, np.zeros(7), farther)
-    direct = floored.with_measurement(
-        0, (0.81 * magnitude + 0.15 - 3.5 / 30.0) / magnitude, 1.0 / 30.0 / magnitude
+    # Far below where the belief puts the limit, the same torque is more likely
+    # the sensor's error than the band.
+    narrow = dataclasses.replace(belief, stddev=np.full(3, 0.02))
+    unlikely = updater.update_from_transition(
+        narrow, start, np.zeros(7), moved(0.5 * magnitude, 2.5)
     )
-    assert replaced.mean[0] == pytest.approx(direct.mean[0])
-    assert replaced.stddev[0] == pytest.approx(direct.stddev[0])
-    # A farther angle with little resistance takes the measurement back.
-    taken_back = updater.update_from_transition(
-        measured, pushed, np.zeros(7), moved(0.82 * magnitude, 1.0)
-    )
-    assert taken_back.mean[0] == pytest.approx(belief.mean[0])
-    assert taken_back.stddev[0] == pytest.approx(belief.stddev[0])
-    assert taken_back.lower[0] > floored.lower[0]
+    assert np.array_equal(unlikely.mean, narrow.mean)
+    assert np.array_equal(unlikely.stddev, narrow.stddev)
