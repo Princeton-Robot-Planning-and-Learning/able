@@ -104,6 +104,8 @@ def test_every_approach_config_builds_its_robot(env: str) -> None:
         if env == "human_reach":
             params = robot.planner_params
             assert params.placement == "continuous" and params.delta == 0.02
+        if env == "friction":
+            assert robot.planner_params.config.num_sims == 5
         if env == "limb":
             assert robot.planner_params.confidence == 0.95
     assert isinstance(hydra.utils.instantiate(configs[0].budgets), CycleBudgets)
