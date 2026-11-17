@@ -65,18 +65,25 @@
  },
  "human-left-arm": {
   "variant": "human-left-arm",
-  "offset": 0.06,
-  "roll": 3.141592653589793,
+  "offset": 0.03,
+  "roll": 0.0,
+  "twist": 3.141592653589793,
   "base": [
-   0.2086931364407838,
-   0.2996055953552836,
+   0.3,
+   -0.43,
    0.0
   ],
   "stats": {
-   "reach": 0.15,
-   "mpc_success": 1.0,
-   "mpc_seconds": 82.86418378353119,
-   "mpc_tried": 2
+   "near_limit_ik": [
+    0.76,
+    0.94,
+    0.89
+   ],
+   "tasks_near_limit": [
+    0.29,
+    0.44,
+    0.5
+   ]
   }
  },
  "human-left-leg": {

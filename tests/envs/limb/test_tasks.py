@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from pybullet_helpers.geometry import matrix_from_quat, multiply_poses
 
 from able.beliefs.range_of_motion import RangeOfMotionBelief
 from able.envs.limb.human import VARIANTS, RangeOfMotionPrior
@@ -9,6 +10,8 @@ from able.envs.limb.model import LimbModel
 from able.envs.limb.tasks import (
     LimbTaskDistribution,
     TaskBox,
+    _get_link_position,
+    get_wrist_grasp,
     load_fixed_setup,
     make_domain,
 )
@@ -45,6 +48,31 @@ def test_fixed_setups():
         assert setup.base_pose.x == setup.base[0]
     with pytest.raises(KeyError):
         load_fixed_setup("sofa-third-arm")
+
+
+def test_twisted_grasp(domain):
+    """Tests that twisting the grasp turns the gripper about the forearm, through
+    the grasped point: half a turn grasps from the opposite side."""
+    sim = domain.task_distribution.sim
+    end_effector = sim.env.limb.get_end_effector_pose()
+
+    def get_pose(*twist: float) -> tuple[np.ndarray, np.ndarray]:
+        pose = multiply_poses(end_effector, get_wrist_grasp(sim, 0.03, 0.0, *twist))
+        return np.asarray(pose.position), matrix_from_quat(pose.orientation)
+
+    position, rotation = get_pose(0.0)
+    assert np.allclose(get_pose()[1], rotation)
+    assert np.allclose(get_pose(2 * np.pi)[1], rotation, atol=1e-6)
+    turned_position, turned_rotation = get_pose(np.pi)
+    # The gripper sits at the grasped point on the forearm, and half a turn
+    # rotates it by pi about the forearm.
+    wrist = _get_link_position(sim, "hand_x")
+    elbow = _get_link_position(sim, "lower_arm")
+    axis = (elbow - wrist) / np.linalg.norm(elbow - wrist)
+    assert np.allclose(turned_position, position, atol=1e-6)
+    turn = turned_rotation @ rotation.T
+    assert np.allclose(turn @ axis, axis, atol=1e-6)
+    assert np.trace(turn) == pytest.approx(-1.0, abs=1e-6)
 
 
 def test_make_domain(domain):
@@ -106,16 +134,52 @@ def test_sampled_tasks(domain):
         assert model.get_goal_error(task, state) == pytest.approx(separation, abs=0.01)
 
 
-def test_configurations_lie_within_the_range(domain):
-    """Tests that drawn configurations lie strictly within the person's range."""
+@pytest.fixture(name="arm_domain", params=["human-left-arm", "human-right-arm"])
+def _arm_domain(request):
+    """Arms whose motions bound their joints from above and from below."""
+    domain = make_domain(seed=0, variant=request.param, horizon=20)
+    yield domain
+    _close(domain)
+
+
+def test_goals_lean_toward_the_limits(arm_domain):
+    """Tests that drawn starts and goals lie strictly within the person's range,
+    goals no farther than max_goal_fraction of the way to each motion's limit, and
+    that goals lean toward the limits while starts do not."""
+    domain = arm_domain
     model = domain.env_model
     distribution = domain.task_distribution
     assert isinstance(model, LimbModel)
     assert isinstance(distribution, LimbTaskDistribution)
-    theta = _get_true_theta(domain)
-    lower, upper = model.variant.get_joint_limits(theta)
-    active = list(model.variant.active_joints)
+    lower, upper = model.variant.get_joint_limits(_get_true_theta(domain))
     rng = np.random.default_rng(0)
-    for _ in range(20):
-        inside = distribution.draw_limb_configuration(rng)[active]
-        assert np.all(lower[active] < inside) and np.all(inside < upper[active])
+
+    def get_fractions(draw) -> np.ndarray:
+        """How far each drawn configuration's active joints go toward their
+        limits, as fractions of their ranges."""
+        positions = np.array([draw(rng) for _ in range(30)])
+        fractions = []
+        for joint, sign in zip(
+            model.variant.active_joints, model.variant.active_signs, strict=True
+        ):
+            far, limit = (lower[joint], upper[joint])[:: 1 if sign > 0 else -1]
+            fractions.append((positions[:, joint] - far) / (limit - far))
+        return np.array(fractions)
+
+    starts = get_fractions(distribution.draw_limb_configuration)
+    goals = get_fractions(distribution.draw_limb_goal)
+    assert np.all(0.0 < starts) and np.all(starts < 1.0)
+    assert np.all(0.0 < goals) and np.all(goals <= TaskBox().max_goal_fraction)
+    assert goals.mean() > starts.mean() + 0.2
+
+
+def test_uniform_goals_when_no_goal_leans(domain, monkeypatch):
+    """Tests that a draw falls back to uniform goals when no start has a reachable
+    goal that leans toward the limits."""
+    distribution = domain.task_distribution
+    assert isinstance(distribution, LimbTaskDistribution)
+    monkeypatch.setattr(distribution, "_box", TaskBox(max_start_draws=30))
+    # Every leaning goal is too far from the start.
+    monkeypatch.setattr(distribution, "draw_limb_goal", lambda _: np.full(6, 100.0))
+    task = distribution.sample(np.random.default_rng(0))
+    assert np.all(np.abs(task.goal) < 10.0)

@@ -221,8 +221,8 @@ def _setup():
     distribution = domain.task_distribution
     assert isinstance(distribution, LimbTaskDistribution)
     # Sampled tasks hold the grasp along the line to the goal, so a goal 30% of
-    # the way is reachable, and fast MPC solves it in about 11 steps.
-    task = _with_goal(model, distribution.sample(np.random.default_rng(3)), 0.3)
+    # the way is reachable, and fast MPC solves it in about 14 steps.
+    task = _with_goal(model, distribution.sample(np.random.default_rng(33)), 0.3)
     planner = LimbMPCPlanner(model)
     yield domain, task, planner
     planner.close()
