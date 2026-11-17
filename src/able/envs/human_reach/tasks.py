@@ -6,6 +6,7 @@ from numpy.typing import ArrayLike, NDArray
 from able.beliefs.particles import ParticleBelief
 from able.envs.base import Domain, TaskDistribution
 from able.envs.human_reach.model import (
+    DELIVERY_SCALE,
     ReachAction,
     ReachModel,
     ReachState,
@@ -53,14 +54,16 @@ def make_domain(
     num_particles: int = 2000,
     config: BedsideStocking3DEnvConfig = BedsideStocking3DEnvConfig(),
     true_theta: ArrayLike | None = None,
+    delivery_scale: float = DELIVERY_SCALE,
 ) -> ReachDomain:
     """A human reach domain with episodes of horizon actions, and a person whose
-    reach is drawn uniformly from the config's box unless given. The robot's
+    reach is drawn uniformly from the config's box unless given, and who grasps a
+    delivered item with probability sigmoid(margin / delivery_scale). The robot's
     initial belief is particles from the same box."""
     rng = np.random.default_rng(seed)
     low, high = np.array(config.reach_theta_lb), np.array(config.reach_theta_ub)
     theta = rng.uniform(low, high) if true_theta is None else true_theta
-    model = ReachModel(num_requested, num_clutter, config, horizon)
+    model = ReachModel(num_requested, num_clutter, config, horizon, delivery_scale)
     return Domain(
         env_model=model,
         task_distribution=ReachTaskDistribution(model),

@@ -5,7 +5,8 @@ sitting up in bed, so that the person can reach them. The hidden parameters thet
 are the semi-axes of the person's reach ellipsoid at their right shoulder. Each
 action is one PDDLStream action (move_base, pick, or place), which the simulator
 executes with refined motions, or NO_ACTION once the plan is done. After placing a
-requested item, the robot sees whether the person reached it.
+requested item, the robot sees whether the person grasped it, which they do with
+probability sigmoid(margin / DELIVERY_SCALE).
 """
 
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ from able.envs.human_reach.scene import (
     BedsideStocking3DObjectCentricState,
     ObjectCentricBedsideStocking3DEnv,
     reach_margin,
+    reach_probability,
 )
 from able.structs import Task
 
@@ -29,6 +31,9 @@ from able.structs import Task
 ReachAction = tuple[str, tuple[Any, ...]]
 # The action after the plan is done, which changes nothing.
 NO_ACTION: ReachAction = ("wait", ())
+# Margin scale of P(the person grasps a delivered item | theta) = sigmoid(margin /
+# scale).
+DELIVERY_SCALE = 0.03
 
 
 @dataclass(frozen=True, eq=False)
@@ -36,9 +41,10 @@ class ReachState:
     """The scene, the number of actions so far, and what the last action showed.
 
     If the last action placed a requested item on a surface, the delivery is the
-    item, its grasp point, and whether the person reached it. num_unreached counts
-    the requested items the person cannot reach now, because they are out of
-    reach, blocked, or not on a surface.
+    item, its grasp point, and whether the person grasped it. grasped holds the
+    requested items the person grasped where they are now. num_unreached counts the
+    requested items the person cannot reach now, because they missed them, the items
+    are blocked, or not on a surface.
     """
 
     scene: BedsideStocking3DObjectCentricState
@@ -46,6 +52,7 @@ class ReachState:
     delivery: tuple[str, tuple[float, float, float], bool] | None = None
     num_unreached: int = 0
     goal_reached: bool = False
+    grasped: frozenset[str] = frozenset()
 
 
 # The goal is the requested items' names.
@@ -66,9 +73,9 @@ class ReachModel(
 
     The model steps one simulator, restoring it only when asked to step from a
     state other than the one it produced last. The task succeeds if every requested
-    item ends on a surface, within the person's reach, and unobstructed by other
-    items. Steps cost nothing, and the terminal cost is the number of requested
-    items the person cannot reach. Queries run in a simulator of their own.
+    item ends on a surface, grasped by the person, and unobstructed by other items.
+    Steps cost nothing, and the terminal cost is the number of requested items the
+    person cannot reach. Queries run in a simulator of their own.
     """
 
     def __init__(
@@ -77,10 +84,12 @@ class ReachModel(
         num_clutter: int = 4,
         config: BedsideStocking3DEnvConfig = BedsideStocking3DEnvConfig(),
         horizon: int = 40,
+        delivery_scale: float = DELIVERY_SCALE,
     ) -> None:
         self.num_requested = num_requested
         self.num_clutter = num_clutter
         self.config = config
+        self.delivery_scale = delivery_scale
         self._horizon = horizon
         self._sim: ObjectCentricBedsideStocking3DEnv | None = None
         self._sim_state: ReachState | None = None
@@ -130,7 +139,7 @@ class ReachModel(
         sim.reach_theta = np.array(hidden_params, dtype=float)
         seed = int(rng.integers(2**31 - 1))
         execute_action(sim, action, seed, start=state.num_actions == 0)
-        delivery, num_unreached = None, 0
+        delivery, grasped, num_unreached = None, set(), 0
         for name in sim.requested_objects:
             # pylint: disable-next=protected-access
             body = sim._object_name_to_pybullet_id(name)
@@ -140,18 +149,25 @@ class ReachModel(
             if sim._grasped_object == name or not supported:
                 num_unreached += 1
                 continue
-            num_unreached += int(not sim.item_reachable(name))
             if action[0] == "place" and action[1][0] == name:
                 point = sim.grasp_point(name)
                 margin = reach_margin(point, sim.reach_theta, sim.shoulder)
+                p = reach_probability(margin, self.delivery_scale)
                 xyz = (float(point[0]), float(point[1]), float(point[2]))
-                delivery = (name, xyz, bool(margin >= 0))
+                delivery = (name, xyz, bool(rng.random() < p))
+                if delivery[2]:
+                    grasped.add(name)
+            elif name in state.grasped:
+                grasped.add(name)
+            num_unreached += int(name not in grasped or not sim.is_unobstructed(name))
         next_state = ReachState(
             scene=sim._get_obs(),  # pylint: disable=protected-access
             num_actions=state.num_actions + 1,
             delivery=delivery,
             num_unreached=num_unreached,
-            goal_reached=sim.goal_reached(),
+            # pylint: disable-next=protected-access
+            goal_reached=sim._grasped_object is None and num_unreached == 0,
+            grasped=frozenset(grasped),
         )
         self._sim_state = next_state
         return next_state

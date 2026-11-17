@@ -848,7 +848,9 @@ def _make_reach_parts(
     )
     if model is not None:
         params = dataclasses.replace(params, model=model)
-    belief_updater = ReachBeliefUpdater(env_model.sim.shoulder)
+    belief_updater = ReachBeliefUpdater(
+        env_model.sim.shoulder, delivery_scale=env_model.delivery_scale
+    )
     return (
         env_model,
         ReachPDDLStreamPlanner(env_model, params),

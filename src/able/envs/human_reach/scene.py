@@ -24,7 +24,7 @@ from kinder.envs.kinematic3d.object_types import (
     Kinematic3DRobotType,
 )
 from kinder.envs.kinematic3d.utils import Kinematic3DObjectCentricState
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 from pybullet_helpers.geometry import Pose, SE2Pose, get_pose, set_pose
 from pybullet_helpers.robots.human import Human
 from pybullet_helpers.utils import create_pybullet_block
@@ -69,6 +69,12 @@ def reach_margin(
     """m(x, theta) = 1 - ||(x - shoulder) / theta||; broadcasts over leading dims."""
     d = (np.asarray(points, dtype=float) - shoulder) / np.asarray(theta, dtype=float)
     return 1.0 - np.linalg.norm(d, axis=-1)
+
+
+def reach_probability(margin: ArrayLike, scale: float) -> NDArray[np.float64]:
+    """The chance the person reaches a point with this margin: sigmoid(margin /
+    scale)."""
+    return 1.0 / (1.0 + np.exp(-np.asarray(margin, dtype=float) / scale))
 
 
 @dataclass(frozen=True)
