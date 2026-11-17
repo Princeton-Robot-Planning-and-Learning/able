@@ -37,7 +37,6 @@ def run_job(variant: str, seed: int, belief_name: str) -> dict[str, Any]:
     # Pylint does not narrow the domain's parts by the asserts below.
     # pylint: disable=import-outside-toplevel,no-member
     from able.beliefs.range_of_motion import RangeOfMotionBelief
-    from able.envs.limb.human import RangeOfMotionPrior
     from able.envs.limb.model import LimbModel
     from able.envs.limb.tasks import LimbTaskDistribution, make_domain
     from able.episodes import run_episode
@@ -67,13 +66,14 @@ def run_job(variant: str, seed: int, belief_name: str) -> dict[str, Any]:
         if belief_name == "prior":
             belief = domain.initial_belief
         else:
-            prior = RangeOfMotionPrior()
+            prior = domain.initial_belief
+            assert isinstance(prior, RangeOfMotionBelief)
             belief = RangeOfMotionBelief(
                 mean=theta.copy(),
                 stddev=np.full(len(theta), TRUE_BELIEF_STDDEV),
                 low=prior.low,
                 high=prior.high,
-                floor=np.full(len(theta), prior.low),
+                floor=prior.low.copy(),
             )
         budget = Budget(max_wall_time=MAX_WALL_TIME, max_iterations=MAX_ROLLOUTS)
         start = time.perf_counter()
