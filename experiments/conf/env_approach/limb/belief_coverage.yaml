@@ -7,6 +7,9 @@ num_training_tasks: 2
 # MPC candidates per step, and belief samples for the believed range of motion.
 num_rollouts: 32
 num_particles: 32
+# MPC keeps the limb where this share of the samples allow it, and moves a goal
+# beyond that just inside, so plans stay cautious until the belief narrows.
+confidence: 0.95
 # A step the model proposes is taken if it costs at most 1 + seed_tolerance times
 # the best directed candidate.
 seed_tolerance: 0.05
