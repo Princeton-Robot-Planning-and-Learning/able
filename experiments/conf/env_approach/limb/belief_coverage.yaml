@@ -10,9 +10,18 @@ num_particles: 32
 # MPC keeps the limb where this share of the samples allow it, and moves a goal
 # beyond that just inside, so plans stay cautious until the belief narrows.
 confidence: 0.95
-# A step the model proposes is taken if it costs at most 1 + seed_tolerance times
-# the best directed candidate.
+# Each MPC step first scores num_proposals controls the model proposes. One is
+# taken if it costs at most 1 + seed_tolerance times the best directed candidate,
+# for its first seed_commit_steps steps, or whole if it reaches the goal.
 seed_tolerance: 0.05
+num_proposals: 16
+seed_commit_steps: 4
+# Plans the model learns from while sleeping may use more rollouts than plans
+# for real tasks, so more of them reach the goal and give training rows.
+training_budget:
+  _target_: able.structs.Budget
+  max_wall_time: 1200
+  max_iterations: 4000
 # The model that seeds MPC, refit once per sleep.
 model:
   _target_: able.models.flow_matching.FlowMatchingModel

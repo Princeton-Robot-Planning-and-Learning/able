@@ -40,7 +40,7 @@ from able.envs.limb.tasks import make_domain as make_limb_domain
 from able.envs.two_link_arm import make_domain
 from able.models.exact_match_cache import ExactMatchCache
 from able.models.neural import MLPRegressor
-from able.planners.mpc import LimbMPCPlanner
+from able.planners.mpc import LimbMPCPlanner, SeedConfig
 from able.planners.pddlstream import ReachPDDLStreamPlanner
 from able.planners.random_shooting import RandomShootingParams, get_plan_features
 from able.robot import Robot
@@ -302,6 +302,8 @@ def test_make_limb_learning_robots():
         "num_particles": 4,
         "confidence": 0.75,
         "seed_tolerance": 0.1,
+        "num_proposals": 3,
+        "seed_commit_steps": 2,
     }
     budgets = _budgets(num_dreams=0)
     no_steps = Budget(max_iterations=0)
@@ -320,7 +322,7 @@ def test_make_limb_learning_robots():
     for robot in robots:
         assert robot.planner_params.model is model
         assert robot.planner_params.config.sampling.num_rollouts == 4
-        assert robot.planner_params.seed.tolerance == 0.1
+        assert robot.planner_params.seed == SeedConfig(3, 0.1, 2)
         assert robot.planner_params.confidence == 0.75
         robot.sleep(Budget(max_iterations=1), rng)
     prior_only = robots[1]
