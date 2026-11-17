@@ -30,6 +30,7 @@ from able.planners.pomcpow import (
     encode_push,
     get_feature_dims,
     get_push_features,
+    get_route_shares,
     get_value_features,
 )
 from able.structs import Budget, PlanningFailure, PlanningTimeout, Task
@@ -351,7 +352,7 @@ def test_plan_examples(setup):
     run_episode(domain.real_env, task, policy, max_steps=2)
     rows = planner.get_plan_examples(task, belief, policy)
     x_dim, value_x_dim = get_feature_dims(planner.pomdp.world)
-    assert (x_dim, value_x_dim) == (13, 11)
+    assert (x_dim, value_x_dim) == (13, 6)
     assert rows.x.shape == (2, x_dim + value_x_dim) and rows.y.shape == (2, Y_DIM + 1)
     assert list(rows.groups) == [0, 1]
     first, second = policy.searches
@@ -364,7 +365,7 @@ def test_plan_examples(setup):
         assert np.allclose(rows.x[row, :x_dim], features)
         pushes_left = planner.pomdp.max_pushes - state.pushes
         value_features = get_value_features(
-            state.puck, task.goal, pushes_left, search.belief
+            state.puck, task.goal, pushes_left, planner.pomdp.world, search.belief
         )
         assert np.allclose(rows.x[row, x_dim:], value_features)
         assert np.allclose(rows.y[row, :Y_DIM], encode_push(search.push))
@@ -398,18 +399,39 @@ def test_rollout_examples(setup, solved):
 
 
 def test_features_cover_every_floor():
-    """The push model sees which floor the puck is on, and both models see every
-    floor's mean and standard deviation under the belief."""
+    """The push model sees which floor the puck is on, and every floor's mean and
+    standard deviation under the belief."""
     model = FrictionModel(num_floors=8)
     world = model.world
     prior = replace(DEFAULT_FRICTION_PRIOR, num_surfaces=8)
     belief = make_prior_belief(prior, 20, np.random.default_rng(0))
     puck = np.array([2.6, 2.2])  # in the slot, on the second blue floor
     x = get_push_features(puck, (3.9, 2.2), world, belief)
-    value_x = get_value_features(puck, (3.9, 2.2), 5, belief)
-    assert get_feature_dims(world) == (len(x), len(value_x)) == (28, 21)
+    assert get_feature_dims(world) == (len(x), 6) == (28, 6)
     assert np.array_equal(x[4:12], np.eye(8)[1])
     assert np.allclose(x[12:], np.concatenate([belief.mean, belief.std]))
+    model.close()
+
+
+def test_value_features_follow_the_route_to_the_goal():
+    """The value model sees the distance and heading to the goal, pushes left, and
+    the belief's friction along the straight route there, weighting each floor by
+    its share of the route outside walls."""
+    model = FrictionModel(num_floors=8)
+    world = model.world
+    prior = replace(DEFAULT_FRICTION_PRIOR, num_surfaces=8)
+    belief = make_prior_belief(prior, 20, np.random.default_rng(0))
+    puck = np.array([2.6, 2.2])
+    # Up from the slot, through the wall, to the blue corridor: all blue 2.
+    x = get_value_features(puck, (2.6, 3.4), 5, world, belief)
+    expected = [1.2, 0.0, 1.0, 5, belief.mean[1], belief.std[1]]
+    assert np.allclose(x, expected)
+    # Along the slot to tan 2, over blue 2, blue 3, and tan 2.
+    shares = get_route_shares(world, puck, np.array([3.9, 2.2]))
+    assert np.isclose(shares.sum(), 1.0)
+    assert set(np.nonzero(shares)[0]) == {1, 2, 4}
+    x = get_value_features(puck, (3.9, 2.2), 5, world, belief)
+    assert np.allclose(x[4:], [shares @ belief.mean, shares @ belief.std])
     model.close()
 
 
@@ -445,7 +467,8 @@ def test_a_trained_value_model_corrects_the_leaves(setup):
     state = planner.pomdp.initial_state(
         np.array([1.2, 2.2]), np.zeros(2), (0.1,) * 3, task.goal
     )
-    x = get_value_features(state.puck, task.goal, planner.pomdp.max_pushes, belief)
+    pomdp = planner.pomdp
+    x = get_value_features(state.puck, task.goal, pomdp.max_pushes, pomdp.world, belief)
     rows = Dataset(x[None], np.array([[-4.0]]), np.zeros(1), np.zeros(1, np.int64))
     value_model = KernelRegressor((1.0,) * len(x), prior_weight=1.0).fit(rows)
     params = replace(PARAMS, value_model=value_model)
@@ -465,7 +488,8 @@ def test_searches_aspire_where_the_value_model_has_data(setup):
     domain, planner, task = setup
     belief = domain.initial_belief
     start = task.initial_state
-    x = get_value_features(start.puck, task.goal, planner.pomdp.max_pushes, belief)
+    pomdp = planner.pomdp
+    x = get_value_features(start.puck, task.goal, pomdp.max_pushes, pomdp.world, belief)
     rows = Dataset(x[None], np.array([[-4.0]]), np.zeros(1), np.zeros(1, np.int64))
     # One row at the start state gives half of the weight there.
     value_model = KernelRegressor((1.0,) * len(x), prior_weight=1.0).fit(rows)
