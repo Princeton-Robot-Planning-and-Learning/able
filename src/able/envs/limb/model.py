@@ -6,12 +6,12 @@ applied for action_repeat simulator steps. The hidden parameters theta scale the
 person's active range of motion. While the robot moves the limb, the person relaxes:
 their joints hold up the limb, resist softly in a band just inside their limits, and
 put stiff walls past them (see person.py), so theta changes the physics only near
-the limits. The robot feels the band's resistance through its torque sensors, with
-noise. Moving the limb past the person's limit fails the task, and the person
-signals where it happened. As in kinder's
-environment, the task ends when the limb reaches the goal. A broken safety
-constraint, or the robot stopping (the STOP action) before the goal, fails the task.
-Either way the state stays fixed afterwards.
+the limits. The robot senses the band's resistance, with noise, and its hold torque
+cancels it, so the band changes the robot's torque but not the motion. Moving the
+limb past the person's limit fails the task, and the person signals where it
+happened. As in kinder's environment, the task ends when the limb reaches the goal.
+A broken safety constraint, or the robot stopping (the STOP action) before the goal,
+fails the task. Either way the state stays fixed afterwards.
 """
 
 import dataclasses
@@ -212,7 +212,7 @@ class LimbModel(
         )
         failure = ""
         for _ in range(self.action_repeat):
-            commanded = sim.get_commanded_torque(action)
+            commanded = sim.get_commanded_torque(action, person_limits)
             if exceeds_robot_torque_limits(sim, commanded):
                 failure = "robot torque limits"
                 break

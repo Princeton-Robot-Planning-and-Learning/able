@@ -5,8 +5,9 @@ around the shifted previous plan, scores them with rollouts, and commits the sta
 of the best one. The limb planner samples limits from the belief, moves a goal
 beyond them to just inside, and runs predictive sampling in its own copy of the
 simulator, with rollouts in a second copy. Its person has the believed limits and
-resists in the band inside them. Away from the person's limits the physics does not
-depend on them, so the controls MPC commits are replayed open loop. The planner
+resists in the band inside them, which the robot's hold torque cancels, as it does
+the true band in execution. Inside the person's limits the motion does not depend on
+them, so the controls MPC commits are replayed open loop. The planner
 replays them first to check that the plan reaches the goal and breaks no
 constraint.
 """
@@ -463,7 +464,7 @@ class _Checker:
     def step(self, sim: LimbSim, correction: NDArray[np.float64]) -> str:
         """Step once under the correction and return the broken constraint, if
         any."""
-        commanded = sim.get_commanded_torque(correction)
+        commanded = sim.get_commanded_torque(correction, self._person_limits)
         if exceeds_robot_torque_limits(sim, commanded):
             return "robot torque limits"
         torques = sim.advance(commanded, self._person_limits)

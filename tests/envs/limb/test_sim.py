@@ -130,3 +130,12 @@ def test_walls_push_back_and_load_the_person(sim):
         sim.advance_corrected(np.zeros(7), narrow)
     assert sim.capture().limb_positions[3] < positions[3]
     sim.restore(start)
+
+    # Inside the band, the robot's hold torque cancels the resistance.
+    banded = (positions - 1.0, positions + 1.0)
+    banded[1][3] = positions[3] + 0.05
+    for _ in range(50):
+        torques = sim.advance_corrected(np.zeros(7), banded)
+    assert torques.resistance[3] < -2.0
+    assert sim.capture().limb_positions[3] == pytest.approx(positions[3], abs=0.02)
+    sim.restore(start)
