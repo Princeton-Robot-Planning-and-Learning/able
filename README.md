@@ -105,7 +105,7 @@ The robots that learn guide POMCPOW with a flow-matching model of good pushes, u
 ./experiments/run_comparison.sh env=friction
 ```
 
-The friction environment evaluates 8 tasks per cycle and dreams 4 times per sleep, rolling out 1 training task per dream; these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
+The friction environment evaluates 8 tasks per cycle and dreams 4 times per sleep, rolling out 8 sampled training tasks per dream (32 rollouts per sleep); these are `num_eval_tasks`, `budgets.sleep.max_iterations`, and `approach.num_training_tasks`.
 
 Without early stopping, every push runs a fixed number of POMCPOW simulations, so a better model shows up mostly as a higher success rate (#130). To compare approaches at several caps on the simulations per push, or at fixed budgets with `approach.early_stop=null`, run the comparison at several budgets:
 
