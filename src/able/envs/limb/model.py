@@ -5,11 +5,11 @@ is a robot torque correction (on top of the torque that holds the system still),
 applied for action_repeat simulator steps. The hidden parameters theta scale the
 person's active range of motion. While the robot moves the limb, the person relaxes:
 their joints hold up the limb and put stiff walls past their limits (see person.py),
-so theta changes the physics only past the limits. Moving the limb past the person's
-limit fails the task, and the person signals where it happened. As in kinder's
-environment, the task ends when the limb reaches the goal. A broken safety
-constraint, or the robot stopping (the STOP action) before the goal, fails the task.
-Either way the state stays fixed afterwards.
+so theta changes the physics only past the limits. The person signals where the limb
+comes within a margin of their limit, and moving it past the limit fails the task.
+As in kinder's environment, the task ends when the limb reaches the goal. A broken
+safety constraint, or the robot stopping (the STOP action) before the goal, fails
+the task. Either way the state stays fixed afterwards.
 """
 
 import dataclasses
@@ -47,9 +47,11 @@ class LimbState:
     has come within the goal tolerance. For each active motion, max_reach is the
     farthest the limb has gone toward the limit, as a scale of the normal range,
     and signalled is the joint angle magnitude where the person first signalled
-    that the limb passed their limit (None if they have not). A nonempty failure
-    names the broken constraint. The resting penetration is the limb's contact
-    with the person at the start of the task, which collision checks allow.
+    that the limb came within the model's signal margin of their limit (None if
+    they have not). violated says whether the limb passed a limit. A nonempty
+    failure names the broken constraint. The resting penetration is the limb's
+    contact with the person at the start of the task, which collision checks
+    allow.
     """
 
     coupled: CoupledState
@@ -59,16 +61,12 @@ class LimbState:
     resting_penetration: tuple[tuple[int, float], ...]
     reached: bool = False
     failure: str = ""
+    violated: bool = False
 
     @property
     def limb_positions(self) -> NDArray[np.float64]:
         """The limb's joint positions."""
         return np.array(self.coupled.limb_positions)
-
-    @property
-    def violated(self) -> bool:
-        """Whether the limb has passed the person's limit."""
-        return any(s is not None for s in self.signalled)
 
 
 # The goal is the limb's goal joint positions, which the initial state also holds.
@@ -92,7 +90,8 @@ class LimbModel(
     within the environment's goal tolerance at the end of an action. Each step
     costs nothing, and the terminal cost is the distance from the limb to the goal.
     A task succeeds if the limb reached the goal, no constraint broke, and the limb
-    never passed the person's limit.
+    never passed the person's limit. The person signals once the limb comes within
+    signal_margin (rad) of their limit; with no margin, once it passes the limit.
     """
 
     def __init__(
@@ -103,8 +102,10 @@ class LimbModel(
         action_repeat: int = 12,
         max_robot_velocity: float = 2.0,
         query_model: QueryModel = QueryModel(),
+        signal_margin: float = 0.0,
     ) -> None:
         self.variant = variant
+        self.signal_margin = signal_margin
         self.settings = settings
         self.action_repeat = action_repeat
         self.max_robot_velocity = max_robot_velocity
@@ -180,6 +181,7 @@ class LimbModel(
         magnitudes = self.variant.default_magnitudes
         max_reach = np.array(state.max_reach)
         signalled = list(state.signalled)
+        violated = state.violated
         failure = ""
         for _ in range(self.action_repeat):
             commanded = sim.get_commanded_torque(action)
@@ -197,12 +199,11 @@ class LimbModel(
                 failure = "collision"
             reach = self.get_reach(np.array(sim.env.limb.get_joint_positions()))
             max_reach = np.maximum(max_reach, reach)
-            for motion, scale in enumerate(reach):
-                if (
-                    signalled[motion] is None
-                    and scale * magnitudes[motion] > limits[motion]
-                ):
-                    signalled[motion] = float(scale * magnitudes[motion])
+            angles = reach * magnitudes
+            for motion in np.flatnonzero(angles > limits - self.signal_margin):
+                if signalled[motion] is None:
+                    signalled[motion] = float(angles[motion])
+            violated = violated or bool(np.any(angles > limits))
             if failure:
                 break
         coupled = sim.capture()
@@ -214,6 +215,7 @@ class LimbModel(
             signalled=tuple(signalled),
             reached=not failure and error < sim.goal_tolerance,
             failure=failure,
+            violated=violated,
         )
         self._sim_state = next_state
         return next_state

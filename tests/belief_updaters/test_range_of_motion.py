@@ -61,7 +61,8 @@ def test_update_from_queries():
 
 
 def test_update_from_transition():
-    """Tests that reach raises the floor and a signal measures the limit once."""
+    """Tests that reach raises the floor and a signal measures the limit once, a
+    signal margin past the signalled angle."""
     updater = RangeOfMotionBeliefUpdater(VARIANT, QueryModel(short_fall_stddev=1e-6))
     belief = _prior()
     start = _state([0.2, 0.0, 0.0])
@@ -81,6 +82,15 @@ def test_update_from_transition():
     # A signal that was already seen is not counted again.
     later = updater.update_from_transition(crossed, signalled, np.zeros(7), signalled)
     assert later == crossed
+
+    # A person who signals a margin before their limit measures it a margin on.
+    margin = 0.1
+    early = RangeOfMotionBeliefUpdater(
+        VARIANT, QueryModel(short_fall_stddev=1e-6), signal_margin=margin
+    )
+    warned = early.update_from_transition(belief, start, np.zeros(7), signalled)
+    expected = 0.81 + margin / MAGNITUDES[0]
+    assert warned.mean[0] == pytest.approx(expected, abs=1e-3)
 
 
 def test_random_motion_never_excludes_the_person():

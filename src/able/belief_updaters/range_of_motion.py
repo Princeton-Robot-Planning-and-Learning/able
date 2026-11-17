@@ -30,16 +30,20 @@ class RangeOfMotionBeliefUpdater(
     the limit lies beyond it, which raises the floor. A push that never settled or
     hit the speed cap shows nothing.
 
-    Motion: when the person signals that the limb passed their limit, the signalled
-    angle measures the limit. Until then, the farthest the limb has gone raises the
-    floor.
+    Motion: when the person signals that the limb came within signal_margin (rad)
+    of their limit, the signalled angle plus the margin measures the limit. Until
+    then, the farthest the limb has gone raises the floor.
     """
 
     def __init__(
-        self, variant: LimbVariant, query_model: QueryModel = QueryModel()
+        self,
+        variant: LimbVariant,
+        query_model: QueryModel = QueryModel(),
+        signal_margin: float = 0.0,
     ) -> None:
         self._magnitudes = variant.default_magnitudes
         self._query_model = query_model
+        self._signal_margin = signal_margin
 
     def update_from_transition(
         self,
@@ -57,8 +61,9 @@ class RangeOfMotionBeliefUpdater(
                 if reach > belief.lower[motion] + FLOOR_STEP:
                     belief = belief.with_floor(motion, reach)
             elif state.signalled[motion] is None:
+                limit = signalled + self._signal_margin
                 belief = belief.with_measurement(
-                    motion, signalled / magnitude, noise / magnitude
+                    motion, limit / magnitude, noise / magnitude
                 )
         return belief
 

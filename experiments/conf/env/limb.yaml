@@ -21,6 +21,10 @@ env:
     prior:
       _target_: able.envs.limb.human.RangeOfMotionPrior
       scales: null
+    # The person signals once the limb comes this close to their limit (rad), as
+    # far short of it as they stop in a query on average, so the robot measures
+    # the limit without passing it. Passing the limit still fails the task.
+    signal_margin: 0.2
   # Instantiated with the domain's environment model, only when recording videos.
   renderer:
     _target_: able.rendering.limb.LimbRenderer

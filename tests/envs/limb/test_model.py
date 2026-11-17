@@ -103,6 +103,26 @@ def test_passing_the_limit(model, start):
         assert (angle is not None) == (reach[motion] > 0.05)
 
 
+def test_signalling_near_the_limit(start):
+    """Tests that a person with a signal margin signals once the limb comes within
+    it of their limit, which does not fail the task."""
+    model = LimbModel(get_variant("bed-left-arm"), horizon=5, signal_margin=0.2)
+    try:
+        task = _make_task(model, start, 0.5)
+        state = task.initial_state
+        reach = np.array(state.max_reach)
+        # Put each limit just beyond the limb's current reach, within the margin.
+        magnitudes = model.variant.default_magnitudes
+        near = np.where(reach > 0.05, reach + 0.05 / magnitudes, 1.0)
+        rng = np.random.default_rng(0)
+        next_state = model.sample_next_state(state, np.zeros(7), near, rng)
+        assert not next_state.violated
+        for motion, angle in enumerate(next_state.signalled):
+            assert (angle is not None) == (reach[motion] > 0.05)
+    finally:
+        model.close()
+
+
 def test_broken_constraints_freeze_the_state(model, start):
     """Tests that a torque past the robot's limits fails and stops the motion."""
     rng = np.random.default_rng(0)
