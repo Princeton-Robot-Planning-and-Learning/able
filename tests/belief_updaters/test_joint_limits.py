@@ -74,14 +74,33 @@ def test_belief_always_contains_true_limits():
             belief = new_belief
 
 
-def test_queries_have_no_effect():
-    """Tests that responses to joint queries leave the belief unchanged."""
+def test_queries_narrow_the_limits():
+    """Tests that a yes raises the upper limit's floor and a no lowers its
+    ceiling or raises the lower limit's floor, keeping the truth inside."""
     prior = IntervalBelief(JOINT_LIMIT_PRIOR)
     data = [
         QueryResponse(JointQuery(joint=0, angle=1.0), True),
         QueryResponse(JointQuery(joint=1, angle=-3.0), False),
+        QueryResponse(JointQuery(joint=1, angle=2.0), False),
     ]
-    assert JointLimitBeliefUpdater().update_from_queries(prior, data) is prior
+    belief = JointLimitBeliefUpdater().update_from_queries(prior, data)
+    assert isinstance(belief, IntervalBelief)
+    np.testing.assert_allclose(
+        belief.intervals,
+        [[-np.pi, -0.5], [1.0, np.pi], [-3.0, -0.5], [0.5, 2.0]],
+    )
+    true_limits = np.array([-1.0, 1.5, -2.0, 1.0])
+    model = TwoLinkArmModel()
+    rng = np.random.default_rng(0)
+    belief = prior
+    for joint, angle in [(0, -2.0), (0, 2.5), (1, 0.8), (1, -1.5)]:
+        query = JointQuery(joint, angle)
+        answer = model.sample_response(query, true_limits, rng)
+        belief = JointLimitBeliefUpdater().update_from_queries(
+            belief, [QueryResponse(query, answer)]
+        )
+        assert isinstance(belief, IntervalBelief)
+        assert belief.contains(true_limits)
 
 
 def test_requires_interval_belief():

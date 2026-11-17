@@ -24,8 +24,9 @@ class JointLimitBeliefUpdater(
     plus action) with the observed one. Every observed angle lies within the
     limits, so it bounds the lower limit from above and the upper limit from
     below. If the observed angle differs from the commanded one, the motion was
-    clipped and the limit on that side equals the observed angle. Responses to
-    queries leave the belief unchanged.
+    clipped and the limit on that side equals the observed angle. A query answered
+    yes bounds both limits of its joint by the angle; one answered no puts the
+    limit on the angle's side (the joint's range always contains 0) past it.
     """
 
     def __init__(self, tolerance: float = 1e-6) -> None:
@@ -56,4 +57,18 @@ class JointLimitBeliefUpdater(
         belief: Belief[NDArray[np.float64]],
         data: Sequence[QueryResponse[JointQuery, bool]],
     ) -> Belief[NDArray[np.float64]]:
-        return belief
+        assert isinstance(belief, IntervalBelief), "Need an IntervalBelief"
+        intervals = belief.intervals.copy()
+        for datum in data:
+            lo_idx, hi_idx = 2 * datum.query.joint, 2 * datum.query.joint + 1
+            angle = datum.query.angle
+            if datum.response:
+                intervals[lo_idx, 1] = min(intervals[lo_idx, 1], angle)
+                intervals[hi_idx, 0] = max(intervals[hi_idx, 0], angle)
+            elif angle < 0.0:
+                intervals[lo_idx, 0] = max(intervals[lo_idx, 0], angle)
+            else:
+                intervals[hi_idx, 1] = min(intervals[hi_idx, 1], angle)
+            for idx in (lo_idx, hi_idx):
+                intervals[idx, 0] = min(intervals[idx, 0], intervals[idx, 1])
+        return IntervalBelief(intervals)

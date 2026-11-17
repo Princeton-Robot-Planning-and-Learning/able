@@ -48,6 +48,9 @@ def _main(cfg: DictConfig) -> None:
     make_robot = hydra.utils.instantiate(cfg.approach, _partial_=True)
     robot = make_robot(domain=domain, recorder=recorder)
     assert isinstance(robot, Robot)
+    robot = hydra.utils.instantiate(cfg.query, _partial_=True)(
+        robot=robot, domain=domain
+    )
     budgets = hydra.utils.instantiate(cfg.budgets)
     assert isinstance(budgets, CycleBudgets)
 

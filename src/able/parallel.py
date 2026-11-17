@@ -119,6 +119,10 @@ def build_context(config: dict[str, Any]) -> WorkerContext:
     domain = hydra.utils.instantiate(cfg.env.domain, seed=cfg.seed)
     make_robot = hydra.utils.instantiate(cfg.approach, _partial_=True)
     robot = make_robot(domain=domain, recorder=None)
+    if "query" in cfg:
+        robot = hydra.utils.instantiate(cfg.query, _partial_=True)(
+            robot=robot, domain=domain
+        )
     return WorkerContext(domain=domain, planner=robot.planner, learner=robot.learner)
 
 

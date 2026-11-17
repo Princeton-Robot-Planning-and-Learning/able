@@ -84,6 +84,19 @@ class Robot(
         """The robot's learner, for worker processes that train as the robot does."""
         return self._learner
 
+    @property
+    def belief_updater(
+        self,
+    ) -> BeliefUpdater[StateType, ActType, HiddenParamsType, QueryType, ResponseType]:
+        """The robot's belief updater."""
+        return self._belief_updater
+
+    def set_info_gatherer(
+        self, gatherer: InformationGatherer[HiddenParamsType, QueryType, ResponseType]
+    ) -> None:
+        """Replace the information gatherer."""
+        self._info_gatherer = gatherer
+
     def sleep(
         self, budget: Budget, rng: np.random.Generator, pool: WorkerPool | None = None
     ) -> None:

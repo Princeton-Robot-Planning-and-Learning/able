@@ -67,6 +67,10 @@ class BeliefSource(ABC, Generic[HiddenParamsType, PlannerParamsType]):
         assert len(draws) == 1, "Need exactly one draw"
         return draws[0]
 
+    def set_info_gatherer(self, gatherer: InformationGatherer[Any, Any, Any]) -> None:
+        """Dream with this gatherer. Sources that do not dream ignore it."""
+        del gatherer  # unused because this source does not dream
+
 
 class CurrentBeliefSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     """Trains under the robot's current belief, never anticipating belief
@@ -145,6 +149,9 @@ class ImaginedNextBeliefSource(BeliefSource[HiddenParamsType, PlannerParamsType]
         self._recorder: CycleRecorder[Any, Any, HiddenParamsType] = (
             NullRecorder() if recorder is None else recorder
         )
+
+    def set_info_gatherer(self, gatherer: InformationGatherer[Any, Any, Any]) -> None:
+        self._info_gatherer = gatherer
 
     def get_training_belief(
         self,
@@ -245,6 +252,9 @@ class BeliefCoverageSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         self._get_features = get_features
         self._num_candidates = num_candidates
         self._chosen_features: list[NDArray[np.float64]] = []
+
+    def set_info_gatherer(self, gatherer: InformationGatherer[Any, Any, Any]) -> None:
+        self._candidate_source.set_info_gatherer(gatherer)
 
     def get_training_belief(
         self,

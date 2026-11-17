@@ -35,6 +35,14 @@ budgets:
     max_wall_time: null
     max_iterations: null
 
+# How the robot chooses queries, in reality and in dreams: default (as the approach
+# builds it) or random, from a finite set or an infinite range under the current
+# belief (distribution: finite or infinite).
+query:
+  _target_: able.query_methods.with_query_method
+  method: default
+  distribution: finite
+
 eval_results_file: ${hydra:runtime.output_dir}/eval_results.csv
 cycle_results_file: ${hydra:runtime.output_dir}/cycle_results.csv
 config_file: ${hydra:runtime.output_dir}/config.yaml
