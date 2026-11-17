@@ -67,3 +67,12 @@ def test_prior():
     assert draws.shape == (300, 3)
     assert np.all((prior.low <= draws) & (draws <= prior.high))
     assert abs(draws.mean() - prior.mean) < 0.03
+    # Per-motion scales multiply each motion's mean, spread, and range.
+    scaled = RangeOfMotionPrior(scales=(0.5, 1.0, 0.75))
+    mean, stddev, low, high = scaled.get_parameters(3).T
+    assert np.allclose(mean, [0.45, 0.9, 0.675])
+    assert np.allclose(stddev / mean, prior.stddev / prior.mean)
+    assert np.allclose(low, [0.35, 0.7, 0.525]) and np.allclose(high, [0.6, 1.2, 0.9])
+    draws = np.stack([scaled.sample(3, np.random.default_rng(s)) for s in range(300)])
+    assert np.all((low <= draws) & (draws <= high))
+    assert np.allclose(draws.mean(axis=0), mean, atol=0.03)
