@@ -1,7 +1,6 @@
 """Tests for learners/belief_features.py."""
 
 import numpy as np
-import pytest
 
 from able.beliefs.interval import IntervalBelief
 from able.beliefs.particles import ParticleBelief
@@ -16,8 +15,8 @@ def _particles(center: float, spread: float) -> ParticleBelief:
 
 
 def test_moments_of_each_belief():
-    """Particle beliefs give the particles' moments, and range-of-motion beliefs
-    give the truncated Gaussians' moments."""
+    """Particle beliefs give the particles' moments, range-of-motion beliefs the
+    truncated Gaussians', and interval beliefs the uniform distributions'."""
     belief = _particles(1.0, 0.5)
     mean, std = get_moments(belief)
     assert np.allclose(mean, belief.particles.mean(axis=0))
@@ -26,8 +25,9 @@ def test_moments_of_each_belief():
     mean, std = get_moments(rom)
     assert mean.shape == std.shape == (3,)
     assert np.allclose(mean, 1.0) and np.all(std < 0.2)
-    with pytest.raises(TypeError):
-        get_moments(IntervalBelief([[0.0, 1.0], [0.0, 1.0]]))
+    mean, std = get_moments(IntervalBelief([[0.0, 1.0], [-2.0, 2.0]]))
+    assert np.allclose(mean, [0.5, 0.0])
+    assert np.allclose(std, [1.0, 4.0] / np.sqrt(12.0))
 
 
 def test_moment_features_are_in_prior_units():
