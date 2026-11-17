@@ -1,8 +1,7 @@
 _target_: able.approaches.make_human_reach_scratch_robot
 # PDDLStream's time limit per plan (s), the belief particles it plans under, and
-# the chance a usable pose may be out of reach. At 0.02, few poses are usable
-# under the prior, so early plans often time out, and learning shows as rising
-# success; at 0.1 (#167) planning was easy from the first cycle (#180).
+# the chance a usable pose may be out of reach. At 0.02, nearly every particle
+# reaches each delivered item, so deliveries narrow the belief slowly (#163).
 max_time: 600.0
 num_particles: 256
 delta: 0.02
