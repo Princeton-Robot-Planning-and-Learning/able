@@ -46,7 +46,7 @@ from able.learners.rollout_model_learner import RolloutModelLearner
 from able.models.base import ConditionalModel
 from able.models.exact_match_cache import ExactMatchCache
 from able.models.kernel_regression import KernelRegressor
-from able.planners.mpc import LimbMPCPlanner, MPCParams
+from able.planners.mpc import LimbMPCPlanner, MPCParams, SeedConfig
 from able.planners.pddlstream import PDDLStreamParams, ReachPDDLStreamPlanner
 from able.planners.pomcpow import (
     EarlyStopConfig,
@@ -347,13 +347,12 @@ def _make_limb_parts(
     num_particles: int,
     confidence: float,
     model: ConditionalModel | None = None,
-    seed_tolerance: float = 0.0,
+    seed: SeedConfig = SeedConfig(),
 ) -> tuple[LimbModel, LimbMPCPlanner, RangeOfMotionBeliefUpdater, PushToLimitGatherer]:
     """The limb robot's model of the environment, planner, belief updater, and
     gatherer. MPC scores num_rollouts candidates per step, constrains the limb to
     the range that `confidence` of num_particles belief samples allow, and is
-    seeded by the model, if given. A step the model proposes is taken if it costs
-    at most 1 + seed_tolerance times the best directed candidate."""
+    seeded by the model, if given, as the seed config says."""
     env_model = domain.env_model
     assert isinstance(env_model, LimbModel)
     default = MPCParams()
@@ -363,7 +362,7 @@ def _make_limb_parts(
         num_particles=num_particles,
         confidence=confidence,
         model=default.model if model is None else model,
-        seed=dataclasses.replace(default.seed, tolerance=seed_tolerance),
+        seed=seed,
     )
     belief_updater = RangeOfMotionBeliefUpdater(env_model.variant)
     return (
@@ -405,13 +404,22 @@ def make_limb_current_belief_robot(
     num_particles: int = 32,
     confidence: float = 0.5,
     seed_tolerance: float = 0.0,
+    num_proposals: int = 8,
+    seed_commit_steps: int = 1,
+    training_budget: Budget | None = None,
     recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
 ) -> LimbRobot:
     """A limb robot whose model, while it sleeps, learns plans for sampled tasks
-    under its current belief. It never anticipates belief updates."""
+    under its current belief. It never anticipates belief updates. Training plans
+    get training_budget, if given, instead of planning_budget."""
     del recorder  # unused because the robot imagines nothing while it sleeps
     _, planner, belief_updater, gatherer = _make_limb_parts(
-        domain, num_rollouts, num_particles, confidence, model, seed_tolerance
+        domain,
+        num_rollouts,
+        num_particles,
+        confidence,
+        model,
+        SeedConfig(num_proposals, seed_tolerance, seed_commit_steps),
     )
     return Robot(
         planner=planner,
@@ -419,7 +427,7 @@ def make_limb_current_belief_robot(
             planner,
             domain.task_distribution,
             CurrentBeliefSource(),
-            planning_budget,
+            planning_budget if training_budget is None else training_budget,
             refit="per_sleep",
             num_training_tasks=num_training_tasks,
         ),
@@ -438,13 +446,22 @@ def make_limb_prior_only_robot(
     num_particles: int = 32,
     confidence: float = 0.5,
     seed_tolerance: float = 0.0,
+    num_proposals: int = 8,
+    seed_commit_steps: int = 1,
+    training_budget: Budget | None = None,
     recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
 ) -> LimbRobot:
     """A limb robot whose model learns plans for sampled tasks under the prior in
-    its first sleep, and never learns again."""
+    its first sleep, and never learns again. Training plans get training_budget,
+    if given, instead of planning_budget."""
     del recorder  # unused because the robot imagines nothing while it sleeps
     _, planner, belief_updater, gatherer = _make_limb_parts(
-        domain, num_rollouts, num_particles, confidence, model, seed_tolerance
+        domain,
+        num_rollouts,
+        num_particles,
+        confidence,
+        model,
+        SeedConfig(num_proposals, seed_tolerance, seed_commit_steps),
     )
     return Robot(
         planner=planner,
@@ -452,7 +469,7 @@ def make_limb_prior_only_robot(
             planner,
             domain.task_distribution,
             PriorSource(domain.initial_belief),
-            planning_budget,
+            planning_budget if training_budget is None else training_budget,
             refit="per_sleep",
             max_sleeps=1,
             num_training_tasks=num_training_tasks,
@@ -474,16 +491,25 @@ def make_limb_dreaming_robot(
     num_particles: int = 32,
     confidence: float = 0.5,
     seed_tolerance: float = 0.0,
+    num_proposals: int = 8,
+    seed_commit_steps: int = 1,
+    training_budget: Budget | None = None,
     recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
 ) -> LimbRobot:
     """A limb robot that dreams while it sleeps: its model learns plans for sampled
     tasks under the beliefs it imagines holding at evaluation.
 
     The budgets should match the cycle budgets for information gathering, task
-    execution, and planning.
+    execution, and planning. Training plans get training_budget, if given,
+    instead of planning_budget.
     """
     env_model, planner, belief_updater, gatherer = _make_limb_parts(
-        domain, num_rollouts, num_particles, confidence, model, seed_tolerance
+        domain,
+        num_rollouts,
+        num_particles,
+        confidence,
+        model,
+        SeedConfig(num_proposals, seed_tolerance, seed_commit_steps),
     )
     belief_source: ImaginedNextBeliefSource = ImaginedNextBeliefSource(
         env_model,
@@ -502,7 +528,7 @@ def make_limb_dreaming_robot(
             planner,
             domain.task_distribution,
             belief_source,
-            planning_budget,
+            planning_budget if training_budget is None else training_budget,
             refit="per_sleep",
             num_training_tasks=num_training_tasks,
         ),
@@ -524,14 +550,23 @@ def make_limb_belief_coverage_robot(
     num_particles: int = 32,
     confidence: float = 0.5,
     seed_tolerance: float = 0.0,
+    num_proposals: int = 8,
+    seed_commit_steps: int = 1,
+    training_budget: Budget | None = None,
     recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
 ) -> LimbRobot:
     """A limb robot whose model learns, while it sleeps, under dreamed beliefs
     unlike those it has already trained under: each training belief is the
     farthest of num_candidates dreams. The model is refit once per sleep, as for
-    dreaming."""
+    dreaming. Training plans get training_budget, if given, instead of
+    planning_budget."""
     env_model, planner, belief_updater, gatherer = _make_limb_parts(
-        domain, num_rollouts, num_particles, confidence, model, seed_tolerance
+        domain,
+        num_rollouts,
+        num_particles,
+        confidence,
+        model,
+        SeedConfig(num_proposals, seed_tolerance, seed_commit_steps),
     )
     dreamer = _make_dreamer(
         domain,
@@ -550,7 +585,7 @@ def make_limb_belief_coverage_robot(
             planner,
             domain.task_distribution,
             _make_coverage_source(dreamer, domain.initial_belief, num_candidates),
-            planning_budget,
+            planning_budget if training_budget is None else training_budget,
             refit="per_sleep",
             num_training_tasks=num_training_tasks,
         ),

@@ -71,11 +71,13 @@ class SeedConfig:
 
     Up to num_rollouts proposals (the first is the seed) are scored before the full
     batch. The first one that reaches the goal, or costs at most (1 + tolerance)
-    times the best of the problem's extra candidates, is committed.
+    times the best of the problem's extra candidates, is committed: whole if it
+    reaches the goal, and otherwise its first commit_steps steps.
     """
 
     num_rollouts: int = 8
     tolerance: float = 0.0
+    commit_steps: int = 1
 
 
 # Proposes up to num per-step control sequences, each (horizon, dim), for a state
@@ -162,6 +164,7 @@ class PredictiveSampling(Generic[StateType]):
             np.linspace(0, config.horizon - 1, config.num_control_points)
         ).astype(int)
         self._num_commit = int(np.clip(config.commit_steps, 1, config.horizon))
+        self._num_shift = self._num_commit
         self._nominal = np.zeros((config.num_control_points, len(lower)))
         self._seeder = seeder
         self._seed_config = seed_config
@@ -179,7 +182,7 @@ class PredictiveSampling(Generic[StateType]):
         return np.asarray(np.linalg.lstsq(self._basis, controls, rcond=None)[0])
 
     def step(self) -> NDArray[np.float64]:
-        """The controls to apply next, with shape (commit_steps, dim).
+        """The controls to apply next, with shape (steps committed, dim).
 
         Raises NoFeasibleControls if every candidate breaks a constraint.
         """
@@ -188,10 +191,11 @@ class PredictiveSampling(Generic[StateType]):
         proposals = self._get_proposals(state)
         if proposals and self._step_index == 0:
             self._nominal = self._clip(self.project(proposals[0]))
+        scale = self._get_noise_scale(error)
+        nominal = self._shift(scale)
         # Each entry: control points, per-step controls, and (rejected, cost).
         scored: list[tuple[Any, NDArray[np.float64], tuple[bool, float]]] = []
         if proposals:
-            scale = self._get_noise_scale(error)
             for extra in self._problem.get_extra_candidates(state, scale, self._rng):
                 points = self._clip(extra)
                 controls = self.expand(points)
@@ -202,18 +206,22 @@ class PredictiveSampling(Generic[StateType]):
                 result = self._rollout(state, controls)
                 scored.append((self.project(controls), controls, result))
                 rejected, cost = result
-                if not rejected and (self._problem.is_near_goal() or cost <= threshold):
+                near_goal = self._problem.is_near_goal()
+                if not rejected and (near_goal or cost <= threshold):
                     self.num_seeded_steps += 1
-                    return self._commit(scored[-1][0], controls)
+                    num = len(controls) if near_goal else self._seed_config.commit_steps
+                    return self._commit(scored[-1][0], controls, num)
         self.num_full_steps += 1
         num_left = self._config.num_rollouts - len(scored)
-        for points in self._sample_candidates(state, error, num_left, not proposals):
+        for points in self._sample_candidates(
+            state, nominal, scale, num_left, not proposals
+        ):
             controls = self.expand(points)
             scored.append((points, controls, self._rollout(state, controls)))
         points, controls, (rejected, _) = min(scored, key=lambda entry: entry[2])
         if rejected:
             raise NoFeasibleControls("Every MPC candidate breaks a constraint")
-        return self._commit(points, controls)
+        return self._commit(points, controls, self._num_commit)
 
     def _get_proposals(self, state: StateType) -> list[NDArray[np.float64]]:
         if self._seeder is None or self._seed_config.num_rollouts < 1:
@@ -230,11 +238,12 @@ class PredictiveSampling(Generic[StateType]):
         return self._problem.rollout(state, controls)
 
     def _commit(
-        self, points: NDArray[np.float64], controls: NDArray[np.float64]
+        self, points: NDArray[np.float64], controls: NDArray[np.float64], num: int
     ) -> NDArray[np.float64]:
         self._nominal = self._clip(points)
-        self._step_index += self._num_commit
-        return controls[: self._num_commit]
+        self._num_shift = int(np.clip(num, 1, self._config.horizon))
+        self._step_index += self._num_shift
+        return controls[: self._num_shift]
 
     def _get_noise_scale(self, error: float) -> float:
         config = self._config
@@ -244,17 +253,23 @@ class PredictiveSampling(Generic[StateType]):
     def _clip(self, points: NDArray[np.float64]) -> NDArray[np.float64]:
         return np.clip(points, self._lower, self._upper)
 
-    def _sample_candidates(
-        self, state: StateType, error: float, num_rollouts: int, with_extra: bool
-    ) -> list[NDArray[np.float64]]:
-        scale = self._get_noise_scale(error)
-        # Shift the previous plan by the committed steps, extending its last control
-        # with a noisy ramp.
+    def _shift(self, scale: float) -> NDArray[np.float64]:
+        """The previous plan's control points shifted by the steps it committed,
+        its last control extended with a noisy ramp."""
         expanded = self.expand(self._nominal)
         tail = self._rng.normal(expanded[-1], scale)
-        ramp = np.linspace(expanded[-1], tail, self._num_commit + 1)[1:]
-        shifted = np.vstack([expanded[self._num_commit :], ramp])
-        nominal = shifted[self._control_indices]
+        ramp = np.linspace(expanded[-1], tail, self._num_shift + 1)[1:]
+        shifted = np.vstack([expanded[self._num_shift :], ramp])
+        return np.asarray(shifted[self._control_indices])
+
+    def _sample_candidates(
+        self,
+        state: StateType,
+        nominal: NDArray[np.float64],
+        scale: float,
+        num_rollouts: int,
+        with_extra: bool,
+    ) -> list[NDArray[np.float64]]:
         candidates = [self._clip(nominal), np.zeros_like(nominal)]
         if with_extra:
             extra = self._problem.get_extra_candidates(state, scale, self._rng)
@@ -770,6 +785,8 @@ class LimbMPCPlanner(
                     states.append(state)
                     controls.append(control)
                     state = world.capture()
+                    if problem.get_error() < threshold:
+                        break
                 error = problem.get_error()
                 if best_error - error > config.divergence_tolerance:
                     num_stale = 0

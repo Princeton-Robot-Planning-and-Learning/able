@@ -148,8 +148,9 @@ def _run(problem: _PointMass, mpc: PredictiveSampling, num_steps: int) -> list:
 
 
 def test_seeding():
-    """Tests that good proposals are committed with few rollouts, bad ones fall back
-    to the full batch, and no proposals change nothing."""
+    """Tests that good proposals are committed with few rollouts, for as many steps
+    as the seed config says, bad ones fall back to the full batch, and no proposals
+    change nothing."""
     config = PredictiveSamplingConfig(noise_scale=2.0, noise_reference_error=1.0)
     bounds = (np.full(2, -3.0), np.full(2, 3.0))
 
@@ -162,6 +163,20 @@ def test_seeding():
     _run(problem, mpc, 60)
     assert problem.get_error() < 0.1
     assert mpc.num_seeded_steps == 60 and mpc.num_rollouts == 60
+
+    # Taken proposals can be committed for several steps.
+    problem = _PointMass()
+    longer = PredictiveSampling(
+        config,
+        problem,
+        *bounds,
+        np.random.default_rng(0),
+        seeder,
+        SeedConfig(commit_steps=3),
+    )
+    committed = _run(problem, longer, 20)
+    assert all(len(controls) == 3 for controls in committed)
+    assert problem.get_error() < 0.1 and longer.num_rollouts == 20
 
     # The PD controls are the bar, so proposals that push away are never good enough.
     problem = _PDBar()
