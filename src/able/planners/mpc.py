@@ -6,8 +6,9 @@ of the best one. The limb planner samples limits from the belief, moves a goal
 beyond them to just inside, and runs predictive sampling in its own copy of the
 simulator, with rollouts in a second copy. Its person has the believed limits and
 resists in the band inside them. Away from the person's limits the physics does not
-depend on them, so the controls MPC commits are replayed open loop. The planner replays them first to check that the
-plan reaches the goal and breaks no constraint.
+depend on them, so the controls MPC commits are replayed open loop. The planner
+replays them first to check that the plan reaches the goal and breaks no
+constraint.
 """
 
 import dataclasses

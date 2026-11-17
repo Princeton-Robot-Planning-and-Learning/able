@@ -228,19 +228,15 @@ class LimbModel(
             positions = np.array(sim.env.limb.get_joint_positions())
             reach = self.get_reach(positions)
             max_reach = np.maximum(max_reach, reach)
-            resisting: NDArray[np.float64] | None = None
+            velocities = np.array(sim.env.limb.get_joint_velocities())
+            speeds = self.get_reach(velocities) * magnitudes
+            resisting = self.get_resisting_torque(positions, velocities, person_limits)
             for motion, scale in enumerate(reach):
                 angle = float(scale * magnitudes[motion])
                 if signalled[motion] is None and angle > limits[motion]:
                     signalled[motion] = angle
                 farthest = resistance[motion]
                 if farthest is None or angle > farthest[0]:
-                    if resisting is None:
-                        velocities = np.array(sim.env.limb.get_joint_velocities())
-                        resisting = self.get_resisting_torque(
-                            positions, velocities, person_limits
-                        )
-                        speeds = self.get_reach(velocities) * magnitudes
                     torque = float(resisting[motion] + bias[motion])
                     resistance[motion] = (angle, torque, float(speeds[motion]))
             if failure:
