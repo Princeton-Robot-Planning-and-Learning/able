@@ -362,10 +362,9 @@ Y_DIM = 4
 
 
 def get_feature_dims(world: PuckWorld) -> tuple[int, int]:
-    """The input sizes of get_push_features() and get_value_features() on the
-    world's map, which grow with its floors."""
-    num_floors = world.puck_map.num_surfaces
-    return 4 + 3 * num_floors, 5 + 2 * num_floors
+    """The input sizes of get_push_features(), which grows with the map's floors,
+    and get_value_features()."""
+    return 4 + 3 * world.puck_map.num_surfaces, 6
 
 
 @dataclass(frozen=True)
@@ -467,11 +466,39 @@ def get_value_features(
     puck: NDArray[np.float64] | tuple[float, float],
     goal: tuple[float, float],
     pushes_left: int,
+    world: PuckWorld,
     belief: ParticleBelief,
 ) -> NDArray[np.float64]:
-    """The value model's input for a state: puck, goal, pushes left, and the
-    belief's mean and standard deviation."""
-    return np.concatenate([puck, goal, [pushes_left], belief.mean, belief.std])
+    """The value model's input for a state: the distance and heading from the puck
+    to the goal, pushes left, and the belief's mean and standard deviation of the
+    friction along the straight route, weighting each floor by its share of the
+    route."""
+    start, end = np.asarray(puck, dtype=np.float64), np.asarray(goal, np.float64)
+    offset = end - start
+    distance = float(np.hypot(offset[0], offset[1]))
+    heading = offset / max(distance, 1e-9)
+    shares = get_route_shares(world, start, end)
+    return np.array(
+        [distance, *heading, pushes_left, shares @ belief.mean, shares @ belief.std]
+    )
+
+
+def get_route_shares(
+    world: PuckWorld,
+    start: NDArray[np.float64],
+    end: NDArray[np.float64],
+    num_points: int = 32,
+) -> NDArray[np.float64]:
+    """Each floor's share of the evenly spaced points from start to end that are
+    not in a wall."""
+    points = start + np.linspace(0.0, 1.0, num_points)[:, None] * (end - start)
+    puck_map = world.puck_map
+    cells = np.floor(points / puck_map.cell_size).astype(np.int64)
+    cols = np.clip(cells[:, 0], 0, puck_map.num_cols - 1)
+    rows = np.clip(cells[:, 1], 0, puck_map.num_rows - 1)
+    floors = world.surfaces[rows, cols]
+    counts = np.bincount(floors[floors >= 0], minlength=puck_map.num_surfaces)
+    return counts / max(int(counts.sum()), 1)
 
 
 def encode_push(push: Push) -> list[float]:
@@ -581,7 +608,9 @@ class LearnedLeafValue:
         if state.outcome != ONGOING:
             return value, 0.0
         pushes_left = pomdp.max_pushes - state.pushes
-        x = get_value_features(state.puck, state.goal, pushes_left, self._belief)
+        x = get_value_features(
+            state.puck, state.goal, pushes_left, pomdp.world, self._belief
+        )
         correction, weight = self._value_model.predict(x)
         return value + float(correction[0]), weight
 
@@ -896,7 +925,11 @@ class FrictionPOMCPOWPlanner(
                             state.puck_array, task.goal, pomdp.world, search.belief
                         ),
                         get_value_features(
-                            state.puck, task.goal, pushes_left, search.belief
+                            state.puck,
+                            task.goal,
+                            pushes_left,
+                            pomdp.world,
+                            search.belief,
                         ),
                     ]
                 )
