@@ -67,6 +67,26 @@ class BeliefSource(ABC, Generic[HiddenParamsType, PlannerParamsType]):
         assert len(draws) == 1, "Need exactly one draw"
         return draws[0]
 
+    def set_info_gatherer(self, gatherer: InformationGatherer[Any, Any, Any]) -> None:
+        """Dream with this gatherer from now on. Sources that do not dream ignore
+        it."""
+        del gatherer  # unused because this source does not dream
+
+    def with_info_gatherer(
+        self, gatherer: InformationGatherer[Any, Any, Any]
+    ) -> "BeliefSource[HiddenParamsType, PlannerParamsType]":
+        """A copy that dreams with the gatherer and records nothing, for simulating
+        a sleep without changing this source."""
+        del gatherer  # unused because this source does not dream
+        return self
+
+    def get_draw_state(self) -> Any:
+        """State that copies of this source in workers need before drawing."""
+        return None
+
+    def set_draw_state(self, state: Any) -> None:
+        """Adopt get_draw_state() from the source in the main process."""
+
 
 class CurrentBeliefSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     """Trains under the robot's current belief, never anticipating belief
@@ -164,6 +184,29 @@ class ImaginedNextBeliefSource(BeliefSource[HiddenParamsType, PlannerParamsType]
         )
         return imagined_belief
 
+    def set_info_gatherer(self, gatherer: InformationGatherer[Any, Any, Any]) -> None:
+        self._info_gatherer = gatherer
+
+    def with_info_gatherer(
+        self, gatherer: InformationGatherer[Any, Any, Any]
+    ) -> "ImaginedNextBeliefSource[HiddenParamsType, PlannerParamsType]":
+        return ImaginedNextBeliefSource(
+            self._env_model,
+            self._task_distribution,
+            self._planner,
+            self._belief_updater,
+            gatherer,
+            self._gathering_budget,
+            self._execution_budget,
+            self._planning_budget,
+        )
+
+    def get_draw_state(self) -> Any:
+        return self._info_gatherer.get_commitment()
+
+    def set_draw_state(self, state: Any) -> None:
+        self._info_gatherer.set_commitment(state)
+
     def _imagine_until_evaluation(
         self,
         label: str,
@@ -239,12 +282,13 @@ class BeliefCoverageSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         candidate_source: BeliefSource[HiddenParamsType, PlannerParamsType],
         get_features: Callable[[Belief[HiddenParamsType]], NDArray[np.float64]],
         num_candidates: int,
+        chosen_features: Sequence[NDArray[np.float64]] = (),
     ) -> None:
         assert num_candidates > 0, "Need at least one candidate"
         self._candidate_source = candidate_source
         self._get_features = get_features
         self._num_candidates = num_candidates
-        self._chosen_features: list[NDArray[np.float64]] = []
+        self._chosen_features: list[NDArray[np.float64]] = list(chosen_features)
 
     def get_training_belief(
         self,
@@ -292,3 +336,22 @@ class BeliefCoverageSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
             best = int(np.argmax(np.min(distances, axis=1)))
         self._chosen_features.append(features[best])
         return candidates[best]
+
+    def set_info_gatherer(self, gatherer: InformationGatherer[Any, Any, Any]) -> None:
+        self._candidate_source.set_info_gatherer(gatherer)
+
+    def with_info_gatherer(
+        self, gatherer: InformationGatherer[Any, Any, Any]
+    ) -> "BeliefCoverageSource[HiddenParamsType, PlannerParamsType]":
+        return BeliefCoverageSource(
+            self._candidate_source.with_info_gatherer(gatherer),
+            self._get_features,
+            self._num_candidates,
+            self._chosen_features,
+        )
+
+    def get_draw_state(self) -> Any:
+        return self._candidate_source.get_draw_state()
+
+    def set_draw_state(self, state: Any) -> None:
+        self._candidate_source.set_draw_state(state)

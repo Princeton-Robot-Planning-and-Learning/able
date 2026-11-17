@@ -38,6 +38,24 @@ class InformationGatherer(ABC, Generic[HiddenParamsType, QueryType, ResponseType
     ) -> list[QueryResponse[QueryType, ResponseType]]:
         """Ask queries within the budget and return each one with its response."""
 
+    def prepare(
+        self,
+        belief: Belief[HiddenParamsType],
+        params: Any,
+        learner: Any,
+        budget: Budget,
+        rng: np.random.Generator,
+    ) -> None:
+        """Called before each sleep with the robot's belief, planner parameters,
+        learner, and sleep budget. By default it does nothing."""
+
+    def get_commitment(self) -> Any:
+        """What prepare() decided, for copies of this gatherer in workers."""
+        return None
+
+    def set_commitment(self, commitment: Any) -> None:
+        """Adopt what another copy's prepare() decided."""
+
 
 class NullInformationGatherer(
     InformationGatherer[HiddenParamsType, QueryType, ResponseType]
@@ -85,6 +103,12 @@ class SequentialGatherer(
         query = self.choose(belief, rng)
         return [] if query is None else [query]
 
+    def choose_first(
+        self, belief: Belief[HiddenParamsType], rng: np.random.Generator
+    ) -> QueryType | None:
+        """The first query of a gathering. By default choose()'s."""
+        return self.choose(belief, rng)
+
     def gather(
         self,
         belief: Belief[HiddenParamsType],
@@ -99,7 +123,10 @@ class SequentialGatherer(
         data: list[QueryResponse[QueryType, ResponseType]] = []
         start_time = time.perf_counter()
         while not budget.is_exhausted(time.perf_counter() - start_time, len(data)):
-            query = self.choose(belief, rng)
+            if data:
+                query = self.choose(belief, rng)
+            else:
+                query = self.choose_first(belief, rng)
             if query is None:
                 break
             datum = QueryResponse(query, env.ask(query))
