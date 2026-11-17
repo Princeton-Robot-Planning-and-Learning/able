@@ -35,6 +35,16 @@ budgets:
     max_wall_time: null
     max_iterations: null
 
+# How the robot picks the first query of each gathering, in reality and in its
+# dreams: default (as the approach builds it), base (the environment's rule, or
+# bisection of the arm's joint limits), random, joint, sleep_blind, or oracle.
+# See able.query_methods.with_query_method.
+query:
+  _target_: able.query_methods.with_query_method
+  method: default
+  num_eval_dreams: 32
+  tolerance: 0.1
+
 eval_results_file: ${hydra:runtime.output_dir}/eval_results.csv
 cycle_results_file: ${hydra:runtime.output_dir}/cycle_results.csv
 config_file: ${hydra:runtime.output_dir}/config.yaml

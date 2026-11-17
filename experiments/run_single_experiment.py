@@ -50,6 +50,15 @@ def _main(cfg: DictConfig) -> None:
     assert isinstance(robot, Robot)
     budgets = hydra.utils.instantiate(cfg.budgets)
     assert isinstance(budgets, CycleBudgets)
+    # The query method may replace the robot's gatherer, in reality and in dreams.
+    robot = hydra.utils.instantiate(cfg.query, _partial_=True)(
+        robot=robot,
+        domain=domain,
+        gathering_budget=budgets.information_gathering,
+        execution_budget=budgets.execution,
+        planning_budget=budgets.planning,
+        eval_tasks=eval_tasks,
+    )
 
     # The same evaluation tasks are used in every cycle.
     writer = CycleResultsWriter(

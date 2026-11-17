@@ -84,11 +84,34 @@ class Robot(
         """The robot's learner, for worker processes that train as the robot does."""
         return self._learner
 
+    @property
+    def belief_updater(
+        self,
+    ) -> BeliefUpdater[StateType, ActType, HiddenParamsType, QueryType, ResponseType]:
+        """The robot's belief updater."""
+        return self._belief_updater
+
+    @property
+    def info_gatherer(
+        self,
+    ) -> InformationGatherer[HiddenParamsType, QueryType, ResponseType]:
+        """The robot's information gatherer."""
+        return self._info_gatherer
+
+    def set_info_gatherer(
+        self, gatherer: InformationGatherer[HiddenParamsType, QueryType, ResponseType]
+    ) -> None:
+        """Replace the information gatherer."""
+        self._info_gatherer = gatherer
+
     def sleep(
         self, budget: Budget, rng: np.random.Generator, pool: WorkerPool | None = None
     ) -> None:
-        """Run the learner to update the planner parameters, with the pool's workers
-        if given."""
+        """Let the gatherer prepare, then run the learner to update the planner
+        parameters, with the pool's workers if given."""
+        self._info_gatherer.prepare(
+            self._belief, self._planner_params, self._learner, budget, rng
+        )
         self._planner_params = self._learner.learn(
             self._belief, self._planner_params, budget, rng, pool
         )

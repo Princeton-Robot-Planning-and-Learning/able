@@ -1,5 +1,6 @@
 """A learner that trains a planner's model on plans for chosen beliefs."""
 
+import copy
 import time
 from typing import Any, Generic
 
@@ -74,11 +75,28 @@ class ModelLearner(
         self._max_sleeps = max_sleeps
         self._dataset = Dataset.empty()
         self._num_sleeps = 0
+        self._training_beliefs: list[Belief[HiddenParamsType]] = []
 
     @property
     def dataset(self) -> Dataset:
         """All of the training data so far."""
         return self._dataset
+
+    @property
+    def training_beliefs(self) -> list[Belief[HiddenParamsType]]:
+        """Every belief the learner has trained under, in order."""
+        return self._training_beliefs
+
+    def with_belief_source(
+        self, belief_source: BeliefSource[HiddenParamsType, PlannerParamsType]
+    ) -> "ModelLearner[HiddenParamsType, PlannerParamsType]":
+        """A copy with the same data that trains under the belief source, for
+        simulating a sleep without changing this learner."""
+        learner = copy.copy(self)
+        # pylint: disable=protected-access
+        learner._belief_source = belief_source
+        learner._training_beliefs = list(self._training_beliefs)
+        return learner
 
     @property
     def belief_source(self) -> BeliefSource[HiddenParamsType, PlannerParamsType]:
@@ -117,6 +135,7 @@ class ModelLearner(
             training_belief = self._belief_source.get_training_belief(
                 num_iterations, belief, params, rng
             )
+            self._training_beliefs.append(training_belief)
             examples = self.plan_training_tasks(training_belief, params, rng)
             self._dataset = Dataset.concatenate([self._dataset, examples])
             if self._refit == "per_iteration":
@@ -137,9 +156,10 @@ class ModelLearner(
         plans made in the pool's workers."""
         num_draws = self._belief_source.num_draws
         draw_rngs = rng.spawn(num_iterations * num_draws)
+        state = self._belief_source.get_draw_state()
         draws = pool.map(
             _draw_in_worker,
-            [(i + 1, belief, params, r) for i, r in enumerate(draw_rngs)],
+            [(i + 1, belief, params, r, state) for i, r in enumerate(draw_rngs)],
         )
         training_beliefs = [
             self._belief_source.choose(
@@ -148,6 +168,7 @@ class ModelLearner(
             )
             for iteration in range(num_iterations)
         ]
+        self._training_beliefs.extend(training_beliefs)
         plan_rngs = rng.spawn(num_iterations)
         examples = pool.map(
             _plan_training_tasks_in_worker,
@@ -196,10 +217,13 @@ def _draw_in_worker(
     belief: Belief[Any],
     params: Any,
     rng: np.random.Generator,
+    state: Any = None,
 ) -> Belief[Any]:
-    """A worker's draw from its own copy of the learner's belief source."""
+    """A worker's draw from its own copy of the learner's belief source, after
+    adopting the main source's draw state."""
     learner = context.learner
     assert isinstance(learner, ModelLearner), "The worker's learner trains a model"
+    learner.belief_source.set_draw_state(state)
     return learner.belief_source.draw(index, belief, params, rng)
 
 

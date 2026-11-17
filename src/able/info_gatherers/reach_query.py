@@ -1,7 +1,6 @@
 """Gathering information about the person's reach by presenting the gripper."""
 
-import time
-from typing import Any
+from typing import Sequence
 
 import numpy as np
 from numpy.typing import NDArray
@@ -9,7 +8,6 @@ from numpy.typing import NDArray
 from able.belief_updaters.human_reach import ReachBeliefUpdater
 from able.beliefs.base import Belief
 from able.beliefs.particles import ParticleBelief
-from able.envs.base import Environment
 from able.envs.human_reach.query import (
     QuerySimulator,
     ReachQuery,
@@ -18,12 +16,11 @@ from able.envs.human_reach.query import (
     reach_distance,
 )
 from able.envs.human_reach.scene import BedsideStocking3DEnvConfig
-from able.info_gatherers.base import InformationGatherer
-from able.structs import Budget, QueryResponse
+from able.info_gatherers.base import SequentialGatherer
 
 
 class ReachQueryGatherer(
-    InformationGatherer[NDArray[np.float64], ReachQuery, ReachResponse]
+    SequentialGatherer[NDArray[np.float64], ReachQuery, ReachResponse]
 ):
     """Asks along the direction where the belief disagrees most about the reach.
 
@@ -45,7 +42,7 @@ class ReachQueryGatherer(
         grid_step: float = 0.025,
         min_entropy: float = 0.1,
     ) -> None:
-        self._belief_updater = belief_updater
+        super().__init__(belief_updater)
         self._config = config
         self._num_points = num_points
         self._grid_step = grid_step
@@ -82,19 +79,40 @@ class ReachQueryGatherer(
             self._known[k, j] = self._presenter.can_present(point)
         return self._known[k, j]
 
-    def choose(self, belief: ParticleBelief) -> ReachQuery | None:
+    def choose(
+        self,
+        belief: Belief[NDArray[np.float64]],
+        rng: np.random.Generator | None = None,
+    ) -> ReachQuery | None:
         """The query whose answers the belief is least sure of, or None.
 
         Distances not yet checked count as presentable until the winner's are
         checked.
         """
+        del rng  # unused because the choice is deterministic
+        return self._choose_among(belief, range(len(self.directions)))
+
+    def get_candidates(
+        self,
+        belief: Belief[NDArray[np.float64]],
+        rng: np.random.Generator | None = None,
+    ) -> list[ReachQuery]:
+        """The best query along each direction that is uncertain enough."""
+        del rng  # unused because the choice is deterministic
+        queries = [self._choose_among(belief, [k]) for k in range(len(self.directions))]
+        return [q for q in queries if q is not None]
+
+    def _choose_among(
+        self, belief: Belief[NDArray[np.float64]], directions: Sequence[int]
+    ) -> ReachQuery | None:
+        assert isinstance(belief, ParticleBelief), "Need a ParticleBelief"
         dist = self.distances
         levels = np.arange(1, self._num_points + 1) / (self._num_points + 1)
         r = reach_distance(self.directions[:, None], belief.particles[None])
         p = (r[..., None] > dist).mean(1)  # P(reached), per direction and distance
         while True:
             best, score = None, self._min_entropy
-            for k in range(len(self.directions)):
+            for k in directions:
                 idx = np.array(
                     [j for j in range(len(dist)) if self._known.get((k, j), True)], int
                 )
@@ -114,27 +132,3 @@ class ReachQueryGatherer(
                 return ReachQuery(self.directions[k].copy(), distances)
             for j in unknown:
                 self.presentable(k, j)
-
-    def gather(
-        self,
-        belief: Belief[NDArray[np.float64]],
-        env: Environment[Any, Any, Any, ReachQuery, ReachResponse],
-        budget: Budget,
-        rng: np.random.Generator,
-    ) -> list[QueryResponse[ReachQuery, ReachResponse]]:
-        """Ask queries until the budget runs out or no query is uncertain."""
-        del rng  # unused because the choice is deterministic
-        assert (
-            budget.max_iterations is not None or budget.max_wall_time is not None
-        ), "Information gathering needs a finite budget"
-        data: list[QueryResponse[ReachQuery, ReachResponse]] = []
-        start_time = time.perf_counter()
-        while not budget.is_exhausted(time.perf_counter() - start_time, len(data)):
-            assert isinstance(belief, ParticleBelief), "Need a ParticleBelief"
-            query = self.choose(belief)
-            if query is None:
-                break
-            datum = QueryResponse(query, env.ask(query))
-            data.append(datum)
-            belief = self._belief_updater.update_from_queries(belief, [datum])
-        return data
