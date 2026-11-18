@@ -13,6 +13,8 @@ num_cycles: 20
 num_workers: 1
 # The robot sleeps only in cycles before this one (null: every cycle).
 sleep_until_cycle: null
+# The robot sleeps only in cycles that are multiples of this (null: every cycle).
+sleep_every: null
 # Also evaluate each cycle with the planner parameters from before that night's
 # sleep, written to eval_results_presleep.csv.
 evaluate_without_sleep: false

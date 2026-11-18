@@ -72,6 +72,7 @@ def _main(cfg: DictConfig) -> None:
             on_cycle_end=writer,
             pool=pool,
             sleep_until_cycle=cfg.sleep_until_cycle,
+            sleep_every=cfg.sleep_every,
             evaluate_without_sleep=cfg.evaluate_without_sleep,
         )
     finally:

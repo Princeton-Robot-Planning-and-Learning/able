@@ -336,6 +336,7 @@ def run_cycles(
     ) = None,
     pool: WorkerPool | None = None,
     sleep_until_cycle: int | None = None,
+    sleep_every: int | None = None,
     evaluate_without_sleep: bool = False,
 ) -> list[
     CycleResult[StateType, ActType, TaskType, HiddenParamsType, QueryType, ResponseType]
@@ -360,6 +361,7 @@ def run_cycles(
     uses. A pool cannot be used with a recorder, which sees episodes as they run.
 
     With sleep_until_cycle, the robot sleeps only in cycles before it. With
+    sleep_every, it sleeps only in cycles that are multiples of it. With
     evaluate_without_sleep, every cycle with a sleep also evaluates the planner
     parameters from before that sleep under the same belief, in fresh copies of the
     real environment with their own random stream, so the cycles are unchanged.
@@ -375,7 +377,9 @@ def run_cycles(
     results = []
     for cycle in range(num_cycles):
         cycle_start_time = time.perf_counter()
-        sleeps = sleep_until_cycle is None or cycle < sleep_until_cycle
+        sleeps = (sleep_until_cycle is None or cycle < sleep_until_cycle) and (
+            sleep_every is None or cycle % sleep_every == 0
+        )
         presleep_params = (
             copy.deepcopy(robot.planner_params)
             if sleeps and evaluate_without_sleep
