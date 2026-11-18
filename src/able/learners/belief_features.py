@@ -44,3 +44,18 @@ def make_moment_features(prior: Belief[Any]) -> BeliefFeatures:
         return np.concatenate([mean / scale, std / scale])
 
     return get_features
+
+
+def make_mean_error(
+    prior: Belief[Any],
+) -> Callable[[Belief[Any], NDArray[np.float64]], float]:
+    """A function from a belief and hidden parameters to the mean distance between
+    the belief's mean and the parameters, in prior standard deviations."""
+    _, prior_std = get_moments(prior)
+    scale = np.where(prior_std > 0.0, prior_std, 1.0)
+
+    def get_error(belief: Belief[Any], hidden_params: NDArray[np.float64]) -> float:
+        mean, _ = get_moments(belief)
+        return float(np.mean(np.abs(mean - np.asarray(hidden_params)) / scale))
+
+    return get_error

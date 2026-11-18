@@ -8,17 +8,28 @@ from able.envs.two_link_arm import TwoLinkArmModel
 from able.info_gatherers.base import NullInformationGatherer, SequentialGatherer
 from able.info_gatherers.bisect_limits import BisectLimitGatherer
 from able.info_gatherers.selection import (
+    JointSleepGatherer,
     OracleQueryGatherer,
     PlanningAwareGatherer,
     RandomQueryGatherer,
 )
-from able.learners.belief_features import make_moment_features
-from able.learners.belief_sources import ImaginedNextBeliefSource
+from able.learners.belief_features import make_mean_error, make_moment_features
+from able.learners.belief_sources import ImaginedNextBeliefSource, PlannedSource
+from able.learners.model_learner import ModelLearner
 from able.models.exact_match_cache import ExactMatchCache
 from able.robot import Robot
 from able.structs import Budget
 
-QUERY_METHODS = ("default", "base", "random", "joint", "sleep_blind", "oracle")
+QUERY_METHODS = (
+    "default",
+    "base",
+    "random",
+    "joint",
+    "sleep_blind",
+    "oracle",
+    "joint_sleep",
+    "cluster_sleep",
+)
 
 
 def with_query_method(
@@ -31,6 +42,10 @@ def with_query_method(
     eval_tasks: Sequence[Any] = (),
     num_eval_dreams: int = 32,
     tolerance: float = 0.1,
+    dreams_per_query: int = 64,
+    uncertainty_weight: float = 1.0,
+    planning_weight: float = 1.0,
+    cost_floor: float = 68.0,
 ) -> Robot[Any, Any, Any, Any, Any, Any, Any]:
     """The robot, asking queries by the method, in reality and in its dreams.
 
@@ -39,8 +54,10 @@ def with_query_method(
     query of each gathering as follows: "base" as that gatherer does; "random"
     uniformly among its candidates; "joint" by PlanningAwareGatherer;
     "sleep_blind" likewise without tonight's training; "oracle" by
-    OracleQueryGatherer. On the arm, beliefs match when their plan cache keys do;
-    elsewhere when their moment features are within tolerance.
+    OracleQueryGatherer; "joint_sleep" by JointSleepGatherer, which also plans the
+    learner's training beliefs; "cluster_sleep" likewise but with a random first
+    query. On the arm, beliefs match when their plan cache keys do; elsewhere when
+    their moment features are within tolerance.
     """
     assert method in QUERY_METHODS, f"method must be one of {QUERY_METHODS}"
     if method == "default":
@@ -55,25 +72,43 @@ def with_query_method(
         base = BisectLimitGatherer(robot.belief_updater)  # type: ignore[arg-type]
     assert isinstance(base, SequentialGatherer), "Need a gatherer with candidates"
     gatherer: SequentialGatherer[Any, Any, Any] = base
+    dreamer: ImaginedNextBeliefSource[Any, Any] = ImaginedNextBeliefSource(
+        env_model,
+        domain.task_distribution,
+        robot.planner,
+        robot.belief_updater,
+        base,
+        gathering_budget,
+        execution_budget,
+        planning_budget,
+    )
+    model = getattr(robot.planner.get_default_params(), "model", None)
+    if isinstance(model, ExactMatchCache):
+        get_features = get_cache_key_features(model.key_resolution)
+        tolerance = 0.0
+    else:
+        get_features = make_moment_features(domain.initial_belief)
     if method == "random":
         gatherer = RandomQueryGatherer(base)
-    elif method in ("joint", "sleep_blind"):
-        dreamer: ImaginedNextBeliefSource[Any, Any] = ImaginedNextBeliefSource(
-            env_model,
-            domain.task_distribution,
-            robot.planner,
-            robot.belief_updater,
+    elif method in ("joint_sleep", "cluster_sleep"):
+        learner = robot.learner
+        assert isinstance(learner, ModelLearner), "Need a model learner"
+        planned: PlannedSource[Any, Any] = PlannedSource()
+        learner.set_belief_source(planned)
+        gatherer = JointSleepGatherer(
             base,
-            gathering_budget,
-            execution_budget,
-            planning_budget,
+            dreamer,
+            planned,
+            get_features,
+            make_mean_error(domain.initial_belief),
+            tolerance=tolerance,
+            dreams_per_query=dreams_per_query,
+            uncertainty_weight=uncertainty_weight,
+            planning_weight=planning_weight,
+            cost_floor=cost_floor,
+            choose_query=method == "joint_sleep",
         )
-        model = getattr(robot.planner.get_default_params(), "model", None)
-        if isinstance(model, ExactMatchCache):
-            get_features = get_cache_key_features(model.key_resolution)
-            tolerance = 0.0
-        else:
-            get_features = make_moment_features(domain.initial_belief)
+    elif method in ("joint", "sleep_blind"):
         gatherer = PlanningAwareGatherer(
             base,
             dreamer,

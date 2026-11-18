@@ -1,6 +1,7 @@
 """Gatherers that pick the first query of each gathering by a rule of their own
 and ask any later ones as a base gatherer does."""
 
+import logging
 import time
 from typing import Any, Callable, Sequence
 
@@ -12,7 +13,12 @@ from able.envs.base import EnvironmentModel, TaskDistribution
 from able.envs.simulated import SimulatedEnvironment
 from able.episodes import run_episode
 from able.info_gatherers.base import SequentialGatherer
-from able.learners.belief_sources import BeliefSource
+from able.learners.belief_sources import (
+    BeliefSource,
+    Dream,
+    ImaginedNextBeliefSource,
+    PlannedSource,
+)
 from able.planners.base import Planner
 from able.structs import Budget, PlanningFailure, QueryResponse
 
@@ -259,3 +265,168 @@ class OracleQueryGatherer(SelectingGatherer):
                 times.append(time.perf_counter() - start_time)
                 successes.append(False)
         return float(np.mean(successes)), float(np.mean(times))
+
+
+class JointSleepGatherer(SelectingGatherer):
+    """Before each sleep, commits to the first query and to the beliefs the
+    learner trains under tonight, together.
+
+    For each candidate, dreams_per_query dreams ask it first. Their beliefs are
+    clustered by features within tolerance, starting from the beliefs the learner
+    has trained under. A dream's saving is its planning cost above cost_floor.
+    The first half of a candidate's dreams plans tonight's training: untrained
+    clusters ranked by probability times mean saving, one belief each, cycling if
+    there are fewer than the sleep's iterations. Its score is uncertainty_weight
+    times the mean drop in belief error to the dreams' hidden parameters, plus
+    planning_weight times the second half's saving in planned clusters, as a share
+    of the mean planning cost of all dreams. With choose_query, the best candidate
+    is committed; otherwise the first query is random and all dreams plan.
+    """
+
+    def __init__(
+        self,
+        base: SequentialGatherer[Any, Any, Any],
+        dreamer: ImaginedNextBeliefSource[Any, Any],
+        source: PlannedSource[Any, Any],
+        get_features: BeliefFeatures,
+        get_error: Callable[[Belief[Any], Any], float],
+        tolerance: float = 0.0,
+        dreams_per_query: int = 64,
+        uncertainty_weight: float = 1.0,
+        planning_weight: float = 1.0,
+        cost_floor: float = 0.0,
+        choose_query: bool = True,
+        num_training_beliefs: int = 64,
+    ) -> None:
+        super().__init__(base)
+        self._dreamer = dreamer
+        self._source = source
+        self._get_features = get_features
+        self._get_error = get_error
+        self._tolerance = tolerance
+        self._dreams_per_query = dreams_per_query
+        self._uncertainty_weight = uncertainty_weight
+        self._planning_weight = planning_weight
+        self._cost_floor = cost_floor
+        self._choose_query = choose_query
+        self._num_training_beliefs = num_training_beliefs
+        self.scores: list[float] = []
+        self.uncertainty_terms: list[float] = []
+        self.planning_terms: list[float] = []
+
+    def choose_first(self, belief: Belief[Any], rng: np.random.Generator) -> Any:
+        if self._choose_query:
+            return super().choose_first(belief, rng)
+        candidates = self._base.get_candidates(belief, rng)
+        if not candidates:
+            return None
+        return candidates[int(rng.integers(len(candidates)))]
+
+    def prepare(
+        self,
+        belief: Belief[Any],
+        params: Any,
+        learner: Any,
+        budget: Budget,
+        rng: np.random.Generator,
+    ) -> None:
+        candidates: list[Any] = self.get_candidates(belief, rng) or [None]
+        num_training = budget.max_iterations or self._num_training_beliefs
+        dreams = [self._dream(q, belief, params, rng) for q in candidates]
+        centers: list[NDArray[np.float64]] = []
+        for b in learner.training_beliefs:
+            self._get_cluster(centers, self._get_features(b))
+        num_trained = len(centers)
+        clusters = [
+            [self._get_cluster(centers, self._get_features(d.belief)) for d in ds]
+            for ds in dreams
+        ]
+        mean_cost = max(
+            float(np.mean([d.planning_cost for ds in dreams for d in ds])), 1e-9
+        )
+        if not self._choose_query:
+            pooled = [d for ds in dreams for d in ds]
+            plan, _ = self._plan(pooled, sum(clusters, []), num_trained, num_training)
+            self._commitment = None
+            self._source.set_plan(plan)
+            return
+        plans = []
+        self.scores, self.uncertainty_terms, self.planning_terms = [], [], []
+        half = len(dreams[0]) // 2
+        for ds, cs in zip(dreams, clusters):
+            plan, planned = self._plan(ds[:half], cs[:half], num_trained, num_training)
+            saved = sum(
+                self._saving(d) for d, c in zip(ds[half:], cs[half:]) if c in planned
+            )
+            planning = saved / max(len(ds) - half, 1) / mean_cost
+            uncertainty = float(
+                np.mean(
+                    [
+                        self._get_error(belief, d.hypothesis)
+                        - self._get_error(d.belief, d.hypothesis)
+                        for d in ds
+                    ]
+                )
+            )
+            plans.append(plan)
+            self.uncertainty_terms.append(uncertainty)
+            self.planning_terms.append(planning)
+            self.scores.append(
+                self._uncertainty_weight * uncertainty
+                + self._planning_weight * planning
+            )
+        best = int(np.argmax(self.scores))
+        self._commitment = candidates[best]
+        self._source.set_plan(plans[best])
+        logging.info(
+            "Joint sleep: query %d of %d, uncertainty %.3f, planning %.3f",
+            best,
+            len(candidates),
+            self.uncertainty_terms[best],
+            self.planning_terms[best],
+        )
+
+    def _saving(self, dream: Dream[Any]) -> float:
+        return max(dream.planning_cost - self._cost_floor, 0.0)
+
+    def _dream(
+        self, query: Any, belief: Belief[Any], params: Any, rng: np.random.Generator
+    ) -> list[Dream[Any]]:
+        gatherer = (
+            self._base if query is None else FixedFirstQueryGatherer(self._base, query)
+        )
+        dreamer = self._dreamer.with_info_gatherer(gatherer)
+        return [
+            dreamer.dream(f"Query dream {i}", belief, params, rng)
+            for i in range(1, self._dreams_per_query + 1)
+        ]
+
+    def _get_cluster(
+        self, centers: list[NDArray[np.float64]], features: NDArray[np.float64]
+    ) -> int:
+        for i, center in enumerate(centers):
+            if np.max(np.abs(center - features)) <= self._tolerance:
+                return i
+        centers.append(features)
+        return len(centers) - 1
+
+    def _plan(
+        self,
+        dreams: Sequence[Dream[Any]],
+        clusters: Sequence[int],
+        num_trained: int,
+        num_training: int,
+    ) -> tuple[list[Belief[Any]], set[int]]:
+        """The training beliefs from the dreams and the untrained clusters they
+        cover."""
+        value: dict[int, float] = {}
+        first: dict[int, Belief[Any]] = {}
+        for d, c in zip(dreams, clusters):
+            value[c] = value.get(c, 0.0) + self._saving(d) / len(dreams)
+            first.setdefault(c, d.belief)
+        ranked = sorted(value, key=lambda c: -value[c])
+        new = [c for c in ranked if c >= num_trained][:num_training]
+        plan = [first[c] for c in new]
+        while plan and len(plan) < num_training:
+            plan += [first[c] for c in ranked][: num_training - len(plan)]
+        return plan, set(new)

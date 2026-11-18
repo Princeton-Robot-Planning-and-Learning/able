@@ -37,13 +37,21 @@ budgets:
 
 # How the robot picks the first query of each gathering, in reality and in its
 # dreams: default (as the approach builds it), base (the environment's rule, or
-# bisection of the arm's joint limits), random, joint, sleep_blind, or oracle.
-# See able.query_methods.with_query_method.
+# bisection of the arm's joint limits), random, joint, sleep_blind, oracle,
+# joint_sleep, or cluster_sleep. See able.query_methods.with_query_method.
 query:
   _target_: able.query_methods.with_query_method
   method: default
   num_eval_dreams: 32
   tolerance: 0.1
+  # joint_sleep and cluster_sleep: dreams per candidate query (half plan, half
+  # score), the weights of the drop in belief error and of the planning cost
+  # saved, and the planning cost of a plan that needs no search (the arm's
+  # num_samples when the first batch of warm starts succeeds).
+  dreams_per_query: 64
+  uncertainty_weight: 1.0
+  planning_weight: 1.0
+  cost_floor: 68.0
 
 eval_results_file: ${hydra:runtime.output_dir}/eval_results.csv
 cycle_results_file: ${hydra:runtime.output_dir}/cycle_results.csv
