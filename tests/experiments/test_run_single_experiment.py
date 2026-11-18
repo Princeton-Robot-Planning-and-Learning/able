@@ -179,8 +179,8 @@ def test_run_single_experiment(tmp_path: Path) -> None:
         assert list(cycle_df.num_executed_tasks) == [1, 1]
         assert (cycle_df.num_executed_successes <= 1).all()
         assert not cycle_df.num_executed_timeouts.any()
-        # The two-link arm's interval belief has no moments to log.
-        assert not any(c.startswith("belief_") for c in cycle_df.columns)
+        # The two-link arm's interval belief logs each limit's moments.
+        assert {"belief_mean_3", "belief_std_3"} <= set(cycle_df.columns)
         for column in STAGE_TIME_COLUMNS:
             assert (cycle_df[column] >= 0).all()
         stage_total = cycle_df[list(STAGE_TIME_COLUMNS)].sum(axis=1)

@@ -84,6 +84,13 @@ class Robot(
         """The robot's learner, for worker processes that train as the robot does."""
         return self._learner
 
+    @property
+    def info_gatherer(
+        self,
+    ) -> InformationGatherer[HiddenParamsType, QueryType, ResponseType]:
+        """The robot's information gatherer."""
+        return self._info_gatherer
+
     def sleep(
         self, budget: Budget, rng: np.random.Generator, pool: WorkerPool | None = None
     ) -> None:

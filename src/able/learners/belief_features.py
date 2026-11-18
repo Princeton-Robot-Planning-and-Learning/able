@@ -8,6 +8,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from able.beliefs.base import Belief
+from able.beliefs.interval import IntervalBelief
 from able.beliefs.particles import ParticleBelief
 from able.beliefs.range_of_motion import RangeOfMotionBelief
 
@@ -22,6 +23,9 @@ def get_moments(
         return belief.mean, belief.std
     if isinstance(belief, RangeOfMotionBelief):
         return belief.truncated_mean, belief.truncated_stddev
+    if isinstance(belief, IntervalBelief):
+        widths = belief.intervals[:, 1] - belief.intervals[:, 0]
+        return belief.intervals.mean(axis=1), widths / np.sqrt(12.0)
     raise TypeError(f"No moments for {type(belief).__name__}")
 
 
