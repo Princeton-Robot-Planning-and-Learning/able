@@ -7,9 +7,11 @@ from able.envs.simulated import SimulatedEnvironment
 from able.envs.two_link_arm import (
     JOINT_LIMIT_PRIOR,
     ArmTask,
+    ArmTaskDistribution,
     JointQuery,
     TwoLinkArmModel,
     make_domain,
+    make_sampled_domain,
     sample_goal_positions,
 )
 
@@ -191,3 +193,50 @@ def test_make_domain():
     for _ in range(3):
         result = env.step(np.array([0.3, 0.3]))
     assert np.allclose(result.state, [0.6, 0.6])
+
+
+def test_arm_task_distribution():
+    """Tests that sampled goals are reachable within the limits, that leaning goals
+    lie nearer the limits than uniform ones, and that given() draws within other
+    limits."""
+    model = TwoLinkArmModel()
+    limits = np.array([-1.0, 2.0, -0.5, 0.5])
+    rng = np.random.default_rng(0)
+    q = np.stack(
+        np.meshgrid(np.linspace(-1.0, 2.0, 200), np.linspace(-0.5, 0.5, 200)), -1
+    ).reshape(-1, 2)
+    reachable = model.forward_kinematics(q)
+    spread = {}
+    for lean in (1.0, 4.0):
+        distribution = ArmTaskDistribution(model, limits, goal_lean=lean)
+        goals = np.array([distribution.sample(rng).goal for _ in range(300)])
+        gaps = np.min(np.linalg.norm(goals[:, None] - reachable[None], axis=-1), 1)
+        assert np.all(gaps < 0.05)
+        spread[lean] = np.mean(
+            np.linalg.norm(
+                goals - model.forward_kinematics(np.zeros((1, 2)))[0], axis=1
+            )
+        )
+    assert spread[4.0] > spread[1.0]
+    distribution = ArmTaskDistribution(model, limits)
+    assert distribution.depends_on_hidden_params
+    narrow = distribution.given(np.array([-0.1, 0.1, -0.1, 0.1]))
+    start = model.forward_kinematics(np.zeros((1, 2)))[0]
+    for _ in range(20):
+        assert np.linalg.norm(narrow.sample(rng).goal - start) < 0.31
+
+
+def test_make_sampled_domain():
+    """Tests that the sampled domain has the same true limits as make_domain() and
+    draws a new goal per task."""
+    domain = make_sampled_domain(seed=3)
+    real_env = domain.real_env
+    assert isinstance(real_env, SimulatedEnvironment)
+    fixed = make_domain(seed=3).real_env
+    assert isinstance(fixed, SimulatedEnvironment)
+    # pylint: disable-next=no-member
+    truths = (real_env.hidden_params, fixed.hidden_params)
+    np.testing.assert_allclose(*truths)
+    rng = np.random.default_rng(0)
+    goals = {tuple(domain.task_distribution.sample(rng).goal) for _ in range(5)}
+    assert len(goals) == 5

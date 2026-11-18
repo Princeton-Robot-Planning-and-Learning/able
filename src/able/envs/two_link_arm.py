@@ -8,12 +8,18 @@ no.
 """
 
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 
 from able.beliefs.interval import IntervalBelief
-from able.envs.base import BatchRolloutModel, Domain, FiniteTaskDistribution
+from able.envs.base import (
+    BatchRolloutModel,
+    Domain,
+    FiniteTaskDistribution,
+    TaskDistribution,
+)
 from able.envs.simulated import SimulatedEnvironment
 from able.structs import Task
 
@@ -271,6 +277,76 @@ def make_domain(
     return Domain(
         env_model=model,
         task_distribution=FiniteTaskDistribution(tasks),
+        initial_belief=IntervalBelief(JOINT_LIMIT_PRIOR),
+        real_env=SimulatedEnvironment(model, true_limits, rng),
+    )
+
+
+class ArmTaskDistribution(TaskDistribution[ArmTask]):
+    """A new goal per task within the joint limits, leaning toward them.
+
+    Each joint of a goal configuration lies a fraction of the way from q = 0 to
+    one of its limits, at most 80% of the distance a joint can travel in one
+    episode. The limit is lower or upper in proportion to how far it lies, and
+    the fraction is max_goal_fraction times Beta(goal_lean, 1), as for the limb's
+    goals: goal_lean = 1 and max_goal_fraction = 1 give uniform goals, and larger
+    goal_lean puts goals nearer the limits. The goal is the configuration's
+    end-effector position, and every task starts at q = 0.
+    """
+
+    def __init__(
+        self,
+        model: TwoLinkArmModel,
+        limits: NDArray[np.float64],
+        goal_lean: float = 4.0,
+        max_goal_fraction: float = 0.98,
+    ) -> None:
+        self._model = model
+        max_travel = 0.8 * model.max_joint_displacement * model.horizon
+        limits = np.asarray(limits, dtype=np.float64)
+        self._lows = np.maximum(limits[[0, 2]], -max_travel)
+        self._highs = np.minimum(limits[[1, 3]], max_travel)
+        self._goal_lean = goal_lean
+        self._max_goal_fraction = max_goal_fraction
+
+    @property
+    def depends_on_hidden_params(self) -> bool:
+        return True
+
+    def given(self, hidden_params: Any) -> "ArmTaskDistribution":
+        """Goals within these joint limits."""
+        return ArmTaskDistribution(
+            self._model, hidden_params, self._goal_lean, self._max_goal_fraction
+        )
+
+    def sample(self, rng: np.random.Generator) -> ArmTask:
+        joints = np.zeros(2)
+        for j in range(2):
+            low, high = -self._lows[j], self._highs[j]
+            limit = (
+                self._highs[j] if rng.random() < high / (low + high) else self._lows[j]
+            )
+            fraction = self._max_goal_fraction * rng.beta(self._goal_lean, 1.0)
+            joints[j] = fraction * limit
+        goal = self._model.forward_kinematics(joints[None])[0]
+        return ArmTask(initial_state=np.zeros(2), goal=goal)
+
+
+def make_sampled_domain(
+    seed: int, goal_tolerance: float = 0.1, goal_lean: float = 4.0
+) -> ArmDomain:
+    """An arm domain whose tasks are drawn anew within the true joint limits,
+    leaning toward them by goal_lean (see ArmTaskDistribution).
+
+    The true joint limits are drawn from the prior as in make_domain(). Dreams and
+    training draw tasks given their own hypothesized limits.
+    """
+    rng = np.random.default_rng(seed)
+    model = TwoLinkArmModel(goal_tolerance=goal_tolerance)
+    true_limits = rng.uniform(JOINT_LIMIT_PRIOR[:, 0], JOINT_LIMIT_PRIOR[:, 1])
+    return Domain(
+        env_model=model,
+        task_distribution=ArmTaskDistribution(model, true_limits, goal_lean),
         initial_belief=IntervalBelief(JOINT_LIMIT_PRIOR),
         real_env=SimulatedEnvironment(model, true_limits, rng),
     )

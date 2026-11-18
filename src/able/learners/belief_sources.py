@@ -192,7 +192,7 @@ class ImaginedNextBeliefSource(BeliefSource[HiddenParamsType, PlannerParamsType]
             time.perf_counter() - start_time, num_tasks
         ):
             num_tasks += 1
-            task = self._task_distribution.sample(rng)
+            task = self._task_distribution.given(hypothesis).sample(rng)
             self._recorder.start_episode(
                 f"{label} · imagined task {num_tasks}", task, belief, hypothesis
             )

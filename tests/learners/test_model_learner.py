@@ -182,3 +182,43 @@ def test_sampled_training_tasks():
             Budget(),
             num_training_tasks=0,
         )
+
+
+class _LimitGoals(TaskDistribution):
+    """A goal at the end effector of the first joint limits it is given."""
+
+    def __init__(self) -> None:
+        self.given_params: list = []
+
+    def sample(self, rng):
+        raise AssertionError("Tasks need hidden parameters")
+
+    @property
+    def depends_on_hidden_params(self):
+        return True
+
+    def given(self, hidden_params):
+        self.given_params.append(hidden_params)
+        goal = TwoLinkArmModel().forward_kinematics(hidden_params[None, [0, 2]])[0]
+        return FiniteTaskDistribution([ArmTask(initial_state=np.zeros(2), goal=goal)])
+
+
+def test_training_tasks_given_sampled_params():
+    """Tests that tasks that depend on the hidden parameters are drawn given
+    parameters sampled from the training belief."""
+    planner = _make_planner()
+    tasks = _LimitGoals()
+    belief = IntervalBelief([[-1.0, -0.9], [0.5, 0.6], [-1.0, -0.9], [0.5, 0.6]])
+    learner: ModelLearner = ModelLearner(
+        planner, tasks, CurrentBeliefSource(), Budget(), num_training_tasks=3
+    )
+    learner.learn(
+        belief,
+        planner.get_default_params(),
+        Budget(max_iterations=1),
+        np.random.default_rng(0),
+    )
+    assert len(tasks.given_params) == 3
+    for params in tasks.given_params:
+        assert np.all(params >= belief.intervals[:, 0])
+        assert np.all(params <= belief.intervals[:, 1])
