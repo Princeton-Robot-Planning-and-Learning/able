@@ -103,6 +103,12 @@ class ModelLearner(
         """The source of the beliefs the learner trains under."""
         return self._belief_source
 
+    def set_belief_source(
+        self, belief_source: BeliefSource[HiddenParamsType, PlannerParamsType]
+    ) -> None:
+        """Train under the belief source from now on."""
+        self._belief_source = belief_source
+
     def learn(
         self,
         belief: Belief[HiddenParamsType],

@@ -98,7 +98,8 @@ def test_imagined_next_belief_source():
             iteration, belief, params, np.random.default_rng(iteration)
         )
         assert isinstance(imagined, IntervalBelief)
-        assert imagined.get_total_width() < belief.get_total_width()
+        width = imagined.get_total_width()  # pylint: disable=no-member
+        assert width < belief.get_total_width()
     episodes = [e for e in recorder.events if e[0] == "start_episode"]
     assert episodes == [
         ("start_episode", "Dream 1 · imagined task 1", True),

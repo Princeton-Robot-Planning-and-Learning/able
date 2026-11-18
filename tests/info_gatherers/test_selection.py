@@ -11,11 +11,16 @@ from able.envs.two_link_arm import JOINT_LIMIT_PRIOR, JointQuery, make_domain
 from able.info_gatherers.bisect_limits import BisectLimitGatherer
 from able.info_gatherers.selection import (
     FixedFirstQueryGatherer,
+    JointSleepGatherer,
     OracleQueryGatherer,
     PlanningAwareGatherer,
     RandomQueryGatherer,
 )
-from able.learners.belief_sources import ImaginedNextBeliefSource
+from able.learners.belief_sources import (
+    Dream,
+    ImaginedNextBeliefSource,
+    PlannedSource,
+)
 from able.learners.model_learner import ModelLearner
 from able.parallel import SerialPool, WorkerContext
 from able.query_methods import with_query_method
@@ -177,3 +182,116 @@ def test_workers_adopt_the_commitment():
         pool,
     )
     assert robots[1].info_gatherer.get_commitment() == query
+
+
+class _ScriptedLearner:
+    """A learner that has trained under nothing."""
+
+    training_beliefs: list[IntervalBelief] = []
+
+
+def _scripted_gatherer(
+    dreams: dict[int, list[Dream[np.ndarray]]],
+    uncertainty_weight: float,
+    planning_weight: float,
+) -> tuple[JointSleepGatherer, PlannedSource[np.ndarray, object]]:
+    domain = make_domain(0)
+    base = BisectLimitGatherer(JointLimitBeliefUpdater())
+    learner = make_dreaming_robot(domain, ONE, ONE, Budget()).learner
+    assert isinstance(learner, ModelLearner)
+    dreamer = learner.belief_source
+    assert isinstance(dreamer, ImaginedNextBeliefSource)
+    source: PlannedSource[np.ndarray, object] = PlannedSource()
+
+    class Scripted(JointSleepGatherer):
+        """Two candidates with scripted dreams."""
+
+        def get_candidates(self, belief, rng):  # type: ignore[no-untyped-def]
+            return [JointQuery(0, -1.0), JointQuery(1, 1.0)]
+
+        def _dream(self, query, belief, params, rng):  # type: ignore[no-untyped-def]
+            return dreams[query.joint]
+
+    gatherer = Scripted(
+        base,
+        dreamer,
+        source,
+        lambda b: b.intervals[:, 0].copy(),  # type: ignore[attr-defined]
+        lambda b, h: float(np.abs(b.intervals.mean(axis=1) - h).mean()),  # type: ignore[attr-defined]
+        uncertainty_weight=uncertainty_weight,
+        planning_weight=planning_weight,
+        cost_floor=10.0,
+    )
+    return gatherer, source
+
+
+def test_joint_sleep_trades_planning_against_uncertainty():
+    """Tests that plans rank clusters by probability times saving and are scored
+    on the held-out half, and that the uncertainty weight prefers the query whose
+    dreams end nearer their truths."""
+    prior = IntervalBelief([[-2.0, 2.0]] * 4)
+    slow = IntervalBelief([[-1.0, 1.0]] * 4)
+    near = [IntervalBelief([[1.0 - 0.1 * i, 1.0 + 0.1 * i]] * 4) for i in range(1, 5)]
+    dreams = {
+        # Uninformative but predictable: every dream lands in one costly cluster.
+        0: [Dream(np.ones(4), slow, 1.0, 110.0) for _ in range(4)],
+        # Informative: each dream ends at its truth, in its own cheap cluster.
+        1: [Dream(np.ones(4), b, 1.0, 20.0) for b in near],
+    }
+    rng = np.random.default_rng(0)
+    for uncertainty_weight, best in [(0.0, 0), (10.0, 1)]:
+        gatherer, source = _scripted_gatherer(dreams, uncertainty_weight, 1.0)
+        gatherer.prepare(prior, None, _ScriptedLearner(), Budget(max_iterations=2), rng)
+        mean_cost = (4 * 110.0 + 4 * 20.0) / 8
+        assert gatherer.planning_terms == pytest.approx([100.0 / mean_cost, 0.0])
+        assert gatherer.uncertainty_terms == pytest.approx([0.0, 1.0])
+        assert gatherer.get_commitment() == JointQuery(best, -1.0 if best == 0 else 1.0)
+        assert source.plan == ([slow, slow] if best == 0 else near[:2])
+
+
+def test_joint_sleep_on_the_arm():
+    """Tests that joint_sleep commits a candidate and trains under its plan, and
+    that cluster_sleep commits nothing and asks a random candidate."""
+    domain = make_domain(0)
+    rng = np.random.default_rng(0)
+    for method in ("joint_sleep", "cluster_sleep"):
+        robot = make_dreaming_robot(domain, ONE, ONE, Budget())
+        robot = with_query_method(
+            robot, domain, method, ONE, ONE, Budget(), dreams_per_query=4
+        )
+        gatherer = robot.info_gatherer
+        assert isinstance(gatherer, JointSleepGatherer)
+        learner = robot.learner
+        assert isinstance(learner, ModelLearner)
+        source = learner.belief_source
+        assert isinstance(source, PlannedSource)
+        robot.sleep(Budget(max_iterations=3), rng)
+        assert len(source.plan) == 3
+        assert learner.training_beliefs == source.plan
+        candidates = gatherer.get_candidates(domain.initial_belief, rng)
+        data = robot.gather_information(domain.real_env, ONE, rng)
+        if method == "joint_sleep":
+            assert len(gatherer.scores) == 12
+            best = candidates[int(np.argmax(gatherer.scores))]
+            assert gatherer.get_commitment() == best
+            assert data[0].query == best
+        else:
+            assert gatherer.get_commitment() is None
+            assert data[0].query in candidates
+
+
+def test_planned_source_cycles_its_plan():
+    """Tests that the planned source trains under its plan in order, cycling, and
+    under the current belief without one."""
+    belief = IntervalBelief(JOINT_LIMIT_PRIOR)
+    plan = [IntervalBelief([[-1.0, -0.5]] * 4), IntervalBelief([[-2.0, -0.5]] * 4)]
+    source: PlannedSource[np.ndarray, object] = PlannedSource()
+    rng = np.random.default_rng(0)
+    assert source.get_training_belief(1, belief, None, rng) is belief
+    source.set_draw_state(plan)
+    assert [source.get_training_belief(i, belief, None, rng) for i in (1, 2, 3)] == [
+        plan[0],
+        plan[1],
+        plan[0],
+    ]
+    assert source.get_draw_state() == plan

@@ -2,6 +2,7 @@
 
 import time
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any, Callable, Generic, Sequence
 
 import numpy as np
@@ -86,6 +87,18 @@ class BeliefSource(ABC, Generic[HiddenParamsType, PlannerParamsType]):
 
     def set_draw_state(self, state: Any) -> None:
         """Adopt get_draw_state() from the source in the main process."""
+
+
+@dataclass(frozen=True)
+class Dream(Generic[HiddenParamsType]):
+    """A dream's sampled hidden parameters, resulting belief, the share of its
+    imagined tasks that succeeded, and their mean planning cost (the planner's
+    num_samples, else wall time)."""
+
+    hypothesis: HiddenParamsType
+    belief: Belief[HiddenParamsType]
+    success_rate: float
+    planning_cost: float = 0.0
 
 
 class CurrentBeliefSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
@@ -173,16 +186,27 @@ class ImaginedNextBeliefSource(BeliefSource[HiddenParamsType, PlannerParamsType]
         params: PlannerParamsType,
         rng: np.random.Generator,
     ) -> Belief[HiddenParamsType]:
-        label = f"Dream {iteration}"
+        return self.dream(f"Dream {iteration}", belief, params, rng).belief
+
+    def dream(
+        self,
+        label: str,
+        belief: Belief[HiddenParamsType],
+        params: PlannerParamsType,
+        rng: np.random.Generator,
+    ) -> Dream[HiddenParamsType]:
+        """One dream, with its sampled hidden parameters and imagined successes."""
         hypothesis = belief.sample(rng)
         imagined_env = SimulatedEnvironment(self._env_model, hypothesis, rng)
-        imagined_belief = self._imagine_until_evaluation(
+        imagined_belief, successes, costs = self._imagine_until_evaluation(
             label, belief, params, imagined_env, rng
         )
         self._recorder.record_belief(
             f"{label} · imagined belief", imagined_belief, hypothesis
         )
-        return imagined_belief
+        success_rate = float(np.mean(successes)) if successes else 0.0
+        cost = float(np.mean(costs)) if costs else 0.0
+        return Dream(hypothesis, imagined_belief, success_rate, cost)
 
     def set_info_gatherer(self, gatherer: InformationGatherer[Any, Any, Any]) -> None:
         self._info_gatherer = gatherer
@@ -214,9 +238,10 @@ class ImaginedNextBeliefSource(BeliefSource[HiddenParamsType, PlannerParamsType]
         params: PlannerParamsType,
         env: SimulatedEnvironment[Any, Any, Any, HiddenParamsType, Any, Any],
         rng: np.random.Generator,
-    ) -> Belief[HiddenParamsType]:
+    ) -> tuple[Belief[HiddenParamsType], list[bool], list[float]]:
         """Imagine information gathering and task execution in the environment and
-        return the resulting belief."""
+        return the resulting belief, whether each task succeeded, and each plan's
+        cost."""
         hypothesis = env.hidden_params
         data = self._info_gatherer.gather(belief, env, self._gathering_budget, rng)
         belief = self._belief_updater.update_from_queries(belief, data)
@@ -229,6 +254,8 @@ class ImaginedNextBeliefSource(BeliefSource[HiddenParamsType, PlannerParamsType]
             )
             self._recorder.record_step(next_state, belief)
 
+        successes: list[bool] = []
+        costs: list[float] = []
         start_time = time.perf_counter()
         num_tasks = 0
         while not self._execution_budget.is_exhausted(
@@ -239,19 +266,24 @@ class ImaginedNextBeliefSource(BeliefSource[HiddenParamsType, PlannerParamsType]
             self._recorder.start_episode(
                 f"{label} · imagined task {num_tasks}", task, belief, hypothesis
             )
+            plan_start = time.perf_counter()
             try:
                 policy = self._planner.plan(
                     task, belief, params, self._planning_budget, rng
                 )
+                stats = policy.get_planning_stats()
+                costs.append(stats.get("num_samples", time.perf_counter() - plan_start))
                 trajectory = run_episode(env, task, policy, on_step=update)
             except PlanningFailure:
                 self._recorder.end_episode("planning failed")
+                successes.append(False)
                 continue
             success = env.check_goal(task, trajectory.states[-1])
+            successes.append(bool(success))
             self._recorder.end_episode(
                 "imagined success" if success else "imagined failure"
             )
-        return belief
+        return belief, successes, costs
 
 
 class BeliefCoverageSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
@@ -355,3 +387,38 @@ class BeliefCoverageSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
 
     def set_draw_state(self, state: Any) -> None:
         self._candidate_source.set_draw_state(state)
+
+
+class PlannedSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
+    """Trains under a plan of beliefs set before each sleep, in order and cycling,
+    or under the current belief if the plan is empty."""
+
+    def __init__(self) -> None:
+        self._plan: list[Belief[HiddenParamsType]] = []
+
+    @property
+    def plan(self) -> list[Belief[HiddenParamsType]]:
+        """The beliefs to train under, in order."""
+        return self._plan
+
+    def set_plan(self, plan: Sequence[Belief[HiddenParamsType]]) -> None:
+        """Train under these beliefs from now on."""
+        self._plan = list(plan)
+
+    def get_training_belief(
+        self,
+        iteration: int,
+        belief: Belief[HiddenParamsType],
+        params: PlannerParamsType,
+        rng: np.random.Generator,
+    ) -> Belief[HiddenParamsType]:
+        del params, rng  # unused because the plan is set beforehand
+        if not self._plan:
+            return belief
+        return self._plan[(iteration - 1) % len(self._plan)]
+
+    def get_draw_state(self) -> Any:
+        return self._plan
+
+    def set_draw_state(self, state: Any) -> None:
+        self._plan = list(state)
