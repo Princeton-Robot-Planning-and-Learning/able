@@ -1,6 +1,6 @@
 """An environment simulated from an environment model and fixed hidden parameters."""
 
-from typing import Generic
+from typing import Any, Generic
 
 import numpy as np
 
@@ -41,6 +41,11 @@ class SimulatedEnvironment(
         self._task: TaskType | None = None
         self._state: StateType | None = None
         self._num_steps = 0
+
+    @property
+    def model(self) -> Any:
+        """The environment model with the true hidden parameters."""
+        return self._model
 
     @property
     def hidden_params(self) -> HiddenParamsType:

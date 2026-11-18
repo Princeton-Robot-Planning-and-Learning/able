@@ -11,6 +11,11 @@ num_cycles: 20
 # at once, one CPU each. 1 runs everything in this process. With
 # hydra/launcher=della, each job requests this many CPUs.
 num_workers: 1
+# The robot sleeps only in cycles before this one (null: every cycle).
+sleep_until_cycle: null
+# Also evaluate each cycle with the planner parameters from before that night's
+# sleep, written to eval_results_presleep.csv.
+evaluate_without_sleep: false
 # Evaluation tasks sampled once per seed and used in every cycle. Finite task
 # distributions ignore this and evaluate every task.
 num_eval_tasks: 6

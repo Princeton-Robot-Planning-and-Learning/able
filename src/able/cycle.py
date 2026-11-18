@@ -1,5 +1,6 @@
 """The cycle of sleep, information gathering, task execution, and evaluation."""
 
+import copy
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Generic, Sequence
@@ -75,6 +76,9 @@ class CycleResult(
     executions: list[EpisodeResult[StateType, ActType, TaskType]]
     belief: Belief[HiddenParamsType]
     evaluations: list[EpisodeResult[StateType, ActType, TaskType]]
+    presleep_evaluations: list[EpisodeResult[StateType, ActType, TaskType]] | None = (
+        None
+    )
 
 
 @dataclass(frozen=True)
@@ -254,6 +258,42 @@ def _evaluate_in_worker(
     return _plan_and_run(plan, task, env, planning_budget, rng, None)
 
 
+def _evaluate_with_params(
+    robot: Robot[Any, Any, Any, Any, Any, Any, Any],
+    params: Any,
+    env: Environment[Any, Any, Any, Any, Any],
+    eval_tasks: Sequence[Any],
+    planning_budget: Budget,
+    rng: np.random.Generator,
+    pool: WorkerPool | None,
+) -> list[EpisodeResult[Any, Any, Any]]:
+    """Evaluate every task under the robot's belief with the given planner
+    parameters, each in a fresh copy of the real environment with its own random
+    generator spawned from rng."""
+    assert isinstance(env, SimulatedEnvironment), "Need a simulated real env"
+    belief = robot.belief
+    task_rngs = rng.spawn(len(eval_tasks))
+    if pool is not None:
+        return pool.map(
+            _evaluate_in_worker,
+            [
+                (task, belief, params, planning_budget, task_rng)
+                for task, task_rng in zip(eval_tasks, task_rngs)
+            ],
+        )
+
+    def plan(task: Any, budget: Budget, rng: np.random.Generator) -> Policy[Any, Any]:
+        return robot.planner.plan(task, belief, params, budget, rng)
+
+    results = []
+    for task, task_rng in zip(eval_tasks, task_rngs):
+        task_env = SimulatedEnvironment(env.model, env.hidden_params, task_rng)
+        results.append(
+            _plan_and_run(plan, task, task_env, planning_budget, task_rng, None)
+        )
+    return results
+
+
 def _describe_outcome(result: EpisodeResult) -> str:
     if result.failure is not None:
         return "planning failed"
@@ -295,6 +335,8 @@ def run_cycles(
         | None
     ) = None,
     pool: WorkerPool | None = None,
+    sleep_until_cycle: int | None = None,
+    evaluate_without_sleep: bool = False,
 ) -> list[
     CycleResult[StateType, ActType, TaskType, HiddenParamsType, QueryType, ResponseType]
 ]:
@@ -316,6 +358,11 @@ def run_cycles(
     from the evaluation stream, and its own copy of the real environment, so
     evaluation no longer draws noise from the real environment that task execution
     uses. A pool cannot be used with a recorder, which sees episodes as they run.
+
+    With sleep_until_cycle, the robot sleeps only in cycles before it. With
+    evaluate_without_sleep, every cycle with a sleep also evaluates the planner
+    parameters from before that sleep under the same belief, in fresh copies of the
+    real environment with their own random stream, so the cycles are unchanged.
     """
     assert (
         budgets.execution.max_iterations is not None
@@ -324,14 +371,23 @@ def run_cycles(
     assert pool is None or recorder is None, "A pool cannot be used with a recorder"
     recorder = NullRecorder() if recorder is None else recorder
     sleep_rng, gather_rng, task_rng, execution_rng, eval_rng = rng.spawn(5)
+    (presleep_rng,) = rng.spawn(1)
     results = []
     for cycle in range(num_cycles):
         cycle_start_time = time.perf_counter()
-        recorder.start_stage(cycle, Stage.SLEEP)
-        start_time = time.perf_counter()
-        robot.sleep(budgets.sleep, sleep_rng, pool)
-        sleep_wall_time = time.perf_counter() - start_time
-        recorder.end_stage()
+        sleeps = sleep_until_cycle is None or cycle < sleep_until_cycle
+        presleep_params = (
+            copy.deepcopy(robot.planner_params)
+            if sleeps and evaluate_without_sleep
+            else None
+        )
+        sleep_wall_time = 0.0
+        if sleeps:
+            recorder.start_stage(cycle, Stage.SLEEP)
+            start_time = time.perf_counter()
+            robot.sleep(budgets.sleep, sleep_rng, pool)
+            sleep_wall_time = time.perf_counter() - start_time
+            recorder.end_stage()
 
         recorder.start_stage(cycle, Stage.QUERIES)
         start_time = time.perf_counter()
@@ -380,6 +436,17 @@ def run_cycles(
             )
         evaluation_wall_time = time.perf_counter() - start_time
         recorder.end_stage()
+        presleep_evaluations = None
+        if presleep_params is not None:
+            presleep_evaluations = _evaluate_with_params(
+                robot,
+                presleep_params,
+                env,
+                eval_tasks,
+                budgets.planning,
+                presleep_rng,
+                pool,
+            )
         result = CycleResult(
             cycle=cycle,
             sleep_wall_time=sleep_wall_time,
@@ -391,6 +458,7 @@ def run_cycles(
             executions=executions,
             belief=robot.belief,
             evaluations=evaluations,
+            presleep_evaluations=presleep_evaluations,
         )
         results.append(result)
         if on_cycle_end is not None:

@@ -71,6 +71,8 @@ def _main(cfg: DictConfig) -> None:
             recorder,
             on_cycle_end=writer,
             pool=pool,
+            sleep_until_cycle=cfg.sleep_until_cycle,
+            evaluate_without_sleep=cfg.evaluate_without_sleep,
         )
     finally:
         if pool is not None:
@@ -107,6 +109,12 @@ class CycleResultsWriter:
     def __call__(self, result: CycleResult) -> None:
         self._results.append(result)
         _write_csv(pd.DataFrame(_get_eval_rows(self._results)), self._eval_results_file)
+        presleep_rows = _get_eval_rows(self._results, presleep=True)
+        if presleep_rows:
+            _write_csv(
+                pd.DataFrame(presleep_rows),
+                self._eval_results_file.with_name("eval_results_presleep.csv"),
+            )
         _write_csv(
             pd.DataFrame(_get_cycle_rows(self._results)), self._cycle_results_file
         )
@@ -221,12 +229,15 @@ def _make_video_recorder(cfg: DictConfig, domain: Domain) -> VideoRecorder:
     )
 
 
-def _get_eval_rows(results: list[CycleResult]) -> list[dict[str, Any]]:
+def _get_eval_rows(
+    results: list[CycleResult], presleep: bool = False
+) -> list[dict[str, Any]]:
     """One row per evaluation task per cycle, including why planning failed, whether
     a time limit caused it, and planner statistics."""
     rows: list[dict[str, Any]] = []
     for result in results:
-        for task_id, evaluation in enumerate(result.evaluations):
+        evaluations = result.presleep_evaluations if presleep else result.evaluations
+        for task_id, evaluation in enumerate(evaluations or []):
             rows.append(
                 {
                     "cycle": result.cycle,
