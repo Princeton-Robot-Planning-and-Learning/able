@@ -4,12 +4,14 @@ The robot holds the person's limb and moves it to a goal configuration. Each act
 is a robot torque correction (on top of the torque that holds the system still),
 applied for action_repeat simulator steps. The hidden parameters theta scale the
 person's active range of motion. While the robot moves the limb, the person relaxes:
-their joints hold up the limb and put stiff walls past their limits (see person.py),
-so theta changes the physics only past the limits. Moving the limb past the person's
-limit fails the task, and the person signals where it happened. As in kinder's
-environment, the task ends when the limb reaches the goal. A broken safety
-constraint, or the robot stopping (the STOP action) before the goal, fails the task.
-Either way the state stays fixed afterwards.
+their joints hold up the limb, resist softly in a band just inside their limits, and
+put stiff walls past them (see person.py), so theta changes the physics only near
+the limits. The robot senses the band's resistance, with noise, and its hold torque
+cancels it, so the band changes the robot's torque but not the motion. Moving the
+limb past the person's limit fails the task, and the person signals where it
+happened. As in kinder's environment, the task ends when the limb reaches the goal.
+A broken safety constraint, or the robot stopping (the STOP action) before the goal,
+fails the task. Either way the state stays fixed afterwards.
 """
 
 import dataclasses
@@ -47,9 +49,14 @@ class LimbState:
     has come within the goal tolerance. For each active motion, max_reach is the
     farthest the limb has gone toward the limit, as a scale of the normal range,
     and signalled is the joint angle magnitude where the person first signalled
-    that the limb passed their limit (None if they have not). A nonempty failure
-    names the broken constraint. The resting penetration is the limb's contact
-    with the person at the start of the task, which collision checks allow.
+    that the limb passed their limit (None if they have not). resistance holds, for
+    each active motion, the joint angle magnitude of the farthest the limb has gone
+    in this task's motion, the resisting torque the robot sensed there, and the
+    joint's speed toward the limit (None before the first action). The sensor's
+    error, sensor_bias, is drawn once per task, since it comes mostly from how well
+    the robot knows the limb's weight and the person's support. A nonempty failure
+    names the broken constraint. The resting penetration is the limb's contact with
+    the person at the start of the task, which collision checks allow.
     """
 
     coupled: CoupledState
@@ -59,6 +66,8 @@ class LimbState:
     resting_penetration: tuple[tuple[int, float], ...]
     reached: bool = False
     failure: str = ""
+    resistance: tuple[tuple[float, float, float] | None, ...] = ()
+    sensor_bias: tuple[float, ...] = ()
 
     @property
     def limb_positions(self) -> NDArray[np.float64]:
@@ -92,7 +101,8 @@ class LimbModel(
     within the environment's goal tolerance at the end of an action. Each step
     costs nothing, and the terminal cost is the distance from the limb to the goal.
     A task succeeds if the limb reached the goal, no constraint broke, and the limb
-    never passed the person's limit.
+    never passed the person's limit. The sensed resistance has a Gaussian error with
+    standard deviation torque_noise (N m), the same for the whole task.
     """
 
     def __init__(
@@ -103,8 +113,10 @@ class LimbModel(
         action_repeat: int = 12,
         max_robot_velocity: float = 2.0,
         query_model: QueryModel = QueryModel(),
+        torque_noise: float = 1.0,
     ) -> None:
         self.variant = variant
+        self.torque_noise = torque_noise
         self.settings = settings
         self.action_repeat = action_repeat
         self.max_robot_velocity = max_robot_velocity
@@ -148,6 +160,7 @@ class LimbModel(
             goal=goal,
             max_reach=tuple(self.get_reach(positions)),
             signalled=(None,) * len(self.variant.active_motions),
+            resistance=(None,) * len(self.variant.active_motions),
             resting_penetration=tuple(sorted(get_resting_penetration(sim).items())),
             reached=sim.get_limb_error(positions, goal) < sim.goal_tolerance,
         )
@@ -159,6 +172,19 @@ class LimbModel(
         variant = self.variant
         reach = np.array(variant.active_signs) * positions[list(variant.active_joints)]
         return reach / variant.default_magnitudes
+
+    def get_resisting_torque(
+        self,
+        positions: NDArray[np.float64],
+        velocities: NDArray[np.float64],
+        person_limits: tuple[NDArray[np.float64], NDArray[np.float64]],
+    ) -> NDArray[np.float64]:
+        """The band's torque against each active motion, without noise."""
+        variant = self.variant
+        band = self.settings.person.get_band_torque(
+            positions, velocities, person_limits
+        )
+        return -np.array(variant.active_signs) * band[list(variant.active_joints)]
 
     def sample_next_state(
         self,
@@ -180,9 +206,13 @@ class LimbModel(
         magnitudes = self.variant.default_magnitudes
         max_reach = np.array(state.max_reach)
         signalled = list(state.signalled)
+        resistance = list(state.resistance or (None,) * len(magnitudes))
+        bias = state.sensor_bias or tuple(
+            rng.normal(0.0, self.torque_noise, len(magnitudes))
+        )
         failure = ""
         for _ in range(self.action_repeat):
-            commanded = sim.get_commanded_torque(action)
+            commanded = sim.get_commanded_torque(action, person_limits)
             if exceeds_robot_torque_limits(sim, commanded):
                 failure = "robot torque limits"
                 break
@@ -195,14 +225,20 @@ class LimbModel(
                 arm_in_collision(sim) or limb_in_collision(sim, resting)
             ):
                 failure = "collision"
-            reach = self.get_reach(np.array(sim.env.limb.get_joint_positions()))
+            positions = np.array(sim.env.limb.get_joint_positions())
+            reach = self.get_reach(positions)
             max_reach = np.maximum(max_reach, reach)
+            velocities = np.array(sim.env.limb.get_joint_velocities())
+            speeds = self.get_reach(velocities) * magnitudes
+            resisting = self.get_resisting_torque(positions, velocities, person_limits)
             for motion, scale in enumerate(reach):
-                if (
-                    signalled[motion] is None
-                    and scale * magnitudes[motion] > limits[motion]
-                ):
-                    signalled[motion] = float(scale * magnitudes[motion])
+                angle = float(scale * magnitudes[motion])
+                if signalled[motion] is None and angle > limits[motion]:
+                    signalled[motion] = angle
+                farthest = resistance[motion]
+                if farthest is None or angle > farthest[0]:
+                    torque = float(resisting[motion] + bias[motion])
+                    resistance[motion] = (angle, torque, float(speeds[motion]))
             if failure:
                 break
         coupled = sim.capture()
@@ -212,6 +248,8 @@ class LimbModel(
             coupled=coupled,
             max_reach=tuple(max_reach),
             signalled=tuple(signalled),
+            resistance=tuple(resistance),
+            sensor_bias=tuple(map(float, bias)),
             reached=not failure and error < sim.goal_tolerance,
             failure=failure,
         )

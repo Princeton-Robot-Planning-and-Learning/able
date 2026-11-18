@@ -6,6 +6,8 @@ configuration. Tasks are drawn so that the robot can grasp the limb and hold it
 along the straight line to the goal.
 """
 
+import copy
+import dataclasses
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -238,6 +240,20 @@ class LimbTaskDistribution(TaskDistribution[LimbTask]):
             self._resting = get_resting_penetration(self._sim)
         return self._sim
 
+    @property
+    def depends_on_hidden_params(self) -> bool:
+        return True
+
+    def given(self, hidden_params: Any) -> "LimbTaskDistribution":
+        """Tasks within the range of a person with these parameters, sharing this
+        distribution's simulator."""
+        _ = self.sim
+        conditioned = copy.copy(self)
+        conditioned._low, conditioned._high = self._model.variant.get_joint_limits(
+            np.asarray(hidden_params)
+        )
+        return conditioned
+
     def close(self) -> None:
         """Disconnect the simulator."""
         if self._sim is not None:
@@ -417,17 +433,26 @@ def make_domain(
     prior: RangeOfMotionPrior = RangeOfMotionPrior(),
     true_theta: NDArray[np.float64] | None = None,
     settings: LimbSimSettings = LimbSimSettings(),
+    band_width: float | None = None,
+    torque_noise: float = 1.0,
 ) -> LimbDomain:
     """A limb domain for the variant, with a person drawn from the prior unless
     true_theta is given. Tasks lie within the person's range, with start and goal
     min_separation to max_separation apart and goals leaning toward the limits by
-    goal_lean (see TaskBox), and the robot's initial belief is the prior."""
+    goal_lean (see TaskBox), and the robot's initial belief is the prior. The
+    band width, if given, replaces the person's, and torque_noise is the error of
+    the robot's sensing of the person's resistance (N m)."""
     limb_variant: LimbVariant = get_variant(variant)
     num_motions = len(limb_variant.active_motions)
     rng = np.random.default_rng(seed)
     if true_theta is None:
         true_theta = prior.sample(num_motions, rng)
-    model = LimbModel(limb_variant, settings, horizon=horizon)
+    if band_width is not None:
+        person = dataclasses.replace(settings.person, band_width=band_width)
+        settings = dataclasses.replace(settings, person=person)
+    model = LimbModel(
+        limb_variant, settings, horizon=horizon, torque_noise=torque_noise
+    )
     mean, stddev, low, high = prior.get_parameters(num_motions).T
     return Domain(
         env_model=model,

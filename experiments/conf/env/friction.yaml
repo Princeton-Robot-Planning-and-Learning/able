@@ -6,7 +6,7 @@ env:
     sim: 2d
     # Holes in the maze, added in a fixed order (0 to 9), and the goal's radius (m).
     num_holes: 4
-    goal_radius: 0.3
+    goal_radius: 0.2
     # Pushes per episode.
     horizon: 15
     # Each task's start and goal are sampled with the shortest pushable path

@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Generic, Sequence
+from typing import Any, Generic, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
@@ -25,6 +25,17 @@ class TaskDistribution(ABC, Generic[TaskType]):
     @abstractmethod
     def sample(self, rng: np.random.Generator) -> TaskType:
         """Draw one task."""
+
+    @property
+    def depends_on_hidden_params(self) -> bool:
+        """Whether given() changes the distribution."""
+        return False
+
+    def given(self, hidden_params: Any) -> "TaskDistribution[TaskType]":
+        """The distribution of tasks if these were the hidden parameters. By
+        default tasks do not depend on them."""
+        del hidden_params  # unused because tasks do not depend on them
+        return self
 
 
 class FiniteTaskDistribution(TaskDistribution[TaskType]):

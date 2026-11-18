@@ -1,5 +1,7 @@
 """Tests for belief_updaters/range_of_motion.py."""
 
+import dataclasses
+
 import numpy as np
 import pytest
 from pybullet_helpers.geometry import SE2Pose
@@ -8,6 +10,7 @@ from able.belief_updaters.range_of_motion import RangeOfMotionBeliefUpdater
 from able.beliefs.range_of_motion import RangeOfMotionBelief
 from able.envs.limb.human import RangeOfMotionPrior, get_variant
 from able.envs.limb.model import LimbState
+from able.envs.limb.person import PersonModel
 from able.envs.limb.query import LimbQuery, QueryModel, QueryOutcome
 from able.envs.limb.sim import CoupledState
 from able.structs import QueryResponse
@@ -24,9 +27,16 @@ def _prior() -> RangeOfMotionBelief:
     )
 
 
-def _state(max_reach, signalled=(None, None, None)) -> LimbState:
+def _state(max_reach, signalled=(None, None, None), resistance=()) -> LimbState:
     coupled = CoupledState(SE2Pose(0.0, 0.0, 0.0), (), (), (0.0,) * 6, (), None)
-    return LimbState(coupled, np.zeros(6), tuple(max_reach), tuple(signalled), ())
+    return LimbState(
+        coupled,
+        np.zeros(6),
+        tuple(max_reach),
+        tuple(signalled),
+        (),
+        resistance=tuple(resistance),
+    )
 
 
 def _response(motion, answer, reached_target=False, settled=True, peak=0.5):
@@ -97,3 +107,50 @@ def test_random_motion_never_excludes_the_person():
         state = next_state
     assert np.all(belief.lower <= theta)
     assert np.all(belief.lower > RangeOfMotionPrior().low)
+
+
+def test_update_from_resistance():
+    """Tests that a task's farthest resistance counts once, when it ends: little
+    resistance raises the floor to where the band could start, more measures the
+    limit, unless the belief finds the angle unlikely to be inside the band."""
+    person = PersonModel(band_width=0.15, band_stiffness=30.0)
+    updater = RangeOfMotionBeliefUpdater(VARIANT, MODEL, person, torque_noise=1.0)
+    belief = _prior()
+    magnitude = MAGNITUDES[0]
+    start = _state([0.0] * 3, resistance=(None,) * 3)
+
+    def moved(angle, torque, speed=0.0, reached=True):
+        state = _state([0.0] * 3, resistance=((angle, torque, speed), None, None))
+        return dataclasses.replace(state, reached=reached)
+
+    quiet = moved(0.75 * magnitude, 0.5, reached=False)
+    assert updater.update_from_transition(belief, start, np.zeros(7), quiet) == belief
+    floored = updater.update_from_transition(
+        belief, quiet, np.zeros(7), moved(0.75 * magnitude, 0.5)
+    )
+    expected = (0.75 * magnitude + 0.15 - 2.5 / 30.0) / magnitude
+    assert floored.lower[0] == pytest.approx(expected)
+    assert np.array_equal(floored.mean, belief.mean)
+    # Moving away, the band's damping could hide resistance, so the floor is lower.
+    leaving = updater.update_from_transition(
+        belief, start, np.zeros(7), moved(0.75 * magnitude, 0.5, -1.0)
+    )
+    assert leaving.lower[0] == pytest.approx(expected - 1.0 / 30.0 / magnitude)
+    done = moved(0.75 * magnitude, 0.5)
+    assert updater.update_from_transition(floored, done, np.zeros(7), done) == floored
+
+    measured = updater.update_from_transition(
+        floored, start, np.zeros(7), moved(0.8 * magnitude, 3.0)
+    )
+    once = floored.with_measurement(
+        0, (0.8 * magnitude + 0.05) / magnitude, 1.0 / 30.0 / magnitude
+    )
+    assert measured == once
+    # Far below where the belief puts the limit, the same torque is more likely
+    # the sensor's error than the band.
+    narrow = dataclasses.replace(belief, stddev=np.full(3, 0.02))
+    unlikely = updater.update_from_transition(
+        narrow, start, np.zeros(7), moved(0.5 * magnitude, 2.5)
+    )
+    assert np.array_equal(unlikely.mean, narrow.mean)
+    assert np.array_equal(unlikely.stddev, narrow.stddev)

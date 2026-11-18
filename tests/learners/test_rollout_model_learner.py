@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from able.beliefs.interval import IntervalBelief
-from able.envs.base import FiniteTaskDistribution
+from able.envs.base import FiniteTaskDistribution, TaskDistribution
 from able.learners.belief_sources import CurrentBeliefSource
 from able.learners.rollout_model_learner import RolloutModelLearner
 from able.models.base import Dataset
@@ -119,3 +119,47 @@ def test_the_planner_can_take_rows_from_every_rollout():
     ]
     assert all(steps > 0 for _, steps, _ in planner.rollouts)
     assert len(learner.dataset) == 2
+
+
+class _GivenTasks(TaskDistribution):
+    """A task per hidden parameter: the goal just short of the wall."""
+
+    def __init__(self) -> None:
+        self.given_params: list = []
+
+    def sample(self, rng):
+        raise AssertionError("Tasks need hidden parameters")
+
+    @property
+    def depends_on_hidden_params(self):
+        return True
+
+    def given(self, hidden_params):
+        self.given_params.append(hidden_params)
+        return FiniteTaskDistribution(
+            [WallTask(initial_state=np.zeros(1), goal=float(hidden_params[0]) - 0.1)]
+        )
+
+
+def test_training_tasks_are_drawn_given_the_rollout_params():
+    """Tests that tasks that depend on the hidden parameters are drawn given those
+    each rollout runs with, so every goal just short of its wall is reached."""
+    planner = _StraightPlanner()
+    tasks = _GivenTasks()
+    learner: RolloutModelLearner = RolloutModelLearner(
+        planner,
+        tasks,
+        CurrentBeliefSource(),
+        Budget(),
+        WallModel(),
+        num_training_tasks=3,
+    )
+    learner.learn(
+        BELIEF,
+        planner.get_default_params(),
+        Budget(max_iterations=1),
+        np.random.default_rng(0),
+    )
+    assert len(tasks.given_params) == 3
+    goals = [float(p[0]) - 0.1 for p in tasks.given_params]
+    assert [t.goal for t in planner.example_tasks] == pytest.approx(goals)

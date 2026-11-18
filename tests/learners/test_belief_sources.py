@@ -8,6 +8,8 @@ from numpy.typing import NDArray
 from able.belief_updaters.joint_limits import JointLimitBeliefUpdater
 from able.beliefs.base import Belief
 from able.beliefs.interval import IntervalBelief
+from able.envs.base import TaskDistribution
+from able.envs.simulated import SimulatedEnvironment
 from able.envs.two_link_arm import JOINT_LIMIT_PRIOR, TwoLinkArmModel, make_domain
 from able.info_gatherers.base import NullInformationGatherer
 from able.learners.belief_sources import (
@@ -157,3 +159,53 @@ def test_belief_coverage_with_one_candidate_is_dreaming():
             iteration, belief, params, np.random.default_rng(iteration)
         )
         assert chosen == dream
+
+
+class _RecordingTasks(TaskDistribution):
+    """The arm's tasks, recording the hidden parameters they are drawn given."""
+
+    def __init__(self, tasks: TaskDistribution) -> None:
+        self._tasks = tasks
+        self.given_params: list = []
+
+    def sample(self, rng):
+        return self._tasks.sample(rng)
+
+    def given(self, hidden_params):
+        self.given_params.append(hidden_params)
+        return self._tasks
+
+
+def test_dreams_draw_tasks_given_their_hypotheses():
+    """Tests that each dream draws its tasks given the hidden parameters it
+    imagines, not the true ones."""
+    domain = make_domain(seed=0)
+    tasks = _RecordingTasks(domain.task_distribution)
+    model = domain.env_model
+    planner = RandomShootingPlanner(model)
+    source = ImaginedNextBeliefSource(
+        model,
+        tasks,
+        planner,
+        JointLimitBeliefUpdater(),
+        NullInformationGatherer(),
+        gathering_budget=Budget(max_iterations=0),
+        execution_budget=Budget(max_iterations=1),
+        planning_budget=Budget(),
+    )
+    belief = IntervalBelief(JOINT_LIMIT_PRIOR)
+    for iteration in (1, 2):
+        source.get_training_belief(
+            iteration,
+            belief,
+            planner.get_default_params(),
+            np.random.default_rng(iteration),
+        )
+    assert len(tasks.given_params) == 2
+    real_env = domain.real_env
+    assert isinstance(real_env, SimulatedEnvironment)
+    truth = real_env.hidden_params  # pylint: disable=no-member
+    for params in tasks.given_params:
+        assert not np.allclose(params, truth)
+        assert np.all(params >= JOINT_LIMIT_PRIOR[:, 0])
+        assert np.all(params <= JOINT_LIMIT_PRIOR[:, 1])
