@@ -13,7 +13,12 @@ import numpy as np
 from numpy.typing import NDArray
 
 from able.beliefs.interval import IntervalBelief
-from able.envs.base import BatchRolloutModel, Domain, FiniteTaskDistribution
+from able.envs.base import (
+    BatchRolloutModel,
+    Domain,
+    FiniteTaskDistribution,
+    TaskDistribution,
+)
 from able.envs.simulated import SimulatedEnvironment
 from able.structs import Task
 
@@ -271,6 +276,47 @@ def make_domain(
     return Domain(
         env_model=model,
         task_distribution=FiniteTaskDistribution(tasks),
+        initial_belief=IntervalBelief(JOINT_LIMIT_PRIOR),
+        real_env=SimulatedEnvironment(model, true_limits, rng),
+    )
+
+
+# The widest joint limits the prior allows, [lo1, hi1, lo2, hi2].
+PRIOR_OUTER_LIMITS = np.array(
+    [
+        JOINT_LIMIT_PRIOR[0, 0],
+        JOINT_LIMIT_PRIOR[1, 1],
+        JOINT_LIMIT_PRIOR[2, 0],
+        JOINT_LIMIT_PRIOR[3, 1],
+    ]
+)
+
+
+class ArmTaskDistribution(TaskDistribution[ArmTask]):
+    """A new goal per task, sampled as sample_goal_positions() does within the
+    given joint limits; every task starts at q = 0."""
+
+    def __init__(self, model: TwoLinkArmModel, limits: NDArray[np.float64]) -> None:
+        self._model = model
+        self._limits = np.asarray(limits, dtype=np.float64)
+
+    def sample(self, rng: np.random.Generator) -> ArmTask:
+        goal = sample_goal_positions(self._model, self._limits, 1, rng)[0]
+        return ArmTask(initial_state=np.zeros(2), goal=goal)
+
+
+def make_sampled_domain(seed: int, goal_tolerance: float = 0.1) -> ArmDomain:
+    """An arm domain whose tasks are sampled anew within the prior's widest joint
+    limits, so they do not depend on the true limits and some are unreachable.
+
+    The true joint limits are drawn from the prior as in make_domain().
+    """
+    rng = np.random.default_rng(seed)
+    model = TwoLinkArmModel(goal_tolerance=goal_tolerance)
+    true_limits = rng.uniform(JOINT_LIMIT_PRIOR[:, 0], JOINT_LIMIT_PRIOR[:, 1])
+    return Domain(
+        env_model=model,
+        task_distribution=ArmTaskDistribution(model, PRIOR_OUTER_LIMITS),
         initial_belief=IntervalBelief(JOINT_LIMIT_PRIOR),
         real_env=SimulatedEnvironment(model, true_limits, rng),
     )
