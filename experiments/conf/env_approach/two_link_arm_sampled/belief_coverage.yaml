@@ -1,0 +1,14 @@
+_target_: able.approaches.make_sampled_arm_belief_coverage_robot
+# Each training belief is the farthest of this many dreams.
+num_candidates: 4
+# Training tasks planned under each training belief.
+num_training_tasks: 8
+# The model that proposes plans (the 15 displacements) from the goal and each
+# interval's midpoint and width, refit once per sleep.
+model:
+  _target_: able.models.flow_matching.FlowMatchingModel
+  width: 128
+  depth: 3
+  num_steps: 2000
+# Plans the model proposes to seed the first batch.
+num_proposals: 4

@@ -59,11 +59,13 @@ def test_robot():
     params = robot.planner_params
     assert not robot.gather_information(domain.real_env, Budget(), rng)
     assert robot.belief is domain.initial_belief
-    # The joint-limit updater ignores query responses.
+    # Joint 0 reaching 0.55 shows that its upper limit is at least 0.55.
     robot.update_belief_from_queries(
-        [QueryResponse(JointQuery(joint=0, angle=1.0), True)]
+        [QueryResponse(JointQuery(joint=0, angle=0.55), True)]
     )
-    assert robot.belief is domain.initial_belief
+    belief = robot.belief
+    assert isinstance(belief, IntervalBelief)
+    assert belief.intervals[1, 0] == 0.55
 
     # Moving joint 0 to 0.6 shows that its upper limit is at least 0.6.
     robot.update_belief_from_transition(

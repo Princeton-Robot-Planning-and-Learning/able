@@ -30,6 +30,7 @@ from able.envs.limb.query import LimbQuery, QueryOutcome
 from able.envs.limb.tasks import LimbDomain
 from able.envs.two_link_arm import ArmDomain, ArmTask, JointQuery, TwoLinkArmModel
 from able.info_gatherers.base import NullInformationGatherer
+from able.info_gatherers.bisect_limits import BisectLimitGatherer
 from able.info_gatherers.probe_floor import ProbeFloorGatherer
 from able.info_gatherers.push_to_limit import PushToLimitGatherer
 from able.info_gatherers.reach_query import ReachQueryGatherer
@@ -339,6 +340,182 @@ def _make_coverage_source(
     """Each training belief is the farthest of num_candidates dreams, in each
     parameter's mean and standard deviation in units of the prior's."""
     return BeliefCoverageSource(dreamer, make_moment_features(prior), num_candidates)
+
+
+def _make_sampled_arm_parts(
+    domain: ArmDomain, model: ConditionalModel, num_proposals: int
+) -> tuple[
+    TwoLinkArmModel, RandomShootingPlanner, JointLimitBeliefUpdater, BisectLimitGatherer
+]:
+    """The model, random shooting planner with warm starts from the model, belief
+    updater, and bisecting gatherer of a robot on the sampled arm."""
+    env_model = domain.env_model
+    assert isinstance(env_model, TwoLinkArmModel)
+    params = RandomShootingParams(num_proposals=num_proposals, model=model)
+    belief_updater = JointLimitBeliefUpdater()
+    return (
+        env_model,
+        RandomShootingPlanner(env_model, params),
+        belief_updater,
+        BisectLimitGatherer(belief_updater),
+    )
+
+
+def _make_sampled_arm_robot(
+    domain: ArmDomain,
+    model: ConditionalModel,
+    num_proposals: int,
+    num_training_tasks: int,
+    planning_budget: Budget,
+    make_source: Callable[..., Any] | None,
+    max_sleeps: int | None = None,
+    gathering_budget: Budget | None = None,
+    execution_budget: Budget | None = None,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+) -> ArmRobot:
+    """A sampled-arm robot whose learner trains under make_source(dreamer), or
+    never learns if make_source is None. The model is refit once per sleep."""
+    env_model, planner, belief_updater, gatherer = _make_sampled_arm_parts(
+        domain, model, num_proposals
+    )
+    learner: Any = NullLearner()
+    if make_source is not None:
+        dreamer = None
+        if gathering_budget is not None and execution_budget is not None:
+            dreamer = _make_dreamer(
+                domain,
+                env_model,
+                planner,
+                belief_updater,
+                gatherer,
+                gathering_budget,
+                execution_budget,
+                planning_budget,
+                recorder,
+            )
+        learner = ModelLearner(
+            planner,
+            domain.task_distribution,
+            make_source(dreamer),
+            planning_budget,
+            max_sleeps=max_sleeps,
+            refit="per_sleep",
+            num_training_tasks=num_training_tasks,
+        )
+    return Robot(
+        planner=planner,
+        learner=learner,
+        belief_updater=belief_updater,
+        info_gatherer=gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
+def make_sampled_arm_scratch_robot(
+    domain: ArmDomain,
+    model: ConditionalModel,
+    num_proposals: int = 4,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+) -> ArmRobot:
+    """A sampled-arm robot that plans from scratch and never learns."""
+    del recorder  # unused because the robot imagines nothing while it sleeps
+    return _make_sampled_arm_robot(domain, model, num_proposals, 1, Budget(), None)
+
+
+def make_sampled_arm_current_belief_robot(
+    domain: ArmDomain,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_proposals: int = 4,
+    num_training_tasks: int = 8,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+) -> ArmRobot:
+    """A sampled-arm robot that trains its model under its current belief."""
+    del recorder  # unused because the robot imagines nothing while it sleeps
+    return _make_sampled_arm_robot(
+        domain,
+        model,
+        num_proposals,
+        num_training_tasks,
+        planning_budget,
+        lambda _: CurrentBeliefSource(),
+    )
+
+
+def make_sampled_arm_prior_only_robot(
+    domain: ArmDomain,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_proposals: int = 4,
+    num_training_tasks: int = 8,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+) -> ArmRobot:
+    """A sampled-arm robot that trains its model under the prior in its first
+    sleep, then never learns again."""
+    del recorder  # unused because the robot imagines nothing while it sleeps
+    return _make_sampled_arm_robot(
+        domain,
+        model,
+        num_proposals,
+        num_training_tasks,
+        planning_budget,
+        lambda _: PriorSource(domain.initial_belief),
+        max_sleeps=1,
+    )
+
+
+def make_sampled_arm_dreaming_robot(
+    domain: ArmDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_proposals: int = 4,
+    num_training_tasks: int = 8,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+) -> ArmRobot:
+    """A sampled-arm robot that trains its model under the beliefs it dreams of
+    holding at evaluation. The budgets should match the cycle budgets."""
+    return _make_sampled_arm_robot(
+        domain,
+        model,
+        num_proposals,
+        num_training_tasks,
+        planning_budget,
+        lambda dreamer: dreamer,
+        gathering_budget=gathering_budget,
+        execution_budget=execution_budget,
+        recorder=recorder,
+    )
+
+
+def make_sampled_arm_belief_coverage_robot(
+    domain: ArmDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_candidates: int = 4,
+    num_proposals: int = 4,
+    num_training_tasks: int = 8,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+) -> ArmRobot:
+    """A sampled-arm robot that trains under the farthest of num_candidates dreams
+    from the beliefs it has trained under, by moment features. The budgets should
+    match the cycle budgets."""
+    return _make_sampled_arm_robot(
+        domain,
+        model,
+        num_proposals,
+        num_training_tasks,
+        planning_budget,
+        lambda dreamer: _make_coverage_source(
+            dreamer, domain.initial_belief, num_candidates
+        ),
+        gathering_budget=gathering_budget,
+        execution_budget=execution_budget,
+        recorder=recorder,
+    )
 
 
 def _make_limb_parts(
