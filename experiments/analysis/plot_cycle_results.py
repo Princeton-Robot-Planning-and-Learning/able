@@ -19,6 +19,7 @@ from matplotlib import pyplot as plt
 APPROACH_TO_DISPLAY_NAME = {
     "belief_coverage": "Belief coverage",
     "current_belief": "Current belief only",
+    "current_belief_oracle": "Belief anticipation oracle",
     "dreaming": "Dreaming",
     "prior_only": "Prior only (first sleep)",
     "scratch": "Plan from scratch",
@@ -31,6 +32,7 @@ APPROACH_TO_COLOR = {
     "scratch": "#eb6834",
     "current_belief": "#1baf7a",
     "prior_only": "#eda100",
+    "current_belief_oracle": "#1a1a19",
 }
 EXTRA_COLORS = ["#e87ba4", "#008300", "#6250d6", "#e34948"]
 
@@ -38,6 +40,7 @@ EXTRA_COLORS = ["#e87ba4", "#008300", "#6250d6", "#e34948"]
 # so it is also dashed.
 APPROACH_TO_LINESTYLE = {
     "prior_only": "--",
+    "current_belief_oracle": ":",
 }
 
 ENV_TO_DISPLAY_NAME = {

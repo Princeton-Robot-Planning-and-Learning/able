@@ -299,3 +299,39 @@ def test_run_cycles_records_every_stage():
     first_step = recorder.get_names().index("start_episode") + 1
     execution_steps = recorder.events[first_step : first_step + horizon]
     assert execution_steps[-1][1] is results[0].belief
+
+
+class _BeliefLearner(_CountingLearner):
+    """Records the belief of each sleep."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.beliefs: list[Belief[np.ndarray]] = []
+
+    def learn(self, belief, params, budget, rng, pool=None):
+        self.beliefs.append(belief)
+        return super().learn(belief, params, budget, rng, pool)
+
+
+def test_belief_anticipation_oracle():
+    """The oracle sleeps after execution, under the belief it is evaluated with."""
+    domain = make_domain(seed=0, true_limits=TRUE_LIMITS)
+    learner = _BeliefLearner()
+    robot = _make_robot(domain, learner)
+    eval_tasks = [domain.task_distribution.sample(np.random.default_rng(0))]
+    recorder = EventRecorder()
+    results = run_cycles(
+        robot,
+        domain.real_env,
+        domain.task_distribution,
+        eval_tasks,
+        num_cycles=2,
+        budgets=_budgets(num_executions=1),
+        rng=np.random.default_rng(0),
+        recorder=recorder,
+        belief_anticipation_oracle=True,
+    )
+    stages = [e[2] for e in recorder.events if e[0] == "start_stage"]
+    assert stages[:4] == [Stage.QUERIES, Stage.EXECUTION, Stage.SLEEP, Stage.EVALUATION]
+    for belief, result in zip(learner.beliefs, results):
+        assert belief is result.belief
