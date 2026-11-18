@@ -1,11 +1,16 @@
 # @package _global_
-# The two-link arm with a new goal sampled per task within the prior's widest
-# joint limits, so some goals are unreachable, and a flow-matching model of plans
-# instead of the plan cache. Its approaches are in env_approach/two_link_arm_sampled.
+# The two-link arm with a new goal sampled per task within the true joint
+# limits, and a flow-matching model of plans instead of the plan cache. Dreams and
+# training draw tasks within their own hypothesized limits. Its approaches are in
+# env_approach/two_link_arm_sampled.
 env:
   domain:
     _target_: able.envs.two_link_arm.make_sampled_domain
     goal_tolerance: 0.1
+    # How far goals lean toward the limits: each joint of a goal lies a
+    # Beta(goal_lean, 1) fraction of the way to a limit, short of it, as for the
+    # limb. 1 is uniform within the limits.
+    goal_lean: 4.0
   # Instantiated with the domain's environment model, only when recording videos.
   renderer:
     _target_: able.rendering.two_link_arm.TwoLinkArmRenderer

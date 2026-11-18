@@ -26,6 +26,11 @@ from able.approaches import (
     make_limb_prior_only_robot,
     make_limb_scratch_robot,
     make_prior_only_robot,
+    make_sampled_arm_belief_coverage_robot,
+    make_sampled_arm_current_belief_robot,
+    make_sampled_arm_dreaming_robot,
+    make_sampled_arm_prior_only_robot,
+    make_sampled_arm_scratch_robot,
     make_scratch_robot,
 )
 from able.beliefs.interval import IntervalBelief
@@ -37,7 +42,7 @@ from able.envs.human_reach.tasks import make_domain as make_reach_domain
 from able.envs.limb.model import LimbModel, LimbTask
 from able.envs.limb.tasks import LimbTaskDistribution
 from able.envs.limb.tasks import make_domain as make_limb_domain
-from able.envs.two_link_arm import make_domain
+from able.envs.two_link_arm import make_domain, make_sampled_domain
 from able.models.exact_match_cache import ExactMatchCache
 from able.models.neural import MLPRegressor
 from able.planners.mpc import LimbMPCPlanner, SeedConfig
@@ -481,3 +486,49 @@ def test_make_human_reach_belief_coverage_robot():
         robot.sleep(Budget(max_iterations=2), np.random.default_rng(0))
     assert fit.call_count == 1
     _close(domain, robot)
+
+
+def test_make_sampled_arm_robots():
+    """Tests that the sampled-arm robots bisect the limits, propose plans from the
+    model once it is fit at the end of a sleep, and that prior-only learns once."""
+    from able.info_gatherers.bisect_limits import (  # pylint: disable=import-outside-toplevel
+        BisectLimitGatherer,
+    )
+    from able.models.flow_matching import (  # pylint: disable=import-outside-toplevel
+        FlowMatchingModel,
+    )
+
+    domain = make_sampled_domain(seed=0)
+    model = FlowMatchingModel(num_steps=5, width=8, depth=1)
+    budgets = _budgets(num_dreams=0)
+    one = Budget(max_iterations=1)
+    options = {"model": model, "num_training_tasks": 2}
+    robots = [
+        make_sampled_arm_scratch_robot(domain, model),
+        make_sampled_arm_current_belief_robot(domain, one, **options),
+        make_sampled_arm_prior_only_robot(domain, one, **options),
+        make_sampled_arm_dreaming_robot(
+            domain, budgets.information_gathering, budgets.execution, one, **options
+        ),
+        make_sampled_arm_belief_coverage_robot(
+            domain,
+            budgets.information_gathering,
+            budgets.execution,
+            one,
+            num_candidates=2,
+            **options,
+        ),
+    ]
+    rng = np.random.default_rng(0)
+    for robot in robots:
+        assert isinstance(robot.info_gatherer, BisectLimitGatherer)
+        assert robot.planner_params.model is model
+        robot.sleep(Budget(max_iterations=2), rng)
+    assert robots[0].planner_params.model is model
+    for robot in robots[1:]:
+        assert robot.planner_params.model is not model
+        assert robot.planner_params.model.fitted is not None
+    prior_only = robots[2]
+    params = prior_only.planner_params
+    prior_only.sleep(Budget(max_iterations=1), rng)
+    assert prior_only.planner_params is params

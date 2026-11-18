@@ -203,10 +203,19 @@ class ModelLearner(
         rng: np.random.Generator,
     ) -> Dataset:
         """Plan for the training tasks under the belief, with the planner's
-        training parameters, and return the planner's rows."""
+        training parameters, and return the planner's rows. Tasks that depend on
+        the hidden parameters are drawn given parameters sampled from the
+        belief."""
         params = self._planner.get_training_params(params)
         examples = []
-        for task in self._get_training_tasks(rng):
+        if self._task_distribution.depends_on_hidden_params:
+            tasks = [
+                self._task_distribution.given(belief.sample(rng)).sample(rng)
+                for _ in range(self._num_training_tasks)
+            ]
+        else:
+            tasks = self._get_training_tasks(rng)
+        for task in tasks:
             try:
                 policy = self._planner.plan(
                     task, belief, params, self._planning_budget, rng
