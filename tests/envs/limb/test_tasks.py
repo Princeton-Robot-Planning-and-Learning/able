@@ -134,6 +134,26 @@ def test_sampled_tasks(domain):
         assert model.get_goal_error(task, state) == pytest.approx(separation, abs=0.01)
 
 
+def test_tasks_given_other_params(domain):
+    """Tests that tasks drawn given other hidden parameters lie within that
+    person's range, and that the distribution still draws the true person's."""
+    model = domain.env_model
+    assert isinstance(model, LimbModel)
+    theta = _get_true_theta(domain)
+    other = theta * 0.8
+    given = domain.task_distribution.given(other)
+    assert domain.task_distribution.depends_on_hidden_params
+    lower, upper = model.variant.get_joint_limits(other)
+    active = list(model.variant.active_joints)
+    task = given.sample(np.random.default_rng(1))
+    for positions in (task.initial_state.limb_positions, task.goal):
+        assert np.all(lower[active] <= positions[active] + 1e-9)
+        assert np.all(positions[active] <= upper[active] + 1e-9)
+    assert given.sim is domain.task_distribution.sim
+    true_limits = np.concatenate(model.variant.get_joint_limits(theta))
+    assert not np.allclose(np.concatenate([lower, upper]), true_limits)
+
+
 @pytest.fixture(name="arm_domain", params=["human-left-arm", "human-right-arm"])
 def _arm_domain(request):
     """Arms whose motions bound their joints from above and from below."""
