@@ -5,7 +5,8 @@ a weld, and actions are torque corrections on top of the torque that holds the
 coupled system still. The person holds up their own limb with their joint torques
 (see person.py), so the robot holds only its arm. The limb's joint limits are the
 widest range the prior allows; the person's range of motion enters the physics only
-through the walls their joints put past it, when a step is given the limits.
+through the walls their joints put past it and the soft band just inside it, when a
+step is given the limits.
 """
 
 import dataclasses
@@ -79,7 +80,7 @@ class CoupledState:
 class HumanTorques:
     """The torque on the limb's joints over one step, the static loads in it, and
     the person's resistance: their joint torque beyond holding up the limb, such as
-    the walls past their limits."""
+    the walls past their limits and the bands inside them."""
 
     total: NDArray[np.float64]
     tone: NDArray[np.float64]
@@ -337,7 +338,8 @@ class LimbSim:
     ) -> HumanTorques:
         """Step once under the robot torque, clipped to the limits, with the
         person's joint torque, and return the torque on the limb. The person's
-        joints put walls past person_limits, if given."""
+        joints put walls past person_limits, if given, and resist in a band inside
+        them."""
         env = self.env
         space = env.torque_action_space
         positions, velocities = self._get_limb_state()
@@ -351,6 +353,7 @@ class LimbSim:
             gravity,
             person_limits,
             limb_name,
+            band=True,
         )
         # The environment adds muscle tone itself.
         clipped = list(np.clip(torque, space.low, space.high))
@@ -366,19 +369,32 @@ class LimbSim:
             total=total, tone=tone, gravity=gravity, resistance=resistance
         )
 
-    def get_hold_torque(self) -> NDArray[np.float64]:
+    def get_hold_torque(
+        self, person_limits: JointLimits | None = None
+    ) -> NDArray[np.float64]:
         """The robot torque that holds the coupled system still: the arm's weight
-        plus whatever of the limb's the person does not hold, clipped to the
-        limits."""
+        plus whatever of the limb's the person does not hold, and the resistance of
+        the bands inside person_limits, if given, which the robot senses, clipped to
+        the limits."""
         space = self.env.torque_action_space
-        coupling = np.clip(self._get_limb_coupling_torque(), space.low, space.high)
+        load = self._get_limb_coupling_torque()
+        if person_limits is not None:
+            positions, velocities = self._get_limb_state()
+            band = self.settings.person.get_band_torque(
+                np.asarray(positions), np.asarray(velocities), person_limits
+            )
+            load = load + self._get_robot_torque_for_limb_load(-band)
+        coupling = np.clip(load, space.low, space.high)
         return self._get_arm_gravity_torque() + coupling
 
     def get_commanded_torque(
-        self, correction: NDArray[np.float64]
+        self,
+        correction: NDArray[np.float64],
+        person_limits: JointLimits | None = None,
     ) -> NDArray[np.float64]:
         """The correction plus the hold torque: what the robot is asked for."""
-        return np.asarray(correction, dtype=np.float64) + self.get_hold_torque()
+        hold = self.get_hold_torque(person_limits)
+        return np.asarray(correction, dtype=np.float64) + hold
 
     def advance_corrected(
         self,
@@ -386,7 +402,8 @@ class LimbSim:
         person_limits: JointLimits | None = None,
     ) -> HumanTorques:
         """Step once under the correction on top of the hold torque."""
-        return self.advance(self.get_commanded_torque(correction), person_limits)
+        commanded = self.get_commanded_torque(correction, person_limits)
+        return self.advance(commanded, person_limits)
 
     def get_control_saturation(self) -> float:
         """The torque needed to hold still as a fraction of the robot's limits,

@@ -103,6 +103,34 @@ def test_passing_the_limit(model, start):
         assert (angle is not None) == (reach[motion] > 0.05)
 
 
+def test_sensing_the_band(model, start):
+    """Tests that the robot senses the band's resistance at the farthest angle,
+    with one error per task."""
+    rng = np.random.default_rng(0)
+    state = _make_task(model, start, 0.5).initial_state
+    assert state.resistance == (None, None, None)
+    reach = np.array(state.max_reach)
+    magnitudes = model.variant.default_magnitudes
+    # Put each limit 0.05 rad past the limb's reach, where it is positive.
+    inside = reach > 0.05
+    theta = np.where(inside, reach + 0.05 / magnitudes, 1.0)
+    first = model.sample_next_state(state, np.zeros(7), theta, rng)
+    second = model.sample_next_state(first, np.zeros(7), theta, rng)
+    assert not second.violated
+    assert second.sensor_bias == first.sensor_bias
+    person = model.settings.person
+    limits = theta * magnitudes
+    for motion, sensed in enumerate(second.resistance):
+        assert sensed is not None
+        angle, torque, speed = sensed
+        depth = max(angle - (limits[motion] - person.band_width), 0.0)
+        expected = person.band_stiffness * depth
+        if depth > 0.0:
+            expected += person.band_damping * speed
+        assert expected > 2.0 or not inside[motion]
+        assert torque - second.sensor_bias[motion] == pytest.approx(expected, abs=0.2)
+
+
 def test_broken_constraints_freeze_the_state(model, start):
     """Tests that a torque past the robot's limits fails and stops the motion."""
     rng = np.random.default_rng(0)
