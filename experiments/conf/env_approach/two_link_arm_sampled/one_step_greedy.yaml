@@ -1,0 +1,32 @@
+_target_: able.approaches.make_sampled_arm_allocation_robot
+# Dreams per unit of the sleep, which estimate where the robot will plan next, as
+# many as belief coverage draws.
+dreams_per_unit: 4
+# Predicted transfer between beliefs whose means are d apart in units of the
+# prior's standard deviation, exp(-d^2 / (2 transfer_length^2)), times
+# exp(-narrowing_rate * s) when the training belief's standard deviations sum to
+# s less; and predicted gain after k units at a belief,
+# 1 - (1 + k / gain_scale)^(-gain_power). Both are fit to sweeps that train
+# under one belief and evaluate under others.
+transfer_length: 2.2
+narrowing_rate: 0.2
+gain_scale: 11.0
+gain_power: 1.5
+# Training tasks planned under each training belief.
+num_training_tasks: 8
+# The model that proposes plans (the 15 displacements) from the goal and each
+# interval's midpoint and width, refit once per sleep.
+model:
+  _target_: able.models.flow_matching.FlowMatchingModel
+  width: 128
+  depth: 3
+  num_steps: 2000
+# Plans the model proposes to seed the first batch.
+num_proposals: 4
+# Planning iterations for training plans during sleep, or null to use the
+# cycle's planning budget. Sleep can afford to plan longer than the robot can
+# while awake.
+training_iterations: null
+# If set, predict a plateau instead: a belief gains nothing until it has this many
+# effective units, which add over training beliefs weighted by transfer.
+run_length: null

@@ -1,0 +1,9 @@
+# Shared by every environment; the factory is in env_approach/<env>/.
+# Dreams imagine the same information gathering, task execution, and planning
+# that the robot does between sleeping and evaluation, and the units to split are
+# the sleep's iterations.
+gathering_budget: ${budgets.information_gathering}
+execution_budget: ${budgets.execution}
+planning_budget: ${budgets.planning}
+num_units: ${budgets.sleep.max_iterations}
+rule: one_step_greedy
