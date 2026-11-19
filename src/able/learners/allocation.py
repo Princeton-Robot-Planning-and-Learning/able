@@ -292,9 +292,22 @@ def _allocate_one_unit_at_a_time(
     return units
 
 
+def _get_progress(problem: _Problem, units: NDArray[np.float64]) -> NDArray[np.float64]:
+    """For each candidate, the need of the candidates still short of the run
+    length that one more unit there counts toward, or zeros if the problem has
+    no run length to add units toward."""
+    if problem.run_length is None or problem.combine != "sum":
+        return np.zeros(len(units))
+    effective = problem.prior + problem.kernel @ units
+    short = effective < problem.run_length - _TOLERANCE
+    return (problem.weights * short) @ problem.kernel
+
+
 def allocate(problem: _Problem, num_units: int, rule: str) -> NDArray[np.int64]:
     """Split num_units among the problem's candidates by the rule. Units that no
-    candidate gains from go to candidates in order of need."""
+    candidate gains from go where they count toward the most need still short of
+    the run length, since a later sleep can finish the run, and otherwise to
+    candidates in order of need."""
     assert rule in ALLOCATION_RULES, f"rule must be one of {ALLOCATION_RULES}"
     if rule == "one_step_greedy":
         units = _allocate_one_unit_at_a_time(problem, num_units)
@@ -307,8 +320,12 @@ def allocate(problem: _Problem, num_units: int, rule: str) -> NDArray[np.int64]:
     order = np.argsort(-problem.weights, kind="stable")
     position = 0
     while units.sum() < num_units:
-        units[order[position % len(order)]] += 1
-        position += 1
+        progress = _get_progress(problem, units)
+        if progress.max() > _TOLERANCE:
+            units[np.argmax(progress)] += 1
+        else:
+            units[order[position % len(order)]] += 1
+            position += 1
     return units.astype(np.int64)
 
 

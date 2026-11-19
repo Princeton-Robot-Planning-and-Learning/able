@@ -30,6 +30,10 @@ def test_finite_task_distribution():
     rng = np.random.default_rng(0)
     samples = [dist.sample(rng) for _ in range(100)]
     assert {id(t) for t in samples} == {id(t) for t in tasks}
+    state = rng.bit_generator.state
+    dist.start_day(rng)
+    assert dist.get_tasks() == tuple(tasks)
+    assert rng.bit_generator.state == state
     with pytest.raises(AssertionError):
         FiniteTaskDistribution([])
 

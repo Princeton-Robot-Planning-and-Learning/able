@@ -23,6 +23,9 @@ from able.learners.belief_sources import BeliefSource
 from able.learners.model_learner import ModelLearner
 from able.structs import HiddenParamsType, PlannerParamsType
 
+# Larger than any difference between the other features of two beliefs.
+_REVISION_SEPARATION = 1e6
+
 
 class PersonBelief(IntervalBelief):
     """An interval belief over every person's limits, and the person a unit of
@@ -122,12 +125,58 @@ def make_person_features(
     return get_features
 
 
+def make_person_routine_features(
+    one_person_prior: IntervalBelief, get_routine: Callable[[int], int]
+) -> Callable[[Belief[Any]], NDArray[np.float64]]:
+    """Features from make_person_features() with the index of the person's
+    routine inserted after the person's index."""
+    get_person_features = make_person_features(one_person_prior)
+
+    def get_features(belief: Belief[Any]) -> NDArray[np.float64]:
+        assert isinstance(belief, PersonBelief), "Need a PersonBelief"
+        features = get_person_features(belief)
+        return np.insert(features, 1, get_routine(belief.person))
+
+    return get_features
+
+
+def make_person_revision_features(
+    one_person_prior: IntervalBelief, get_num_revisions: Callable[[int], int]
+) -> Callable[[Belief[Any]], NDArray[np.float64]]:
+    """Features from make_person_features(), then how many times the person's
+    routine has been revised, scaled so that beliefs about a person before and
+    after a revision differ more in some feature than any beliefs between
+    revisions."""
+    get_person_features = make_person_features(one_person_prior)
+
+    def get_features(belief: Belief[Any]) -> NDArray[np.float64]:
+        assert isinstance(belief, PersonBelief), "Need a PersonBelief"
+        revisions = get_num_revisions(belief.person)
+        return np.append(get_person_features(belief), _REVISION_SEPARATION * revisions)
+
+    return get_features
+
+
 def get_same_person_transfer(
     a: NDArray[np.float64], b: NDArray[np.float64]
 ) -> NDArray[np.float64]:
     """Transfer of 1 between beliefs about the same person and 0 otherwise, for
     features from make_person_features()."""
     return (a[:, None, 0] == b[None, :, 0]).astype(np.float64)
+
+
+def make_same_person_transfer(
+    transfer: Callable[[NDArray[np.float64], NDArray[np.float64]], NDArray[np.float64]],
+) -> Callable[[NDArray[np.float64], NDArray[np.float64]], NDArray[np.float64]]:
+    """The transfer, but only between beliefs about the same person, for features
+    whose first entry is the person's index."""
+
+    def same_person_transfer(
+        a: NDArray[np.float64], b: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        return transfer(a, b) * get_same_person_transfer(a, b)
+
+    return same_person_transfer
 
 
 def make_person_moment_transfer(
@@ -169,9 +218,10 @@ def make_person_key_features(
 def make_routine_transfer(
     transfer: Callable[[NDArray[np.float64], NDArray[np.float64]], NDArray[np.float64]],
 ) -> Callable[[NDArray[np.float64], NDArray[np.float64]], NDArray[np.float64]]:
-    """Transfer from the cache key entries, and only between people who share a
-    routine, since cached plans serve only the goals they were planned for, for
-    features from make_person_key_features()."""
+    """Transfer from the features after the routine's index, and only between
+    people on the same routine, since plans serve only the goals they were
+    planned for, for features from make_person_key_features() or
+    make_person_routine_features()."""
 
     def routine_transfer(
         a: NDArray[np.float64], b: NDArray[np.float64]

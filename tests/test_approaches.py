@@ -614,7 +614,7 @@ def test_make_multi_person_robots():
     )
 
     domain = make_multi_person_domain(
-        seed=0, num_wards=2, people_per_ward=2, routine_size=4
+        seed=0, num_wards=2, people_per_ward=2, routine_size=4, revision_rate=0.5
     )
     budgets = _budgets(num_dreams=0)
     one = Budget(max_iterations=1)
@@ -631,19 +631,22 @@ def test_make_multi_person_robots():
         make_multi_person_belief_coverage_robot(
             domain, gathering, execution, one, ExactMatchCache(), **options
         ),
-        make_multi_person_allocation_robot(
-            domain,
-            gathering,
-            execution,
-            one,
-            ExactMatchCache(max_key_distance=6, num_exact_dims=2),
-            num_units=2,
-            rule="transfer_practice",
-            run_length=2,
-            dreams_per_unit=2,
-            max_key_distance=6,
-            **options,
-        ),
+        *[
+            make_multi_person_allocation_robot(
+                domain,
+                gathering,
+                execution,
+                one,
+                ExactMatchCache(max_key_distance=6, num_exact_dims=2),
+                num_units=2,
+                rule=rule,
+                run_length=2,
+                dreams_per_unit=2,
+                max_key_distance=6,
+                **options,
+            )
+            for rule in ("transfer_practice", "deliberate_practice")
+        ],
     ]
     rng = np.random.default_rng(0)
     for robot in robots:

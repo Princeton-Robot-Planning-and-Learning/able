@@ -17,6 +17,10 @@ env:
     # People per ward, if wards differ in size (overrides num_wards and
     # people_per_ward).
     ward_sizes: null
+    # Chance that each ward's routine is revised at the start of each new day.
+    revision_rate: 0.0
+    # How far each limit can move each night (uniformly), as people change.
+    drift: 0.0
   renderer: null
 budgets:
   information_gathering:

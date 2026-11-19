@@ -16,6 +16,8 @@ env:
     goal_tolerance: 0.1
     routine_size: null
     ward_sizes: null
+    revision_rate: 0.0
+    drift: 0.0
   renderer: null
 # Evaluation tasks, each for a person drawn from the schedule.
 num_eval_tasks: 24

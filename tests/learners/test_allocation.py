@@ -37,8 +37,8 @@ def _toy_problem(kappa: float, combine: str = "sum") -> _Problem:
 
 def test_transfer_practice_spreads_units_to_use_transfer():
     """Tests that with transfer, the runs rule finds the split that makes the
-    three middle values fast, while one unit at a time and ignoring transfer put
-    everything on the most likely value."""
+    three middle values fast, while one unit at a time puts everything on the
+    most likely value and ignoring transfer makes only two values fast."""
     problem = _toy_problem(0.5)
     units = allocate(problem, 10, "transfer_practice")
     np.testing.assert_array_equal(units, [0, 4, 2, 4, 0])
@@ -46,8 +46,8 @@ def test_transfer_practice_spreads_units_to_use_transfer():
     greedy = allocate(problem, 10, "one_step_greedy")
     assert problem.objective(greedy.astype(float)) == pytest.approx(0.3)
     independent = allocate(_toy_problem(0.0), 10, "transfer_practice")
-    assert independent[2] >= 6
-    assert problem.objective(independent.astype(float)) == pytest.approx(0.3)
+    assert independent[2] == 6
+    assert problem.objective(independent.astype(float)) == pytest.approx(0.55)
 
 
 def test_max_combine_covers_need():
@@ -76,6 +76,28 @@ def test_units_without_gain_go_to_likely_candidates():
         prior=np.ones(2),
     )
     assert allocate(problem, 3, "deliberate_practice").tolist() == [1, 2]
+
+
+def test_leftover_units_go_toward_unfinished_runs():
+    """Tests that units too few to finish a run go where they count toward the
+    most need still short of the run length, rather than to need already met."""
+    problem = _Problem(
+        weights=np.array([0.5, 0.2, 0.2, 0.1]),
+        kernel=np.array(
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 1.0, 0.0],
+                [0.0, 1.0, 1.0, 0.0],
+                [0.0] * 3 + [1.0],
+            ]
+        ),
+        gain=get_cliff_gain(4.0),
+        combine="sum",
+        prior=np.array([4.0, 0.0, 0.0, 0.0]),
+        run_length=4.0,
+    )
+    units = allocate(problem, 2, "transfer_practice")
+    assert units[0] == 0 and units[3] == 0 and units[1] + units[2] == 2
 
 
 def test_equal_features_transfer():
