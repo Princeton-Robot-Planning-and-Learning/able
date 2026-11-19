@@ -1,0 +1,36 @@
+_target_: able.approaches.make_friction_site_allocation_robot
+num_units: ${budgets.sleep.max_iterations}
+rule: deliberate_practice
+# Candidate (site, belief) pairs drawn per unit, by the schedule.
+dreams_per_unit: 16
+# Effective units a site needs before its whole routine is cached.
+run_length: 4
+# Most POMCPOW simulations per push, and the search depth in pushes.
+num_sims: 100
+max_depth: 8
+# A push's search may stop before num_sims: from min_sims on, every check_every
+# simulations, it stops if the most visited push's lower confidence bound (z
+# standard errors) is at least every other push's upper bound minus epsilon.
+early_stop:
+  _target_: able.planners.pomcpow.EarlyStopConfig
+  min_sims: 10
+  check_every: 5
+  epsilon: 1.0
+  z: 2.0
+# Routine tasks each unit rolls out, so a group needs 4 units to cover a routine
+# of 8.
+num_training_tasks: 2
+# Simulations per push when rolling out training tasks while sleeping.
+training_num_sims: 100
+# The model refits once per sleep on every rollout so far.
+keep_only_last_sleep: false
+# Pushes cached by the planner's push features, lent to inputs at the same puck
+# cell and goal whose belief is within max_key_distance steps.
+model:
+  _target_: able.approaches.make_friction_site_cache
+  num_floors: ${env.domain.num_floors}
+  position_resolution: 0.1
+  mean_resolution: 0.01
+  std_resolution: 0.005
+  max_per_key: 4
+  max_key_distance: 6

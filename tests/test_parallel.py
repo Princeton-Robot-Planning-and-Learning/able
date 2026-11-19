@@ -71,6 +71,7 @@ def _make_arm_robot() -> tuple:
         execution_budget=Budget(max_iterations=1),
         planning_budget=Budget(),
     )
+    assert isinstance(cache.key_resolution, float)
     source: BeliefCoverageSource = BeliefCoverageSource(
         dreamer, get_cache_key_features(cache.key_resolution), NUM_CANDIDATES
     )

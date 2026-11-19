@@ -15,13 +15,15 @@ from able.belief_updaters.friction import FrictionBeliefUpdater
 from able.belief_updaters.human_reach import ReachBeliefUpdater
 from able.belief_updaters.joint_limits import JointLimitBeliefUpdater
 from able.belief_updaters.range_of_motion import RangeOfMotionBeliefUpdater
+from able.belief_updaters.sites import MultiSiteUpdater
 from able.beliefs.base import Belief
 from able.beliefs.interval import IntervalBelief
 from able.envs.base import FiniteTaskDistribution
 from able.envs.friction.model import FrictionModel, FrictionState, FrictionTask
 from able.envs.friction.query import FrictionQuery, PushRecord
-from able.envs.friction.tasks import FrictionDomain
-from able.envs.friction.world import Push
+from able.envs.friction.sites import FrictionSiteDomain
+from able.envs.friction.tasks import FrictionDomain, make_prior_belief
+from able.envs.friction.world import DEFAULT_FRICTION_PRIOR, Push
 from able.envs.human_reach.model import ReachAction, ReachModel, ReachState, ReachTask
 from able.envs.human_reach.query import ReachQuery, ReachResponse
 from able.envs.human_reach.tasks import ReachDomain
@@ -36,6 +38,7 @@ from able.envs.multi_person_arm import (
     ScheduleTaskDistribution,
     get_person_plan_features,
 )
+from able.envs.multi_site import MultiSiteModel, SiteRoutineTaskDistribution
 from able.envs.two_link_arm import (
     JOINT_LIMIT_PRIOR,
     ArmDomain,
@@ -78,6 +81,13 @@ from able.learners.person_focus import (
     make_same_person_transfer,
 )
 from able.learners.rollout_model_learner import RolloutModelLearner
+from able.learners.site_focus import (
+    SiteFocusSource,
+    SiteRolloutModelLearner,
+    make_site_key_features,
+    make_site_moment_features,
+    make_site_revision_features,
+)
 from able.models.base import ConditionalModel
 from able.models.exact_match_cache import ExactMatchCache
 from able.models.kernel_regression import KernelRegressor
@@ -91,6 +101,7 @@ from able.planners.pomcpow import (
     ProposalConfig,
 )
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
+from able.planners.sites import MultiSitePlanner
 from able.recording.base import CycleRecorder
 from able.robot import Robot
 from able.structs import Budget
@@ -351,6 +362,7 @@ def make_belief_coverage_robot(
     )
     cache = planner.get_default_params().model
     assert isinstance(cache, ExactMatchCache)
+    assert isinstance(cache.key_resolution, float), "Need one resolution"
     belief_source: BeliefCoverageSource = BeliefCoverageSource(
         dreamer, get_cache_key_features(cache.key_resolution), num_candidates
     )
@@ -426,6 +438,7 @@ def make_allocation_robot(
     assert (
         len(transfer_by_distance) == max_key_distance
     ), "Need a transfer for each key distance the cache lends plans across"
+    assert isinstance(cache.key_resolution, float), "Need one resolution"
     model = AllocationModel(
         get_features=get_cache_key_features(cache.key_resolution),
         transfer=make_key_distance_transfer(list(transfer_by_distance)),
@@ -975,6 +988,7 @@ def make_multi_person_allocation_robot(
         cache = model
         assert isinstance(cache, ExactMatchCache), "Key distances need a plan cache"
         assert isinstance(routines, RoutineTaskDistribution), "Need routines"
+        assert isinstance(cache.key_resolution, float), "Need one resolution"
         get_features = make_person_key_features(
             cache.key_resolution, routines.get_routine_id
         )
@@ -1292,6 +1306,31 @@ def _make_friction_parts(
     model, if given, corrects the leaf values."""
     env_model = domain.env_model
     assert isinstance(env_model, FrictionModel)
+    return _make_friction_parts_for_model(
+        env_model,
+        num_sims,
+        max_depth,
+        model,
+        early_stop,
+        proposal,
+        training_num_sims,
+        value_model,
+    )
+
+
+def _make_friction_parts_for_model(
+    env_model: FrictionModel,
+    num_sims: int,
+    max_depth: int,
+    model: ConditionalModel | None = None,
+    early_stop: EarlyStopConfig | None = None,
+    proposal: ProposalConfig | None = None,
+    training_num_sims: int | None = None,
+    value_model: KernelRegressor | None = None,
+) -> tuple[
+    FrictionModel, FrictionPOMCPOWPlanner, FrictionBeliefUpdater, ProbeFloorGatherer
+]:
+    """_make_friction_parts() for the friction model of a domain."""
     config = POMCPOWConfig(
         num_sims=num_sims, max_depth=max_depth, early_stop=early_stop
     )
@@ -1804,4 +1843,298 @@ def make_human_reach_belief_coverage_robot(
         belief_updater=belief_updater,
         info_gatherer=gatherer,
         initial_belief=domain.initial_belief,
+    )
+
+
+FrictionSiteRobot = Robot[Any, Any, Any, Any, Any, Any, Any]
+
+
+def make_friction_site_cache(
+    num_floors: int,
+    position_resolution: float = 0.1,
+    mean_resolution: float = 0.01,
+    std_resolution: float = 0.005,
+    max_per_key: int = 4,
+    max_key_distance: int = 6,
+) -> ExactMatchCache:
+    """A cache of pushes for the friction planner, keyed by its push features
+    (see get_push_features): the puck and goal at position_resolution and the
+    floor under the puck must match, and the belief's mean and standard
+    deviation of each floor's friction, at mean_resolution and std_resolution,
+    may differ by up to max_key_distance steps."""
+    resolution = (
+        [position_resolution] * 4
+        + [1.0] * num_floors
+        + [mean_resolution] * num_floors
+        + [std_resolution] * num_floors
+    )
+    return ExactMatchCache(
+        key_resolution=tuple(resolution),
+        max_per_key=max_per_key,
+        max_key_distance=max_key_distance,
+        num_exact_dims=4 + num_floors,
+    )
+
+
+def _make_friction_site_robot(
+    domain: FrictionSiteDomain,
+    model: ConditionalModel | None,
+    planning_budget: Budget,
+    make_source: Callable[[NDArray[np.float64]], Any] | None,
+    num_sims: int,
+    max_depth: int,
+    early_stop: EarlyStopConfig | None,
+    proposal: ProposalConfig | None,
+    training_num_sims: int | None,
+    value_model: KernelRegressor | None,
+    num_training_tasks: int,
+    keep_only_last_sleep: bool,
+) -> FrictionSiteRobot:
+    """A robot for several friction sites that plans each site's task with
+    POMCPOW under the site's belief, and takes no queries. Its learner rolls
+    out the routine of the site each unit of sleep names, under
+    make_source(schedule), or never learns if make_source is None. The model is
+    refit once per sleep, on that sleep's rollouts only if keep_only_last_sleep.
+    """
+    site_model = domain.env_model
+    routines = domain.task_distribution
+    assert isinstance(site_model, MultiSiteModel)
+    assert isinstance(site_model.inner, FrictionModel)
+    assert isinstance(routines, SiteRoutineTaskDistribution)
+    _, inner_planner, inner_updater, _ = _make_friction_parts_for_model(
+        site_model.inner,
+        num_sims,
+        max_depth,
+        model,
+        early_stop,
+        proposal,
+        training_num_sims,
+        value_model,
+    )
+    planner = MultiSitePlanner(inner_planner)
+    learner: Any = NullLearner()
+    if make_source is not None:
+        learner = SiteRolloutModelLearner(
+            planner,
+            routines,
+            make_source(routines.schedule),
+            planning_budget,
+            site_model,
+            refit="per_sleep",
+            num_training_tasks=num_training_tasks,
+            keep_only_last_sleep=keep_only_last_sleep,
+        )
+    return Robot(
+        planner=planner,
+        learner=learner,
+        belief_updater=MultiSiteUpdater(inner_updater),
+        info_gatherer=NullInformationGatherer(),
+        initial_belief=domain.initial_belief,
+    )
+
+
+def make_friction_site_scratch_robot(
+    domain: FrictionSiteDomain,
+    num_sims: int = 100,
+    max_depth: int = 8,
+    early_stop: EarlyStopConfig | None = None,
+    recorder: CycleRecorder[Any, Any, Any] | None = None,
+) -> FrictionSiteRobot:
+    """A robot for several friction sites that never learns."""
+    del recorder  # unused because the robot imagines nothing while it sleeps
+    return _make_friction_site_robot(
+        domain,
+        None,
+        Budget(),
+        None,
+        num_sims,
+        max_depth,
+        early_stop,
+        None,
+        None,
+        None,
+        1,
+        False,
+    )
+
+
+def make_friction_site_current_belief_robot(
+    domain: FrictionSiteDomain,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_training_tasks: int = 2,
+    num_sims: int = 100,
+    max_depth: int = 8,
+    early_stop: EarlyStopConfig | None = None,
+    proposal: ProposalConfig | None = None,
+    training_num_sims: int | None = None,
+    value_model: KernelRegressor | None = None,
+    keep_only_last_sleep: bool = False,
+    recorder: CycleRecorder[Any, Any, Any] | None = None,
+) -> FrictionSiteRobot:
+    """A robot for several friction sites whose units each train for a site
+    drawn by its share of the schedule, under the current belief."""
+    del recorder  # unused because the robot imagines nothing while it sleeps
+    return _make_friction_site_robot(
+        domain,
+        model,
+        planning_budget,
+        lambda schedule: SiteFocusSource(CurrentBeliefSource(), schedule),
+        num_sims,
+        max_depth,
+        early_stop,
+        proposal,
+        training_num_sims,
+        value_model,
+        num_training_tasks,
+        keep_only_last_sleep,
+    )
+
+
+def make_friction_site_belief_coverage_robot(
+    domain: FrictionSiteDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_candidates: int = 4,
+    num_training_tasks: int = 2,
+    num_sims: int = 100,
+    max_depth: int = 8,
+    early_stop: EarlyStopConfig | None = None,
+    proposal: ProposalConfig | None = None,
+    training_num_sims: int | None = None,
+    value_model: KernelRegressor | None = None,
+    keep_only_last_sleep: bool = False,
+    recorder: CycleRecorder[Any, Any, Any] | None = None,
+) -> FrictionSiteRobot:
+    """A robot for several friction sites whose units each train for the
+    farthest of num_candidates (site, belief) pairs, drawn by the schedule, from
+    those it has trained for, by the site's index, the moments of its belief,
+    and how many times its routine has been revised. The candidates are the
+    current belief, so the gathering and execution budgets, which dreams would
+    imagine, are unused."""
+    del recorder, gathering_budget, execution_budget  # unused without dreams
+    site_model, routines = domain.env_model, domain.task_distribution
+    assert isinstance(site_model, MultiSiteModel)
+    assert isinstance(site_model.inner, FrictionModel)
+    assert isinstance(routines, SiteRoutineTaskDistribution)
+    num_floors = site_model.inner.world.puck_map.num_surfaces
+    prior = make_prior_belief(
+        dataclasses.replace(DEFAULT_FRICTION_PRIOR, num_surfaces=num_floors),
+        500,
+        np.random.default_rng(0),
+    )
+    features = make_site_revision_features(prior, routines.get_num_revisions)
+    return _make_friction_site_robot(
+        domain,
+        model,
+        planning_budget,
+        lambda schedule: BeliefCoverageSource(
+            SiteFocusSource(CurrentBeliefSource(), schedule),
+            features,
+            num_candidates,
+            remember_chosen=not keep_only_last_sleep,
+        ),
+        num_sims,
+        max_depth,
+        early_stop,
+        proposal,
+        training_num_sims,
+        value_model,
+        num_training_tasks,
+        keep_only_last_sleep,
+    )
+
+
+def make_friction_site_allocation_robot(
+    domain: FrictionSiteDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_units: int,
+    rule: str,
+    run_length: float,
+    dreams_per_unit: int = 4,
+    transfer_length: float = 2.2,
+    narrowing_rate: float = 0.2,
+    num_training_tasks: int = 2,
+    num_sims: int = 100,
+    max_depth: int = 8,
+    early_stop: EarlyStopConfig | None = None,
+    proposal: ProposalConfig | None = None,
+    training_num_sims: int | None = None,
+    value_model: KernelRegressor | None = None,
+    keep_only_last_sleep: bool = False,
+    recorder: CycleRecorder[Any, Any, Any] | None = None,
+) -> FrictionSiteRobot:
+    """A robot for several friction sites that splits each sleep's num_units
+    units among (site, belief) pairs, drawn by the schedule, by an allocation
+    rule.
+
+    The rule predicts a plateau: planning for a site gains nothing until the
+    model has run_length effective units for it. Units for one site count toward
+    another only if the sites are on the same routine. With a cache from
+    make_friction_site_cache(), they then count fully if the sites' beliefs are
+    within the cache's lending distance; with another model, by the transfer
+    between the beliefs' moments (see make_moment_transfer).
+    deliberate_practice counts units only toward the site they trained for, by
+    the same transfer. num_units should match the sleep budget's iterations.
+    The candidates are the current belief, so the gathering and execution
+    budgets, which dreams would imagine, are unused.
+    """
+    del recorder, gathering_budget, execution_budget  # unused without dreams
+    site_model, routines = domain.env_model, domain.task_distribution
+    assert isinstance(site_model, MultiSiteModel)
+    assert isinstance(site_model.inner, FrictionModel)
+    assert isinstance(routines, SiteRoutineTaskDistribution)
+    num_floors = site_model.inner.world.puck_map.num_surfaces
+    if isinstance(model, ExactMatchCache):
+        belief_resolution = np.atleast_1d(model.key_resolution)[-2 * num_floors :]
+        get_features = make_site_key_features(
+            belief_resolution, routines.get_routine_id
+        )
+        transfer = make_routine_transfer(
+            make_key_distance_transfer([1.0] * model.max_key_distance)
+        )
+    else:
+        prior = make_prior_belief(
+            dataclasses.replace(DEFAULT_FRICTION_PRIOR, num_surfaces=num_floors),
+            500,
+            np.random.default_rng(0),
+        )
+        get_features = make_site_moment_features(prior, routines.get_routine_id)
+        transfer = make_routine_transfer(
+            make_moment_transfer(transfer_length, narrowing_rate)
+        )
+    allocation_model = AllocationModel(
+        get_features=get_features,
+        transfer=transfer,
+        gain=get_cliff_gain(run_length),
+        combine="sum",
+        run_length=run_length,
+        independent_transfer=make_same_person_transfer(transfer),
+        include_current_belief=False,
+    )
+    return _make_friction_site_robot(
+        domain,
+        model,
+        planning_budget,
+        lambda schedule: AllocationSource(
+            SiteFocusSource(CurrentBeliefSource(), schedule),
+            allocation_model,
+            rule,
+            num_units,
+            dreams_per_unit,
+            remember_training=not keep_only_last_sleep,
+        ),
+        num_sims,
+        max_depth,
+        early_stop,
+        proposal,
+        training_num_sims,
+        value_model,
+        num_training_tasks,
+        keep_only_last_sleep,
     )
