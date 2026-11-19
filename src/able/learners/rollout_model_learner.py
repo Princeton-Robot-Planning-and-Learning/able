@@ -68,8 +68,8 @@ class RolloutModelLearner(
         each episode."""
         params = self._planner.get_training_params(params)
         examples = []
-        for task in self._get_training_tasks(rng):
-            env = SimulatedEnvironment(self._env_model, belief.sample(rng), rng)
+        for task, hidden_params in self._get_training_tasks_and_params(belief, rng):
+            env = SimulatedEnvironment(self._env_model, hidden_params, rng)
             try:
                 policy = self._planner.plan(
                     task, belief, params, self._planning_budget, rng
@@ -84,3 +84,18 @@ class RolloutModelLearner(
                 )
             )
         return Dataset.concatenate(examples)
+
+    def _get_training_tasks_and_params(
+        self, belief: Belief[HiddenParamsType], rng: np.random.Generator
+    ) -> list[tuple[Any, HiddenParamsType]]:
+        """Training tasks, each with hidden parameters sampled from the belief.
+        Tasks that depend on the hidden parameters are drawn given them."""
+        if not self._task_distribution.depends_on_hidden_params:
+            tasks = self._get_training_tasks(rng)
+            return [(task, belief.sample(rng)) for task in tasks]
+        pairs = []
+        for _ in range(self._num_training_tasks):
+            hidden_params = belief.sample(rng)
+            task = self._task_distribution.given(hidden_params).sample(rng)
+            pairs.append((task, hidden_params))
+        return pairs

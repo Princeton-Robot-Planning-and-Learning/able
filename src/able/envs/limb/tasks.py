@@ -6,6 +6,7 @@ configuration. Tasks are drawn so that the robot can grasp the limb and hold it
 along the straight line to the goal.
 """
 
+import copy
 import dataclasses
 import json
 from dataclasses import dataclass, field
@@ -238,6 +239,20 @@ class LimbTaskDistribution(TaskDistribution[LimbTask]):
             )
             self._resting = get_resting_penetration(self._sim)
         return self._sim
+
+    @property
+    def depends_on_hidden_params(self) -> bool:
+        return True
+
+    def given(self, hidden_params: Any) -> "LimbTaskDistribution":
+        """Tasks within the range of a person with these parameters, sharing this
+        distribution's simulator."""
+        _ = self.sim
+        conditioned = copy.copy(self)
+        conditioned._low, conditioned._high = self._model.variant.get_joint_limits(
+            np.asarray(hidden_params)
+        )
+        return conditioned
 
     def close(self) -> None:
         """Disconnect the simulator."""
