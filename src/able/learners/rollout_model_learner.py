@@ -1,6 +1,6 @@
 """A model learner for planners whose policies keep planning while they run."""
 
-from typing import Any, Generic
+from typing import Any, Generic, Sequence
 
 import numpy as np
 
@@ -45,6 +45,7 @@ class RolloutModelLearner(
         refit: str = "per_iteration",
         max_sleeps: int | None = None,
         num_training_tasks: int = 8,
+        keep_only_last_sleep: bool = False,
     ) -> None:
         super().__init__(
             planner,
@@ -54,21 +55,40 @@ class RolloutModelLearner(
             refit,
             max_sleeps,
             num_training_tasks,
+            keep_only_last_sleep,
         )
         self._env_model = env_model
 
-    def plan_training_tasks(
+    def draw_training_tasks(
+        self, belief: Belief[HiddenParamsType], rng: np.random.Generator
+    ) -> list[Any]:
+        """The training tasks under the belief, each paired with hidden
+        parameters sampled from it, which its rollout runs with. Tasks that
+        depend on the hidden parameters are drawn given them."""
+        if not self._task_distribution.depends_on_hidden_params:
+            tasks = super().draw_training_tasks(belief, rng)
+            return [(task, belief.sample(rng)) for task in tasks]
+        pairs = []
+        for _ in range(self._num_training_tasks):
+            hidden_params = belief.sample(rng)
+            task = self._task_distribution.given(hidden_params).sample(rng)
+            pairs.append((task, hidden_params))
+        return pairs
+
+    def plan_tasks(
         self,
+        tasks: Sequence[Any],
         belief: Belief[HiddenParamsType],
         params: PlannerParamsType,
         rng: np.random.Generator,
     ) -> Dataset:
-        """Run the plans for the training tasks, made with the planner's training
-        parameters, in simulated environments and return the planner's rows for
-        each episode."""
+        """Run the plans for the tasks, each a pair of a task and the hidden
+        parameters its rollout runs with (see draw_training_tasks()), made with
+        the planner's training parameters under the belief, in simulated
+        environments, and return the planner's rows for each episode."""
         params = self._planner.get_training_params(params)
         examples = []
-        for task, hidden_params in self._get_training_tasks_and_params(belief, rng):
+        for task, hidden_params in tasks:
             env = SimulatedEnvironment(self._env_model, hidden_params, rng)
             try:
                 policy = self._planner.plan(
@@ -84,18 +104,3 @@ class RolloutModelLearner(
                 )
             )
         return Dataset.concatenate(examples)
-
-    def _get_training_tasks_and_params(
-        self, belief: Belief[HiddenParamsType], rng: np.random.Generator
-    ) -> list[tuple[Any, HiddenParamsType]]:
-        """Training tasks, each with hidden parameters sampled from the belief.
-        Tasks that depend on the hidden parameters are drawn given them."""
-        if not self._task_distribution.depends_on_hidden_params:
-            tasks = self._get_training_tasks(rng)
-            return [(task, belief.sample(rng)) for task in tasks]
-        pairs = []
-        for _ in range(self._num_training_tasks):
-            hidden_params = belief.sample(rng)
-            task = self._task_distribution.given(hidden_params).sample(rng)
-            pairs.append((task, hidden_params))
-        return pairs

@@ -372,6 +372,11 @@ class AllocationSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         """The dreams per unit."""
         return self._dreams_per_unit
 
+    @property
+    def draws_in_workers(self) -> bool:
+        """Whether the candidate source's draws may be made in workers."""
+        return self._candidate_source.draws_in_workers
+
     def draw(
         self,
         index: int,

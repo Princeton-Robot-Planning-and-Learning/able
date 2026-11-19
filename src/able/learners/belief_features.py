@@ -11,6 +11,7 @@ from able.beliefs.base import Belief
 from able.beliefs.interval import IntervalBelief
 from able.beliefs.particles import ParticleBelief
 from able.beliefs.range_of_motion import RangeOfMotionBelief
+from able.beliefs.sites import SiteBelief
 
 BeliefFeatures = Callable[[Belief[Any]], NDArray[np.float64]]
 
@@ -18,9 +19,14 @@ BeliefFeatures = Callable[[Belief[Any]], NDArray[np.float64]]
 def get_moments(
     belief: Belief[Any],
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """The mean and standard deviation of each hidden parameter under the belief."""
+    """The mean and standard deviation of each hidden parameter under the belief,
+    site by site for a SiteBelief."""
     if isinstance(belief, ParticleBelief):
         return belief.mean, belief.std
+    if isinstance(belief, SiteBelief):
+        moments = [get_moments(site_belief) for site_belief in belief.beliefs]
+        means, stds = zip(*moments)
+        return np.concatenate(means), np.concatenate(stds)
     if isinstance(belief, RangeOfMotionBelief):
         return belief.truncated_mean, belief.truncated_stddev
     if isinstance(belief, IntervalBelief):
