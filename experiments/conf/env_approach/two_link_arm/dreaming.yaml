@@ -1,2 +1,3 @@
 _target_: able.approaches.make_dreaming_robot
 max_warm_starts_per_key: 4
+max_key_distance: 0

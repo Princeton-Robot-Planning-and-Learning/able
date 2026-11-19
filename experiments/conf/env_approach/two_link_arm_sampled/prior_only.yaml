@@ -10,3 +10,7 @@ model:
   num_steps: 2000
 # Plans the model proposes to seed the first batch.
 num_proposals: 4
+# Planning iterations for training plans during sleep, or null to use the
+# cycle's planning budget. Sleep can afford to plan longer than the robot can
+# while awake.
+training_iterations: null

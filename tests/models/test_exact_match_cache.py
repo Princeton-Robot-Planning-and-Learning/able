@@ -43,3 +43,23 @@ def test_exact_match_cache_ignores_rng():
     rng = np.random.default_rng(0)
     fitted.sample(np.zeros(1), 4, rng)
     assert rng.uniform() == np.random.default_rng(0).uniform()
+
+
+def test_nearest_key_fallback():
+    """Tests that a key with no outputs gets the nearest cached key's outputs
+    when the exact entries match and the rest is within max_key_distance."""
+    x = np.array([[0.0, 0.0, 0.0], [0.0, 0.3, 0.0], [1.0, 0.1, 0.0]])
+    cache = ExactMatchCache(max_key_distance=2, num_exact_dims=1).fit(
+        _dataset(x.tolist(), [1.0, 1.0, 1.0])
+    )
+    rng = np.random.default_rng(0)
+    np.testing.assert_array_equal(
+        cache.sample(np.array([0.0, 0.1, 0.0]), 4, rng), [[0.0, 1.0]]
+    )
+    np.testing.assert_array_equal(
+        cache.sample(np.array([0.0, 0.25, 0.1]), 4, rng), [[2.0, 3.0]]
+    )
+    assert len(cache.sample(np.array([0.0, 0.6, 0.0]), 4, rng)) == 0
+    assert cache.get_nearest_key((5, 0, 0)) is None
+    exact_only = ExactMatchCache().fit(_dataset(x.tolist(), [1.0, 1.0, 1.0]))
+    assert len(exact_only.sample(np.array([0.0, 0.1, 0.0]), 4, rng)) == 0

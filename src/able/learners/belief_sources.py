@@ -37,9 +37,11 @@ class BeliefSource(ABC, Generic[HiddenParamsType, PlannerParamsType]):
         robot's current belief and planner parameters."""
 
     # A learner that runs a sleep's iterations in parallel splits each one in two:
-    # num_draws independent draws, which workers make at once, then choose(), which
-    # this process calls once per iteration, in order. get_training_belief() must
-    # return what choose() returns for its iteration's draws.
+    # num_draws independent draws, which workers make at once, then choose_all(),
+    # which this process calls once with every draw of the sleep. By default
+    # choose_all() calls choose() once per iteration, in order.
+    # get_training_belief() must return what choose_all() returns for its
+    # iteration.
 
     @property
     def num_draws(self) -> int:
@@ -66,6 +68,23 @@ class BeliefSource(ABC, Generic[HiddenParamsType, PlannerParamsType]):
         del iteration  # unused because there is one draw
         assert len(draws) == 1, "Need exactly one draw"
         return draws[0]
+
+    def choose_all(
+        self,
+        draws: Sequence[Belief[HiddenParamsType]],
+        num_iterations: int,
+        belief: Belief[HiddenParamsType],
+    ) -> list[Belief[HiddenParamsType]]:
+        """The training belief of every iteration of a sleep, from all of the
+        sleep's draws in order and the robot's current belief. By default each
+        iteration chooses from its own num_draws draws."""
+        del belief  # unused because each iteration chooses among its draws
+        num_draws = self.num_draws
+        assert len(draws) == num_iterations * num_draws, "Need every draw"
+        return [
+            self.choose(i + 1, draws[i * num_draws : (i + 1) * num_draws])
+            for i in range(num_iterations)
+        ]
 
 
 class CurrentBeliefSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
@@ -227,7 +246,9 @@ class BeliefCoverageSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     their features. Beliefs that call for the same training should have the same
     features, so that a candidate like a chosen belief is at distance zero. Ties
     go to the earliest candidate, so with one candidate the source returns the
-    candidate source's belief.
+    candidate source's belief. With remember_chosen false, only the current
+    sleep's chosen beliefs count, for a planner that keeps only the last sleep's
+    training.
 
     The candidate source is usually an ImaginedNextBeliefSource, so the
     candidates are dreams. It sees num_candidates iterations per iteration of
@@ -239,11 +260,13 @@ class BeliefCoverageSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         candidate_source: BeliefSource[HiddenParamsType, PlannerParamsType],
         get_features: Callable[[Belief[HiddenParamsType]], NDArray[np.float64]],
         num_candidates: int,
+        remember_chosen: bool = True,
     ) -> None:
         assert num_candidates > 0, "Need at least one candidate"
         self._candidate_source = candidate_source
         self._get_features = get_features
         self._num_candidates = num_candidates
+        self._remember_chosen = remember_chosen
         self._chosen_features: list[NDArray[np.float64]] = []
 
     def get_training_belief(
@@ -280,7 +303,8 @@ class BeliefCoverageSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     ) -> Belief[HiddenParamsType]:
         """The candidate farthest from the beliefs chosen so far, which then counts
         as chosen."""
-        del iteration  # unused because the chosen beliefs carry the history
+        if iteration == 1 and not self._remember_chosen:
+            self._chosen_features = []
         candidates = list(draws)
         assert len(candidates) == self._num_candidates, "Need every candidate"
         features = np.array([self._get_features(c) for c in candidates])

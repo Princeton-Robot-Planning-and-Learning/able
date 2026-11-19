@@ -222,3 +222,24 @@ def test_training_tasks_given_sampled_params():
     for params in tasks.given_params:
         assert np.all(params >= belief.intervals[:, 0])
         assert np.all(params <= belief.intervals[:, 1])
+
+
+def test_keep_only_last_sleep():
+    """Tests that a learner that keeps only the last sleep's plans starts each
+    sleep from no data."""
+    planner = _make_planner()
+    prior = IntervalBelief(JOINT_LIMIT_PRIOR)
+    learner: ModelLearner = ModelLearner(
+        planner,
+        FiniteTaskDistribution(TASKS),
+        PriorSource(prior),
+        Budget(),
+        keep_only_last_sleep=True,
+    )
+    rng = np.random.default_rng(0)
+    params = learner.learn(
+        prior, planner.get_default_params(), Budget(max_iterations=2), rng
+    )
+    size = len(learner.dataset)
+    learner.learn(prior, params, Budget(max_iterations=2), rng)
+    assert len(learner.dataset) == size
