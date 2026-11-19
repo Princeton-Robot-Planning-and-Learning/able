@@ -1,0 +1,56 @@
+# Settings for experiments/run_landscape.py, which maps planning cost over
+# contexts and over models trained under one context each. The environment,
+# budgets, and approach come from config.yaml; the approach's learner trains each
+# run, so it should train under the belief it is given (current_belief).
+defaults:
+  - config
+  - _self_
+  - override approach: current_belief
+
+out_dir: ./logs/landscape/${env_name}/${landscape.contexts}
+# contexts makes the contexts, train trains every run and saves its
+# checkpoints, and eval evaluates them; all does the three in turn. Each skips
+# work whose output exists.
+stage: all
+# The train and eval stages take every num_shards-th unit, starting at shard.
+shard: 0
+num_shards: 1
+
+landscape:
+  # known: plan under a point belief at the truth. visited: plan under the beliefs
+  # a robot that never sleeps holds after the given cycles.
+  contexts: known
+  # Every domain is built with this seed and differs only in its truth.
+  world_seed: 0
+  # Known contexts, or the trajectories visited contexts are taken from. Each
+  # draws its own truth from the environment's prior unless fixed_truth is set,
+  # in which case every trajectory has the world seed's truth.
+  num_truths: 64
+  fixed_truth: false
+  # For visited contexts, the cycles after which beliefs are taken; -1 is the
+  # prior.
+  cycles: [-1, 0, 2, 6, 19]
+  # Evaluation tasks per context, drawn given the truth. A finite task
+  # distribution uses all of its tasks.
+  num_tasks: 16
+  # Sleep iterations at which each run is checkpointed and evaluated on its own
+  # context, and the subset at which it is evaluated on every context.
+  depths: [1, 2, 4, 8, 16, 32]
+  cross_depths: [4, 32]
+  # Independent runs per training context.
+  num_replicates: 1
+  # Contexts per unit of evaluation work for the untrained model and for each
+  # checkpoint at a cross depth. Smaller units spread over more jobs.
+  contexts_per_unit: 1000
+
+# Each domain factory's argument for the true hidden parameters.
+truth_args:
+  two_link_arm: true_limits
+  two_link_arm_sampled: true_limits
+  friction: true_frictions
+  limb: true_theta
+  human_reach: true_theta
+
+hydra:
+  run:
+    dir: ${out_dir}
