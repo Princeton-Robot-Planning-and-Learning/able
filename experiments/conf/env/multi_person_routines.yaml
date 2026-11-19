@@ -1,0 +1,27 @@
+# @package _global_
+# The multi-person arm with ward routines: each ward practices a fixed list of
+# target poses, and every person in it practices them all. A plan for one person's
+# pose serves their ward-mates through a cache that lends plans across nearby
+# beliefs, and does not reach other wards. Its approaches are in
+# env_approach/multi_person_routines.
+env:
+  domain:
+    _target_: able.envs.multi_person_arm.make_multi_person_domain
+    num_wards: 4
+    people_per_ward: 3
+    ward_spread: 0.15
+    intake_width: 0.6
+    goal_lean: 2.0
+    goal_tolerance: 0.1
+    routine_size: 8
+    # People per ward, if wards differ in size (overrides num_wards and
+    # people_per_ward).
+    ward_sizes: null
+  renderer: null
+budgets:
+  information_gathering:
+    max_iterations: 0
+  # Random shooting gets one batch of 64 action sequences per task while awake,
+  # so it relies on cached plans.
+  planning:
+    max_iterations: 1

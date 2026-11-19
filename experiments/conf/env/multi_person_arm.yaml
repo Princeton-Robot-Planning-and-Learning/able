@@ -1,0 +1,28 @@
+# @package _global_
+# A robot that assists several people, each a two-link arm with their own unknown
+# joint limits. People come from a few wards of similar limits, and a schedule
+# spreads the robot's time among them. Its approaches are in
+# env_approach/multi_person_arm.
+env:
+  domain:
+    _target_: able.envs.multi_person_arm.make_multi_person_domain
+    num_wards: 3
+    people_per_ward: 2
+    # How far a person's limits can lie from their ward's (per limit, uniformly).
+    ward_spread: 0.15
+    # The width of each interval the robot starts with, after an intake assessment.
+    intake_width: 0.6
+    goal_lean: 4.0
+    goal_tolerance: 0.1
+    routine_size: null
+    ward_sizes: null
+  renderer: null
+# Evaluation tasks, each for a person drawn from the schedule.
+num_eval_tasks: 24
+budgets:
+  information_gathering:
+    max_iterations: 0
+  # Random shooting gets one batch of 64 action sequences per task while awake,
+  # so it relies on the model's proposals.
+  planning:
+    max_iterations: 1
