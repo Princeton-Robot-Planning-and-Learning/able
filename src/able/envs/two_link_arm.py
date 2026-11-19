@@ -7,12 +7,14 @@ robot can also ask whether a joint can move to an angle, and the response is yes
 no.
 """
 
+import functools
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 
+from able.beliefs.base import Belief
 from able.beliefs.interval import IntervalBelief
 from able.envs.base import (
     BatchRolloutModel,
@@ -256,17 +258,70 @@ ArmDomain = Domain[
 ]
 
 
+def drift_limits(
+    limits: NDArray[np.float64], rng: np.random.Generator, drift: float
+) -> NDArray[np.float64]:
+    """Joint limits after one night of drift: each limit moves by a uniform draw
+    from [-drift, drift] and stays within its range under the prior."""
+    moved = limits + rng.uniform(-drift, drift, size=limits.shape)
+    return np.clip(moved, JOINT_LIMIT_PRIOR[:, 0], JOINT_LIMIT_PRIOR[:, 1])
+
+
+def widen_limit_belief(
+    belief: Belief[NDArray[np.float64]], drift: float
+) -> IntervalBelief:
+    """The interval belief over joint limits after one night of drift_limits():
+    each interval grows by drift on both sides, within the prior's range."""
+    assert isinstance(belief, IntervalBelief), "Need an IntervalBelief"
+    intervals = belief.intervals + np.array([-drift, drift])
+    intervals[:, 0] = np.maximum(intervals[:, 0], JOINT_LIMIT_PRIOR[:, 0])
+    intervals[:, 1] = np.minimum(intervals[:, 1], JOINT_LIMIT_PRIOR[:, 1])
+    return IntervalBelief(intervals)
+
+
+def _make_arm_domain(
+    model: TwoLinkArmModel,
+    task_distribution: TaskDistribution[ArmTask],
+    true_limits: NDArray[np.float64],
+    rng: np.random.Generator,
+    drift: float,
+) -> ArmDomain:
+    """An arm domain whose true limits drift by up to drift each night."""
+    assert drift >= 0.0, "Drift is a distance"
+    if drift == 0.0:
+        return Domain(
+            env_model=model,
+            task_distribution=task_distribution,
+            initial_belief=IntervalBelief(JOINT_LIMIT_PRIOR),
+            real_env=SimulatedEnvironment(model, true_limits, rng),
+        )
+    return Domain(
+        env_model=model,
+        task_distribution=task_distribution,
+        initial_belief=IntervalBelief(JOINT_LIMIT_PRIOR),
+        real_env=SimulatedEnvironment(
+            model,
+            true_limits,
+            rng,
+            drift=functools.partial(drift_limits, drift=drift),
+        ),
+        predict_belief=functools.partial(widen_limit_belief, drift=drift),
+    )
+
+
 def make_domain(
     seed: int,
     num_goals: int = 12,
     true_limits: NDArray[np.float64] | None = None,
     goal_tolerance: float = 0.1,
+    drift: float = 0.0,
 ) -> ArmDomain:
     """Create an arm domain.
 
     The true joint limits are drawn from the prior unless given. The goals are
     sampled from the workspace reachable under the true limits, and every task
-    starts at q = 0.
+    starts at q = 0. With drift above 0, the true limits move by up to drift each
+    night (see drift_limits()), and the robot widens its belief to match.
     """
     rng = np.random.default_rng(seed)
     model = TwoLinkArmModel(goal_tolerance=goal_tolerance)
@@ -274,11 +329,8 @@ def make_domain(
         true_limits = rng.uniform(JOINT_LIMIT_PRIOR[:, 0], JOINT_LIMIT_PRIOR[:, 1])
     goals = sample_goal_positions(model, true_limits, num_goals, rng)
     tasks = [ArmTask(initial_state=np.zeros(2), goal=goal) for goal in goals]
-    return Domain(
-        env_model=model,
-        task_distribution=FiniteTaskDistribution(tasks),
-        initial_belief=IntervalBelief(JOINT_LIMIT_PRIOR),
-        real_env=SimulatedEnvironment(model, true_limits, rng),
+    return _make_arm_domain(
+        model, FiniteTaskDistribution(tasks), true_limits, rng, drift
     )
 
 
@@ -333,20 +385,25 @@ class ArmTaskDistribution(TaskDistribution[ArmTask]):
 
 
 def make_sampled_domain(
-    seed: int, goal_tolerance: float = 0.1, goal_lean: float = 4.0
+    seed: int,
+    goal_tolerance: float = 0.1,
+    goal_lean: float = 4.0,
+    drift: float = 0.0,
 ) -> ArmDomain:
     """An arm domain whose tasks are drawn anew within the true joint limits,
     leaning toward them by goal_lean (see ArmTaskDistribution).
 
-    The true joint limits are drawn from the prior as in make_domain(). Dreams and
-    training draw tasks given their own hypothesized limits.
+    The true joint limits are drawn from the prior and drift as in make_domain().
+    Tasks are drawn within the first day's limits. Dreams and training draw tasks
+    given their own hypothesized limits.
     """
     rng = np.random.default_rng(seed)
     model = TwoLinkArmModel(goal_tolerance=goal_tolerance)
     true_limits = rng.uniform(JOINT_LIMIT_PRIOR[:, 0], JOINT_LIMIT_PRIOR[:, 1])
-    return Domain(
-        env_model=model,
-        task_distribution=ArmTaskDistribution(model, true_limits, goal_lean),
-        initial_belief=IntervalBelief(JOINT_LIMIT_PRIOR),
-        real_env=SimulatedEnvironment(model, true_limits, rng),
+    return _make_arm_domain(
+        model,
+        ArmTaskDistribution(model, true_limits, goal_lean),
+        true_limits,
+        rng,
+        drift,
     )

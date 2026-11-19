@@ -1,6 +1,6 @@
-"""An environment simulated from an environment model and fixed hidden parameters."""
+"""An environment simulated from an environment model and hidden parameters."""
 
-from typing import Generic
+from typing import Callable, Generic
 
 import numpy as np
 
@@ -20,11 +20,12 @@ class SimulatedEnvironment(
     Environment[StateType, ActType, TaskType, QueryType, ResponseType],
     Generic[StateType, ActType, TaskType, HiddenParamsType, QueryType, ResponseType],
 ):
-    """Simulates an environment model with fixed hidden parameters.
+    """Simulates an environment model with hidden parameters.
 
     The experiment harness uses this with the true hidden parameters as the real
     environment. Learners use it with sampled hidden parameters to imagine
-    interactions.
+    interactions. The hidden parameters stay fixed unless drift is given, in
+    which case each new day replaces them with drift(hidden_params, rng).
     """
 
     def __init__(
@@ -34,10 +35,14 @@ class SimulatedEnvironment(
         ],
         hidden_params: HiddenParamsType,
         rng: np.random.Generator,
+        drift: (
+            Callable[[HiddenParamsType, np.random.Generator], HiddenParamsType] | None
+        ) = None,
     ) -> None:
         self._model = model
         self._hidden_params = hidden_params
         self._rng = rng
+        self._drift = drift
         self._task: TaskType | None = None
         self._state: StateType | None = None
         self._num_steps = 0
@@ -47,6 +52,11 @@ class SimulatedEnvironment(
         """The hidden parameters, for the experiment harness only (for example, to
         draw the truth in videos)."""
         return self._hidden_params
+
+    def start_day(self, rng: np.random.Generator) -> None:
+        """Drift the hidden parameters, if the environment drifts."""
+        if self._drift is not None:
+            self._hidden_params = self._drift(self._hidden_params, rng)
 
     def reset(self, task: TaskType) -> StateType:
         self._task = task

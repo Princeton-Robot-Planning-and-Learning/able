@@ -295,6 +295,9 @@ def run_cycles(
         | None
     ) = None,
     pool: WorkerPool | None = None,
+    predict_belief: (
+        Callable[[Belief[HiddenParamsType]], Belief[HiddenParamsType]] | None
+    ) = None,
 ) -> list[
     CycleResult[StateType, ActType, TaskType, HiddenParamsType, QueryType, ResponseType]
 ]:
@@ -311,6 +314,10 @@ def run_cycles(
     on_cycle_end, if given, gets each cycle's result as soon as the cycle ends,
     for example to report progress or save results before the run finishes.
 
+    Each cycle after the first is a new day: the environment may drift, drawing
+    from its own random stream, and if predict_belief is given, the robot's
+    belief is replaced by its prediction before the robot sleeps.
+
     Given a pool, the robot sleeps with its workers, and the workers evaluate the
     tasks at once. Each evaluation task then gets its own random generator, spawned
     from the evaluation stream, and its own copy of the real environment, so
@@ -322,11 +329,18 @@ def run_cycles(
         or budgets.execution.max_wall_time is not None
     ), "Task execution needs a finite budget"
     assert pool is None or recorder is None, "A pool cannot be used with a recorder"
+    assert (
+        pool is None or predict_belief is None
+    ), "Workers evaluate copies of the environment, so a drifting one needs no pool"
     recorder = NullRecorder() if recorder is None else recorder
-    sleep_rng, gather_rng, task_rng, execution_rng, eval_rng = rng.spawn(5)
+    sleep_rng, gather_rng, task_rng, execution_rng, eval_rng, day_rng = rng.spawn(6)
     results = []
     for cycle in range(num_cycles):
         cycle_start_time = time.perf_counter()
+        if cycle > 0:
+            env.start_day(day_rng)
+            if predict_belief is not None:
+                robot.predict_belief(predict_belief)
         recorder.start_stage(cycle, Stage.SLEEP)
         start_time = time.perf_counter()
         robot.sleep(budgets.sleep, sleep_rng, pool)

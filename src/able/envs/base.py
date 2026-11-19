@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Generic, Sequence
+from typing import Any, Callable, Generic, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
@@ -176,10 +176,16 @@ class BatchRolloutModel(
 
 
 class Environment(ABC, Generic[StateType, ActType, TaskType, QueryType, ResponseType]):
-    """An environment whose hidden parameters are fixed and not accessible.
+    """An environment whose hidden parameters are not accessible. They stay fixed
+    unless the environment drifts, which happens only between days.
 
     Asking a query does not affect the current episode.
     """
+
+    def start_day(self, rng: np.random.Generator) -> None:
+        """Begin a new day. A drifting environment changes its hidden parameters
+        here; by default nothing changes."""
+        del rng  # unused because the hidden parameters stay fixed
 
     @abstractmethod
     def reset(self, task: TaskType) -> StateType:
@@ -210,7 +216,10 @@ class Domain(
 
     The robot receives the environment model, the task distribution, and the
     initial belief. Only the experiment harness uses the real environment, which
-    holds the true hidden parameters.
+    holds the true hidden parameters. If the real environment drifts between
+    days, predict_belief turns a belief at the end of one day into the belief
+    the robot should hold at the start of the next, as the prediction step of a
+    Bayes filter does.
     """
 
     env_model: EnvironmentModel[
@@ -219,3 +228,6 @@ class Domain(
     task_distribution: TaskDistribution[TaskType]
     initial_belief: Belief[HiddenParamsType]
     real_env: Environment[StateType, ActType, TaskType, QueryType, ResponseType]
+    predict_belief: (
+        Callable[[Belief[HiddenParamsType]], Belief[HiddenParamsType]] | None
+    ) = None

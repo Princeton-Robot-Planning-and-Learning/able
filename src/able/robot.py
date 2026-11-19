@@ -1,6 +1,6 @@
 """The robot: its components, belief, and planner parameters."""
 
-from typing import Generic, Sequence
+from typing import Callable, Generic, Sequence
 
 import numpy as np
 
@@ -120,6 +120,14 @@ class Robot(
     ) -> None:
         """Update the belief with the responses to queries."""
         self._belief = self._belief_updater.update_from_queries(self._belief, data)
+
+    def predict_belief(
+        self,
+        predict: Callable[[Belief[HiddenParamsType]], Belief[HiddenParamsType]],
+    ) -> None:
+        """Replace the belief with its prediction for a new day, for an
+        environment that drifts between days."""
+        self._belief = predict(self._belief)
 
     def update_belief_from_transition(
         self, state: StateType, action: ActType, next_state: StateType

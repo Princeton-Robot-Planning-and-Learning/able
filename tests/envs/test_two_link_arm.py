@@ -10,9 +10,11 @@ from able.envs.two_link_arm import (
     ArmTaskDistribution,
     JointQuery,
     TwoLinkArmModel,
+    drift_limits,
     make_domain,
     make_sampled_domain,
     sample_goal_positions,
+    widen_limit_belief,
 )
 
 
@@ -240,3 +242,25 @@ def test_make_sampled_domain():
     rng = np.random.default_rng(0)
     goals = {tuple(domain.task_distribution.sample(rng).goal) for _ in range(5)}
     assert len(goals) == 5
+
+
+def test_drift_limits_and_widen_belief():
+    """Tests that drifted limits move by at most the drift and stay in the
+    prior's range, and that the widened belief grows by the drift within it."""
+    rng = np.random.default_rng(0)
+    limits = JOINT_LIMIT_PRIOR[:, 0].copy()
+    for _ in range(20):
+        moved = drift_limits(limits, rng, drift=0.2)
+        assert np.all(np.abs(moved - limits) <= 0.2)
+        assert np.all(moved >= JOINT_LIMIT_PRIOR[:, 0])
+        assert np.all(moved <= JOINT_LIMIT_PRIOR[:, 1])
+        limits = moved
+    point = IntervalBelief(
+        np.array([[-1.0, -1.0], [3.1, 3.1], [-1.0, -1.0], [1.0, 1.0]])
+    )
+    widened = widen_limit_belief(point, drift=0.1)
+    np.testing.assert_allclose(
+        widened.intervals, [[-1.1, -0.9], [3.0, np.pi], [-1.1, -0.9], [0.9, 1.1]]
+    )
+    assert make_domain(seed=0).predict_belief is None
+    assert make_sampled_domain(seed=0, drift=0.1).predict_belief is not None

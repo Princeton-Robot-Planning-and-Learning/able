@@ -11,6 +11,9 @@ env:
     # Beta(goal_lean, 1) fraction of the way to a limit, short of it, as for the
     # limb. 1 is uniform within the limits.
     goal_lean: 4.0
+    # How far each true joint limit can move each night (uniformly, within the
+    # prior's range). The robot knows this and widens its belief to match.
+    drift: 0.0
   # Instantiated with the domain's environment model, only when recording videos.
   renderer:
     _target_: able.rendering.two_link_arm.TwoLinkArmRenderer

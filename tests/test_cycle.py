@@ -1,6 +1,7 @@
 """Tests for cycle.py."""
 
 import dataclasses
+import functools
 
 import numpy as np
 import pytest
@@ -9,7 +10,14 @@ from able.belief_updaters.joint_limits import JointLimitBeliefUpdater
 from able.beliefs.base import Belief
 from able.beliefs.interval import IntervalBelief
 from able.cycle import CycleBudgets, evaluate, execute, run_cycles
-from able.envs.two_link_arm import JOINT_LIMIT_PRIOR, TwoLinkArmModel, make_domain
+from able.envs.simulated import SimulatedEnvironment
+from able.envs.two_link_arm import (
+    JOINT_LIMIT_PRIOR,
+    TwoLinkArmModel,
+    drift_limits,
+    make_domain,
+    widen_limit_belief,
+)
 from able.info_gatherers.base import NullInformationGatherer
 from able.learners.base import Learner, NullLearner
 from able.parallel import WorkerPool
@@ -299,3 +307,38 @@ def test_run_cycles_records_every_stage():
     first_step = recorder.get_names().index("start_episode") + 1
     execution_steps = recorder.events[first_step : first_step + horizon]
     assert execution_steps[-1][1] is results[0].belief
+
+
+def test_run_cycles_with_drift():
+    """Tests that each cycle after the first drifts the truth and widens the
+    robot's belief before it sleeps, and that the belief keeps the truth."""
+    domain = make_domain(seed=0, true_limits=TRUE_LIMITS)
+    real_env = SimulatedEnvironment(
+        TwoLinkArmModel(),
+        TRUE_LIMITS.copy(),
+        np.random.default_rng(1),
+        drift=functools.partial(drift_limits, drift=0.1),
+    )
+    learner = _CountingLearner()
+    robot = _make_robot(domain, learner)
+    seen = []
+
+    def on_cycle_end(result) -> None:
+        seen.append(real_env.hidden_params.copy())
+        assert result.belief.contains(real_env.hidden_params)
+
+    run_cycles(
+        robot,
+        real_env,
+        domain.task_distribution,
+        [],
+        num_cycles=3,
+        budgets=_budgets(num_executions=1),
+        rng=np.random.default_rng(0),
+        on_cycle_end=on_cycle_end,
+        predict_belief=functools.partial(widen_limit_belief, drift=0.1),
+    )
+    np.testing.assert_array_equal(seen[0], TRUE_LIMITS)
+    assert not np.array_equal(seen[1], seen[0])
+    assert np.all(np.abs(seen[2] - seen[1]) <= 0.1)
+    assert learner.num_sleeps == 3
