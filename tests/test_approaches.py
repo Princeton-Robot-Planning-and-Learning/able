@@ -7,6 +7,7 @@ import numpy as np
 
 from able.approaches import (
     get_cache_key_features,
+    make_allocation_robot,
     make_belief_coverage_robot,
     make_current_belief_robot,
     make_dreaming_robot,
@@ -20,12 +21,14 @@ from able.approaches import (
     make_human_reach_dreaming_robot,
     make_human_reach_prior_only_robot,
     make_human_reach_scratch_robot,
+    make_key_distance_transfer,
     make_limb_belief_coverage_robot,
     make_limb_current_belief_robot,
     make_limb_dreaming_robot,
     make_limb_prior_only_robot,
     make_limb_scratch_robot,
     make_prior_only_robot,
+    make_sampled_arm_allocation_robot,
     make_sampled_arm_belief_coverage_robot,
     make_sampled_arm_current_belief_robot,
     make_sampled_arm_dreaming_robot,
@@ -532,3 +535,67 @@ def test_make_sampled_arm_robots():
     params = prior_only.planner_params
     prior_only.sleep(Budget(max_iterations=1), rng)
     assert prior_only.planner_params is params
+
+
+def test_make_allocation_robot():
+    """Tests that an allocation robot trains every unit of a sleep under dreamed
+    beliefs and caches plans for them, and that a cache that lends plans lets a
+    robot plan with warm starts under a nearby belief it never trained under."""
+    domain = make_domain(seed=0)
+    budgets = _budgets(num_dreams=0)
+    for rule in ("transfer_practice", "deliberate_practice", "one_step_greedy"):
+        robot = make_allocation_robot(
+            domain,
+            budgets.information_gathering,
+            budgets.execution,
+            budgets.planning,
+            num_units=2,
+            rule=rule,
+            dreams_per_unit=2,
+        )
+        robot.sleep(Budget(max_iterations=2), np.random.default_rng(0))
+        assert 1 <= _count_cached_beliefs(robot.planner_params) <= 2
+    lending = make_allocation_robot(
+        domain,
+        budgets.information_gathering,
+        budgets.execution,
+        budgets.planning,
+        num_units=1,
+        rule="transfer_practice",
+        max_key_distance=2,
+    )
+    cache = lending.planner_params.model
+    assert isinstance(cache, ExactMatchCache) and cache.max_key_distance == 2
+
+
+def test_key_distance_transfer():
+    """Tests that transfer follows the largest difference between cache keys and
+    is 0 beyond the listed distances."""
+    transfer = make_key_distance_transfer([0.5])
+    a = np.array([[0.0, 0.0]])
+    b = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, -2.0]])
+    np.testing.assert_allclose(transfer(a, b), [[1.0, 0.5, 0.0]])
+
+
+def test_make_sampled_arm_allocation_robot():
+    """Tests that a sampled-arm allocation robot fits its model in a sleep."""
+    from able.models.flow_matching import (  # pylint: disable=import-outside-toplevel
+        FlowMatchingModel,
+    )
+
+    domain = make_sampled_domain(seed=0)
+    model = FlowMatchingModel(num_steps=5, width=8, depth=1)
+    budgets = _budgets(num_dreams=0)
+    robot = make_sampled_arm_allocation_robot(
+        domain,
+        budgets.information_gathering,
+        budgets.execution,
+        Budget(max_iterations=1),
+        model,
+        num_units=2,
+        rule="transfer_practice",
+        dreams_per_unit=2,
+        num_training_tasks=2,
+    )
+    robot.sleep(Budget(max_iterations=2), np.random.default_rng(0))
+    assert robot.planner_params.model.fitted is not None
