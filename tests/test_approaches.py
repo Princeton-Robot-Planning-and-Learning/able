@@ -27,6 +27,11 @@ from able.approaches import (
     make_limb_dreaming_robot,
     make_limb_prior_only_robot,
     make_limb_scratch_robot,
+    make_multi_person_allocation_robot,
+    make_multi_person_belief_coverage_robot,
+    make_multi_person_current_belief_robot,
+    make_multi_person_dreaming_robot,
+    make_multi_person_scratch_robot,
     make_prior_only_robot,
     make_sampled_arm_allocation_robot,
     make_sampled_arm_belief_coverage_robot,
@@ -599,3 +604,50 @@ def test_make_sampled_arm_allocation_robot():
     )
     robot.sleep(Budget(max_iterations=2), np.random.default_rng(0))
     assert robot.planner_params.model.fitted is not None
+
+
+def test_make_multi_person_robots():
+    """Tests that every multi-person robot sleeps, and that learning robots cache
+    plans for the people their units name."""
+    from able.envs.multi_person_arm import (  # pylint: disable=import-outside-toplevel
+        make_multi_person_domain,
+    )
+
+    domain = make_multi_person_domain(
+        seed=0, num_wards=2, people_per_ward=2, routine_size=4
+    )
+    budgets = _budgets(num_dreams=0)
+    one = Budget(max_iterations=1)
+    options = {"num_training_tasks": 2, "keep_only_last_sleep": True}
+    gathering, execution = budgets.information_gathering, budgets.execution
+    robots = [
+        make_multi_person_scratch_robot(domain, ExactMatchCache()),
+        make_multi_person_current_belief_robot(
+            domain, one, ExactMatchCache(), **options
+        ),
+        make_multi_person_dreaming_robot(
+            domain, gathering, execution, one, ExactMatchCache(), **options
+        ),
+        make_multi_person_belief_coverage_robot(
+            domain, gathering, execution, one, ExactMatchCache(), **options
+        ),
+        make_multi_person_allocation_robot(
+            domain,
+            gathering,
+            execution,
+            one,
+            ExactMatchCache(max_key_distance=6, num_exact_dims=2),
+            num_units=2,
+            rule="transfer_practice",
+            run_length=2,
+            dreams_per_unit=2,
+            max_key_distance=6,
+            **options,
+        ),
+    ]
+    rng = np.random.default_rng(0)
+    for robot in robots:
+        robot.sleep(Budget(max_iterations=2), rng)
+    assert not _has_cached_plans(robots[0].planner_params)
+    for robot in robots[1:]:
+        assert _has_cached_plans(robot.planner_params)

@@ -1,0 +1,22 @@
+_target_: able.approaches.make_multi_person_allocation_robot
+# Dreams per unit of the sleep, which estimate where the robot will plan next.
+dreams_per_unit: 4
+# Predicted effective units a person needs before the model helps plan for them.
+run_length: 4
+# Predicted transfer between beliefs (see make_moment_transfer).
+transfer_length: 2.2
+narrowing_rate: 0.2
+# Training tasks planned for the person each unit trains for.
+num_training_tasks: 8
+# Planning iterations for training plans during sleep, which can afford more than
+# the robot can while awake.
+training_iterations: 10
+# The model that proposes plans (the 15 displacements) from the goal and the
+# person's intervals' midpoints and widths, refit once per sleep.
+model:
+  _target_: able.models.flow_matching.FlowMatchingModel
+  width: 128
+  depth: 3
+  num_steps: 2000
+# Plans the model proposes to seed the first batch.
+num_proposals: 4

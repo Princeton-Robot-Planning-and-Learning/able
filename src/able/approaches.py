@@ -28,7 +28,21 @@ from able.envs.human_reach.tasks import ReachDomain
 from able.envs.limb.model import LimbModel, LimbState, LimbTask
 from able.envs.limb.query import LimbQuery, QueryOutcome
 from able.envs.limb.tasks import LimbDomain
-from able.envs.two_link_arm import ArmDomain, ArmTask, JointQuery, TwoLinkArmModel
+from able.envs.multi_person_arm import (
+    MultiPersonArmModel,
+    MultiPersonDomain,
+    MultiPersonLimitUpdater,
+    RoutineTaskDistribution,
+    ScheduleTaskDistribution,
+    get_person_plan_features,
+)
+from able.envs.two_link_arm import (
+    JOINT_LIMIT_PRIOR,
+    ArmDomain,
+    ArmTask,
+    JointQuery,
+    TwoLinkArmModel,
+)
 from able.info_gatherers.base import NullInformationGatherer
 from able.info_gatherers.bisect_limits import BisectLimitGatherer
 from able.info_gatherers.probe_floor import ProbeFloorGatherer
@@ -51,6 +65,15 @@ from able.learners.belief_sources import (
     PriorSource,
 )
 from able.learners.model_learner import ModelLearner
+from able.learners.person_focus import (
+    PersonFocusSource,
+    PersonModelLearner,
+    get_same_person_transfer,
+    make_person_features,
+    make_person_key_features,
+    make_person_moment_transfer,
+    make_routine_transfer,
+)
 from able.learners.rollout_model_learner import RolloutModelLearner
 from able.models.base import ConditionalModel
 from able.models.exact_match_cache import ExactMatchCache
@@ -712,6 +735,262 @@ def make_sampled_arm_allocation_robot(
         execution_budget=execution_budget,
         recorder=recorder,
         training_iterations=training_iterations,
+    )
+
+
+def _make_multi_person_robot(
+    domain: MultiPersonDomain,
+    model: ConditionalModel,
+    planning_budget: Budget,
+    make_source: Callable[[ImaginedNextBeliefSource, NDArray[np.float64]], Any] | None,
+    gathering_budget: Budget | None = None,
+    execution_budget: Budget | None = None,
+    num_proposals: int = 4,
+    num_training_tasks: int = 8,
+    training_iterations: int | None = None,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+    keep_only_last_sleep: bool = False,
+) -> ArmRobot:
+    """A robot for several people that plans with random shooting, warm-started
+    from a model of plans whose input is the goal and the person's intervals.
+
+    Its learner trains under make_source(dreamer, schedule), or never learns if
+    make_source is None. Each unit of sleep trains for the person its belief
+    names. Dreams plan with planning_budget, as the robot does while awake, and
+    training plans get training_iterations iterations if given. The model is
+    refit once per sleep, on that sleep's plans only if keep_only_last_sleep.
+    """
+    env_model = domain.env_model
+    task_distribution = domain.task_distribution
+    assert isinstance(env_model, MultiPersonArmModel)
+    assert isinstance(
+        task_distribution, (ScheduleTaskDistribution, RoutineTaskDistribution)
+    )
+    params = RandomShootingParams(num_proposals=num_proposals, model=model)
+    planner = RandomShootingPlanner(
+        env_model, params, get_features=get_person_plan_features
+    )
+    belief_updater = MultiPersonLimitUpdater()
+    gatherer: NullInformationGatherer = NullInformationGatherer()
+    learner: Any = NullLearner()
+    if make_source is not None:
+        dreamer = ImaginedNextBeliefSource(
+            env_model,
+            task_distribution,
+            planner,
+            belief_updater,
+            gatherer,
+            gathering_budget=Budget() if gathering_budget is None else gathering_budget,
+            execution_budget=(
+                Budget(max_iterations=1)
+                if execution_budget is None
+                else execution_budget
+            ),
+            planning_budget=planning_budget,
+            recorder=recorder,
+        )
+        learner = PersonModelLearner(
+            planner,
+            task_distribution,
+            make_source(dreamer, task_distribution.schedule),
+            (
+                planning_budget
+                if training_iterations is None
+                else Budget(max_iterations=training_iterations)
+            ),
+            refit="per_sleep",
+            num_training_tasks=num_training_tasks,
+            keep_only_last_sleep=keep_only_last_sleep,
+        )
+    return Robot(
+        planner=planner,
+        learner=learner,
+        belief_updater=belief_updater,
+        info_gatherer=gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
+def make_multi_person_scratch_robot(
+    domain: MultiPersonDomain,
+    model: ConditionalModel,
+    num_proposals: int = 4,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+) -> ArmRobot:
+    """A robot for several people that plans from scratch and never learns."""
+    del recorder  # unused because the robot imagines nothing while it sleeps
+    return _make_multi_person_robot(
+        domain, model, Budget(), None, num_proposals=num_proposals
+    )
+
+
+def make_multi_person_current_belief_robot(
+    domain: MultiPersonDomain,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_proposals: int = 4,
+    num_training_tasks: int = 8,
+    training_iterations: int | None = None,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+    keep_only_last_sleep: bool = False,
+) -> ArmRobot:
+    """A robot for several people that trains under its current belief, each unit
+    for a person drawn with their share of the schedule."""
+    del recorder  # unused because the robot imagines nothing while it sleeps
+    return _make_multi_person_robot(
+        domain,
+        model,
+        planning_budget,
+        lambda _, schedule: PersonFocusSource(CurrentBeliefSource(), schedule),
+        num_proposals=num_proposals,
+        num_training_tasks=num_training_tasks,
+        training_iterations=training_iterations,
+        keep_only_last_sleep=keep_only_last_sleep,
+    )
+
+
+def make_multi_person_dreaming_robot(
+    domain: MultiPersonDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_proposals: int = 4,
+    num_training_tasks: int = 8,
+    training_iterations: int | None = None,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+    keep_only_last_sleep: bool = False,
+) -> ArmRobot:
+    """A robot for several people that trains under the beliefs it dreams of
+    holding at evaluation, each unit for a person drawn with their share of the
+    schedule. The budgets should match the cycle budgets."""
+    return _make_multi_person_robot(
+        domain,
+        model,
+        planning_budget,
+        PersonFocusSource,
+        gathering_budget,
+        execution_budget,
+        num_proposals,
+        num_training_tasks,
+        training_iterations,
+        recorder,
+        keep_only_last_sleep=keep_only_last_sleep,
+    )
+
+
+def make_multi_person_belief_coverage_robot(
+    domain: MultiPersonDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_candidates: int = 4,
+    num_proposals: int = 4,
+    num_training_tasks: int = 8,
+    training_iterations: int | None = None,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+    keep_only_last_sleep: bool = False,
+) -> ArmRobot:
+    """A robot for several people that trains under the farthest of
+    num_candidates dreamed (person, belief) pairs from those it has trained
+    under, by the person's index and limits' moments. The budgets should match
+    the cycle budgets."""
+    features = make_person_features(IntervalBelief(JOINT_LIMIT_PRIOR))
+    return _make_multi_person_robot(
+        domain,
+        model,
+        planning_budget,
+        lambda dreamer, schedule: BeliefCoverageSource(
+            PersonFocusSource(dreamer, schedule),
+            features,
+            num_candidates,
+            remember_chosen=not keep_only_last_sleep,
+        ),
+        gathering_budget,
+        execution_budget,
+        num_proposals,
+        num_training_tasks,
+        training_iterations,
+        recorder,
+        keep_only_last_sleep=keep_only_last_sleep,
+    )
+
+
+def make_multi_person_allocation_robot(
+    domain: MultiPersonDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_units: int,
+    rule: str,
+    run_length: float,
+    dreams_per_unit: int = 4,
+    transfer_length: float = 2.2,
+    narrowing_rate: float = 0.2,
+    max_key_distance: int | None = None,
+    num_proposals: int = 4,
+    num_training_tasks: int = 8,
+    training_iterations: int | None = None,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+    keep_only_last_sleep: bool = False,
+) -> ArmRobot:
+    """A robot for several people that splits each sleep's num_units units among
+    dreamed (person, belief) pairs by an allocation rule.
+
+    The rule predicts a plateau: planning for a person gains nothing until the
+    model has run_length effective units for them. Units for one person count
+    toward another by the transfer between their beliefs, whoever they are:
+    from their moments (see make_moment_transfer), or, if max_key_distance is
+    set, fully when the people share a routine and their plan cache keys' belief
+    entries are within max_key_distance steps, as for a cache that lends plans
+    for the same goal that far.
+    deliberate_practice counts units only toward the person they trained for.
+    The budgets should match the cycle budgets, and num_units should match the
+    sleep budget's iterations.
+    """
+    get_features = make_person_features(IntervalBelief(JOINT_LIMIT_PRIOR))
+    transfer = make_person_moment_transfer(
+        make_moment_transfer(transfer_length, narrowing_rate)
+    )
+    if max_key_distance is not None:
+        cache = model
+        routines = domain.task_distribution
+        assert isinstance(cache, ExactMatchCache), "Key distances need a plan cache"
+        assert isinstance(routines, RoutineTaskDistribution), "Need routines"
+        get_features = make_person_key_features(cache.key_resolution, routines.get_ward)
+        transfer = make_routine_transfer(
+            make_key_distance_transfer([1.0] * max_key_distance)
+        )
+    allocation_model = AllocationModel(
+        get_features=get_features,
+        transfer=transfer,
+        gain=get_cliff_gain(run_length),
+        combine="sum",
+        run_length=run_length,
+        independent_transfer=get_same_person_transfer,
+        include_current_belief=False,
+    )
+    return _make_multi_person_robot(
+        domain,
+        model,
+        planning_budget,
+        lambda dreamer, schedule: AllocationSource(
+            PersonFocusSource(dreamer, schedule),
+            allocation_model,
+            rule,
+            num_units,
+            dreams_per_unit,
+            remember_training=not keep_only_last_sleep,
+        ),
+        gathering_budget,
+        execution_budget,
+        num_proposals,
+        num_training_tasks,
+        training_iterations,
+        recorder,
+        keep_only_last_sleep=keep_only_last_sleep,
     )
 
 

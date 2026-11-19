@@ -1,0 +1,16 @@
+_target_: able.approaches.make_multi_person_belief_coverage_robot
+# Routine goals each unit plans, so a ward needs 4 units to cover a routine of 8.
+num_training_tasks: 2
+training_iterations: 10
+# The cache keeps only the last night's plans.
+keep_only_last_sleep: true
+# Plans cached per (goal, person's belief) key, lent to keys whose belief entries are
+# within max_key_distance steps of resolution for the same goal.
+model:
+  _target_: able.models.exact_match_cache.ExactMatchCache
+  max_per_key: 4
+  max_key_distance: 6
+  num_exact_dims: 2
+num_proposals: 4
+# Each training belief is the farthest of this many dreams.
+num_candidates: 4
