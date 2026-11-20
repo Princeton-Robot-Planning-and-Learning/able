@@ -47,3 +47,18 @@ def test_stops_when_every_floor_is_known():
     assert not gatherer.gather(known, domain.real_env, Budget(max_iterations=3), rng)
     belief = _prior(domain)
     assert not gatherer.gather(belief, domain.real_env, Budget(max_iterations=0), rng)
+
+
+def test_floor_weights():
+    """Weights steer probes toward heavily weighted floors and away from floors
+    of weight 0."""
+    domain = make_domain(seed=0, num_particles=100)
+    updater = FrictionBeliefUpdater(WORLD)
+    gatherer = ProbeFloorGatherer(WORLD, updater, floor_weights=[0.0, 1.0, 0.0])
+    data = gatherer.gather(
+        _prior(domain),
+        domain.real_env,
+        Budget(max_iterations=3),
+        np.random.default_rng(0),
+    )
+    assert data and all(datum.query.floor == 1 for datum in data)

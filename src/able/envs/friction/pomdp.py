@@ -331,6 +331,23 @@ class PuckPushingModel:
             )
         return self._distance_cache[key]
 
+    def path_floors(
+        self, start: Sequence[float], goal: Sequence[float]
+    ) -> frozenset[int]:
+        """The floors a shortest pushable path from the start to the goal crosses."""
+        _, graph = self._path_graph
+        goal_cell = self._cell_index(goal)
+        _, predecessors = dijkstra(graph, indices=goal_cell, return_predecessors=True)
+        floors = self.cell_floors.ravel()
+        crossed = set()
+        cell = self._cell_index(start)
+        while cell >= 0:
+            crossed.add(int(floors[cell]))
+            if cell == goal_cell:
+                break
+            cell = int(predecessors[cell])
+        return frozenset(crossed - {-1})
+
     def _pushable(self, point: NDArray[np.float64], num_angles: int = 16) -> bool:
         """Whether some push is feasible from `point` on evenly spaced headings."""
         angles = np.linspace(-math.pi, math.pi, num_angles, endpoint=False)

@@ -13,13 +13,19 @@ import dataclasses
 from typing import Any, Sequence
 
 import numpy as np
+from numpy.typing import NDArray
 
 from able.beliefs.particles import ParticleBelief
 from able.beliefs.sites import SiteBelief
 from able.envs.base import Domain
 from able.envs.friction.layout import make_world
 from able.envs.friction.model import FrictionModel, FrictionTask
-from able.envs.friction.tasks import FrictionTaskDistribution, make_domain
+from able.envs.friction.pomdp import PuckPushingModel
+from able.envs.friction.tasks import (
+    FrictionTaskDistribution,
+    make_domain,
+    make_prior_belief,
+)
 from able.envs.friction.world import DEFAULT_FRICTION_PRIOR, FrictionPrior
 from able.envs.multi_site import MultiSiteModel, SiteRoutineTaskDistribution
 from able.envs.simulated import SimulatedEnvironment
@@ -42,19 +48,21 @@ def make_site_domain(
     prior: FrictionPrior = DEFAULT_FRICTION_PRIOR,
     maze: str = "corridors",
     region_overlap: float = 0.0,
+    survey: str = "prior",
 ) -> FrictionSiteDomain:
     """A domain with group_sizes[g] sites in group g.
 
     Each group draws each floor's friction level from the prior's levels, and
     each site scales its group's levels by its own draw from the prior's jitter.
-    The robot starts with a survey of each site: it knows the site's levels but
-    not the jitter, so its belief is particles with those levels and jitter drawn
-    from the prior. Each group's routine has routine_size tasks drawn as for the
+    The robot's belief about each site starts from the survey: "prior", particles
+    from the prior, or "levels", which knows the site's levels but not the
+    jitter, so its particles have those levels and jitter drawn from the prior.
+    Each group's routine has routine_size tasks drawn as for the
     single-site friction domain, each from anywhere in the maze with probability
     region_overlap and otherwise from the group's region: the floors of one
     color, group g's being color g mod 3. Each new day revises each group's
-    routine with probability revision_rate. The schedule gives each site a
-    random share of the robot's time.
+    routine with probability revision_rate. The robot works at one site each
+    day, drawn with its share of a random schedule.
     """
     rng = np.random.default_rng(seed)
     base = make_domain(
@@ -80,12 +88,17 @@ def make_site_domain(
     truths = np.stack(
         [group_levels[g] * rng.uniform(*jitter, num_floors) for g in group_of]
     )
+    assert survey in ("prior", "levels"), f"Unknown survey {survey!r}"
     surveys = [
-        ParticleBelief(
-            group_levels[g] * rng.uniform(*jitter, (num_particles, num_floors)),
-            low,
-            high,
-            seed=int(rng.integers(2**31)),
+        (
+            make_prior_belief(prior, num_particles, rng)
+            if survey == "prior"
+            else ParticleBelief(
+                group_levels[g] * rng.uniform(*jitter, (num_particles, num_floors)),
+                low,
+                high,
+                seed=int(rng.integers(2**31)),
+            )
         )
         for g in group_of
     ]
@@ -122,8 +135,19 @@ def make_site_domain(
     return Domain(
         env_model=model,
         task_distribution=SiteRoutineTaskDistribution(
-            routines, group_of, schedule, revision_rate, draw_routine
+            routines, group_of, schedule, revision_rate, draw_routine, rng
         ),
         initial_belief=SiteBelief(surveys),
         real_env=SimulatedEnvironment(model, truths, rng),
     )
+
+
+def count_route_floors(
+    paths: PuckPushingModel, tasks: Sequence[FrictionTask], num_floors: int
+) -> NDArray[np.float64]:
+    """How many of the tasks' shortest pushable paths cross each floor."""
+    counts = np.zeros(num_floors)
+    for task in tasks:
+        for floor in paths.path_floors(task.initial_state.puck, task.goal):
+            counts[floor] += 1
+    return counts
