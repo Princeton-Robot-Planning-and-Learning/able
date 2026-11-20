@@ -24,6 +24,8 @@ from able.learners.site_focus import (
     make_site_key_features,
     make_site_moment_features,
     make_site_revision_features,
+    make_site_usage_features,
+    make_usage_transfer,
 )
 from able.models.exact_match_cache import ExactMatchCache
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
@@ -173,3 +175,26 @@ def test_features():
     revisions[1] = 1
     after = get_revision_features(belief)
     assert np.max(np.abs(after - before)) > 1e3
+
+
+def test_usage_features_and_transfer():
+    """Tests that usage features name the site, its routine, and the routine's
+    usage of each parameter, and that transfer is full on the same routine and
+    otherwise falls from shared to other as usage diverges."""
+    usage = {0: [1.0, 0.0], 1: [1.0, 0.0], 2: [0.0, 1.0]}
+    routine = {0: 5, 1: 6, 2: 7}
+    prior = _particles(0.5, 0.2)
+    get_features = make_site_usage_features(
+        prior, lambda site: routine[site], lambda site: np.array(usage[site])
+    )
+    belief = SiteBelief([_particles(0.5, 0.1)] * 3)
+    features = np.array([get_features(belief.focused(s)) for s in (0, 1, 2)])
+    np.testing.assert_allclose(features[2], [2, 7, 0, 1, 2.5, 2.5, 0.5, 0.5])
+
+    def same_moments(a, b):
+        return np.ones((len(a), len(b)))
+
+    transfer = make_usage_transfer(2, same_moments, 0.5, 0.2)(features, features)
+    np.testing.assert_allclose(
+        transfer, [[1.0, 0.5, 0.2], [0.5, 1.0, 0.2], [0.2, 0.2, 1.0]]
+    )

@@ -3,8 +3,17 @@ num_units: ${budgets.sleep.max_iterations}
 rule: transfer_practice
 # Candidate (site, belief) pairs drawn per unit, by the schedule.
 dreams_per_unit: 16
-# Effective units a site needs before planning there speeds up.
+# A site's predicted gain rises linearly from ramp_start effective units to
+# run_length, and a unit counts fully toward sites on the same routine,
+# shared_floor_transfer toward routines whose paths cross the same floors, and
+# other_transfer toward the rest. Fit to the transfer probe
+# (experiments/probe_site_transfer.py): 8 units saved 0.9, 0.5, and 0.3 as many
+# simulations at those sites as at the trained one, and the trained site gained
+# little after 1 unit and most by 4.
 run_length: 4
+ramp_start: 1
+shared_floor_transfer: 0.55
+other_transfer: 0.28
 # Most POMCPOW simulations per push, and the search depth in pushes.
 num_sims: 100
 max_depth: 8
