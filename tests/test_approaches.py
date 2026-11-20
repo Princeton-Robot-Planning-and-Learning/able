@@ -656,6 +656,64 @@ def test_make_multi_person_robots():
         assert _has_cached_plans(robot.planner_params)
 
 
+def test_make_limb_mode_robots():
+    """Tests that every robot for a person with good days and bad days sleeps
+    under the modes the next day may bring, and plans with the belief about the
+    day's mode."""
+    # pylint: disable=import-outside-toplevel
+    from able.approaches import (
+        make_limb_mode_allocation_robot,
+        make_limb_mode_belief_coverage_robot,
+        make_limb_mode_current_belief_robot,
+        make_limb_mode_scratch_robot,
+    )
+    from able.envs.limb.modes import close_mode_domain, make_mode_domain
+    from able.envs.multi_site import MarkovSiteTaskDistribution
+    from able.planners.sites import MultiSitePlanner
+
+    domain = make_mode_domain(seed=0, stiff_motions=((), (2,)), horizon=20)
+    routines = domain.task_distribution
+    assert isinstance(routines, MarkovSiteTaskDistribution)
+    one = Budget(max_iterations=1)
+    # A planning budget of no MPC steps makes every plan fail at once.
+    no_steps = Budget(max_iterations=0)
+    options = {"model": MLPRegressor(num_steps=5), "num_rollouts": 4}
+    allocation = {"num_units": 2, "run_length": 3, "dreams_per_unit": 2}
+    robots = [
+        make_limb_mode_scratch_robot(domain, num_rollouts=4),
+        make_limb_mode_current_belief_robot(domain, no_steps, **options),
+        make_limb_mode_belief_coverage_robot(domain, one, one, no_steps, **options),
+        make_limb_mode_allocation_robot(
+            domain,
+            one,
+            one,
+            no_steps,
+            rule="transfer_practice",
+            **allocation,
+            **options,
+        ),
+        make_limb_mode_allocation_robot(
+            domain,
+            one,
+            one,
+            no_steps,
+            rule="deliberate_practice",
+            **allocation,
+            **options,
+        ),
+    ]
+    rng = np.random.default_rng(0)
+    for robot in robots:
+        assert isinstance(robot.planner, MultiSitePlanner)
+        robot.sleep(Budget(max_iterations=2), rng)
+    for robot in robots:
+        planner = robot.planner
+        assert isinstance(planner, MultiSitePlanner)
+        assert isinstance(planner.inner, LimbMPCPlanner)
+        planner.inner.close()
+    close_mode_domain(domain)
+
+
 def test_make_friction_site_robots():
     """Tests that every friction-site robot sleeps, with a push cache or another
     model."""

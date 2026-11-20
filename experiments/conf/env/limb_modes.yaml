@@ -1,0 +1,54 @@
+# @package _global_
+# One person's left arm, with good days and bad days. Each mode, a set of stiff
+# motions, has its own range of motion, and the day's mode follows a Markov
+# chain. Each exercise moves one motion and holds the other joints where every
+# mode allows them, so modes in which a motion is equally stiff share its
+# exercises. Its approaches are in env_approach/limb_modes.
+env:
+  domain:
+    _target_: able.envs.limb.modes.make_mode_domain
+    # The stiff motions of each mode (0 shoulder flexion, 1 shoulder abduction,
+    # 2 elbow flexion): a good day, stiff shoulders, a stiff elbow, a bad day.
+    stiff_motions: [[], [0, 1], [2], [0, 1, 2]]
+    # Each motion's good-day scale is uniform in [good_low, good_high], and a
+    # stiff motion's is stiffness less.
+    good_low: 0.9
+    good_high: 1.1
+    stiffness: 0.2
+    # Chance that the next day keeps the day's mode; the other modes share the
+    # rest, by chances drawn for each mode.
+    stay: 0.5
+    # Exercises per motion and scale, so a routine has 3 times as many.
+    exercises_per_motion: 1
+    # An exercise's motion leans toward goal_margin (rad) short of its limit;
+    # the other joints move within hold_fraction of what every mode allows.
+    # Holding them still instead (hold_others) makes exercises that MPC rarely
+    # solves even with 4000 rollouts.
+    goal_margin: 0.3
+    hold_fraction: 0.8
+    hold_others: false
+    # Chance that each block of exercises is revised at the start of each new
+    # day.
+    revision_rate: 0.0
+    # As for one limb (see env/limb.yaml).
+    variant: human-left-arm
+    horizon: 300
+    min_separation: 0.5
+    max_separation: 0.8
+    goal_lean: 4.0
+    prior:
+      _target_: able.envs.limb.human.RangeOfMotionPrior
+      scales: null
+    band_width: 0.15
+    torque_noise: 1.0
+  renderer: null
+budgets:
+  # Units per sleep; each plans one exercise.
+  sleep:
+    max_iterations: 6
+  information_gathering:
+    max_iterations: 0
+  # As for one limb: at most 2000 MPC rollouts per task.
+  planning:
+    max_wall_time: 600
+    max_iterations: 2000
