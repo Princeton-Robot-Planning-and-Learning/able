@@ -1,0 +1,40 @@
+_target_: able.approaches.make_limb_mode_allocation_robot
+rule: deliberate_practice
+num_units: ${budgets.sleep.max_iterations}
+# Candidate (mode, belief) pairs drawn per unit, by the chance of each mode
+# being the next day's.
+dreams_per_unit: 16
+# Effective units a mode needs before its whole routine is learned: two plans
+# per exercise. One plan helps a little; three made most exercises solvable in
+# a few hundred rollouts.
+run_length: 6
+# A unit at one belief counts at another by exp(-d^2 / (2 transfer_length^2)),
+# for the distance d between their means in prior standard deviations, less
+# where the training belief is narrower, and by the share of exercises their
+# routines have in common.
+transfer_length: 2.2
+narrowing_rate: 0.2
+# MPC candidates per step, and belief samples for the believed range of motion.
+num_rollouts: 32
+num_particles: 32
+# MPC keeps the limb where this share of the samples allow it, and moves a goal
+# beyond that just inside, so plans stay cautious until the belief narrows.
+confidence: 0.95
+# Each MPC step first scores num_proposals controls the model proposes. One is
+# taken if it costs at most 1 + seed_tolerance times the best directed candidate,
+# for its first seed_commit_steps steps, or whole if it reaches the goal.
+seed_tolerance: 0.05
+num_proposals: 16
+seed_commit_steps: 4
+# Exercises each unit plans, those of its mode planned the fewest times first.
+num_training_tasks: 1
+# Plans the model learns from while sleeping may use more rollouts than plans
+# for real tasks, so more of them reach the goal and give training rows.
+training_budget:
+  _target_: able.structs.Budget
+  max_wall_time: 1200
+  max_iterations: 4000
+# The model that seeds MPC, refit once per sleep.
+model:
+  _target_: able.models.flow_matching.FlowMatchingModel
+  num_steps: 4000

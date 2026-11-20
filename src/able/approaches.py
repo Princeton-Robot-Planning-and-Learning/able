@@ -18,6 +18,7 @@ from able.belief_updaters.range_of_motion import RangeOfMotionBeliefUpdater
 from able.belief_updaters.sites import MultiSiteUpdater
 from able.beliefs.base import Belief
 from able.beliefs.interval import IntervalBelief
+from able.beliefs.range_of_motion import RangeOfMotionBelief
 from able.envs.base import FiniteTaskDistribution
 from able.envs.friction.model import FrictionModel, FrictionState, FrictionTask
 from able.envs.friction.query import FrictionQuery, PushRecord
@@ -27,7 +28,9 @@ from able.envs.friction.world import DEFAULT_FRICTION_PRIOR, Push
 from able.envs.human_reach.model import ReachAction, ReachModel, ReachState, ReachTask
 from able.envs.human_reach.query import ReachQuery, ReachResponse
 from able.envs.human_reach.tasks import ReachDomain
+from able.envs.limb.human import RangeOfMotionPrior
 from able.envs.limb.model import LimbModel, LimbState, LimbTask
+from able.envs.limb.modes import LimbModeDomain
 from able.envs.limb.query import LimbQuery, QueryOutcome
 from able.envs.limb.tasks import LimbDomain
 from able.envs.multi_person_arm import (
@@ -38,7 +41,11 @@ from able.envs.multi_person_arm import (
     ScheduleTaskDistribution,
     get_person_plan_features,
 )
-from able.envs.multi_site import MultiSiteModel, SiteRoutineTaskDistribution
+from able.envs.multi_site import (
+    MarkovSiteTaskDistribution,
+    MultiSiteModel,
+    SiteRoutineTaskDistribution,
+)
 from able.envs.two_link_arm import (
     JOINT_LIMIT_PRIOR,
     ArmDomain,
@@ -83,7 +90,11 @@ from able.learners.person_focus import (
 from able.learners.rollout_model_learner import RolloutModelLearner
 from able.learners.site_focus import (
     SiteFocusSource,
+    SiteModelLearner,
     SiteRolloutModelLearner,
+    make_block_overlap_transfer,
+    make_same_routine_transfer,
+    make_site_block_features,
     make_site_key_features,
     make_site_moment_features,
     make_site_revision_features,
@@ -1041,6 +1052,20 @@ def _make_limb_parts(
     seeded by the model, if given, as the seed config says."""
     env_model = domain.env_model
     assert isinstance(env_model, LimbModel)
+    return _make_limb_parts_for_model(
+        env_model, num_rollouts, num_particles, confidence, model, seed
+    )
+
+
+def _make_limb_parts_for_model(
+    env_model: LimbModel,
+    num_rollouts: int,
+    num_particles: int,
+    confidence: float,
+    model: ConditionalModel | None = None,
+    seed: SeedConfig = SeedConfig(),
+) -> tuple[LimbModel, LimbMPCPlanner, RangeOfMotionBeliefUpdater, PushToLimitGatherer]:
+    """The parts of _make_limb_parts() for a limb model."""
     default = MPCParams()
     sampling = dataclasses.replace(default.config.sampling, num_rollouts=num_rollouts)
     params = MPCParams(
@@ -2137,4 +2162,232 @@ def make_friction_site_allocation_robot(
         value_model,
         num_training_tasks,
         keep_only_last_sleep,
+    )
+
+
+LimbModeRobot = Robot[Any, Any, Any, Any, Any, Any, Any]
+
+
+def _get_mode_parts(
+    domain: LimbModeDomain,
+) -> tuple[LimbModel, MarkovSiteTaskDistribution, RangeOfMotionBelief]:
+    """The limb model of a domain with good days and bad days, its routines, and
+    the default prior over one mode's scales as a belief, by whose standard
+    deviations feature functions measure beliefs."""
+    site_model, routines = domain.env_model, domain.task_distribution
+    assert isinstance(site_model, MultiSiteModel)
+    assert isinstance(site_model.inner, LimbModel)
+    assert isinstance(routines, MarkovSiteTaskDistribution)
+    num_motions = len(site_model.inner.variant.active_motions)
+    mean, stddev, low, high = RangeOfMotionPrior().get_parameters(num_motions).T
+    return (
+        site_model.inner,
+        routines,
+        RangeOfMotionBelief.from_prior(mean, stddev, low, high, num_motions),
+    )
+
+
+def _make_limb_mode_robot(
+    domain: LimbModeDomain,
+    model: ConditionalModel | None,
+    training_budget: Budget,
+    make_source: Callable[[Callable[[], NDArray[np.float64]]], Any] | None,
+    num_training_tasks: int,
+    num_rollouts: int,
+    num_particles: int,
+    confidence: float,
+    seed: SeedConfig,
+) -> LimbModeRobot:
+    """A robot for a person with good days and bad days that plans each mode's
+    exercises with MPC under its belief about that mode, and takes no queries.
+    Its learner plans the exercises of the mode each unit of sleep names, under
+    make_source(schedule), where schedule gives the chance of each mode being
+    the next day's, or never learns if make_source is None."""
+    limb_model, routines, _ = _get_mode_parts(domain)
+    _, inner_planner, inner_updater, _ = _make_limb_parts_for_model(
+        limb_model, num_rollouts, num_particles, confidence, model, seed
+    )
+    planner = MultiSitePlanner(inner_planner)
+    learner: Any = NullLearner()
+    if make_source is not None:
+        learner = SiteModelLearner(
+            planner,
+            routines,
+            make_source(lambda: routines.schedule),
+            training_budget,
+            refit="per_sleep",
+            num_training_tasks=num_training_tasks,
+        )
+    return Robot(
+        planner=planner,
+        learner=learner,
+        belief_updater=MultiSiteUpdater(inner_updater),
+        info_gatherer=NullInformationGatherer(),
+        initial_belief=domain.initial_belief,
+    )
+
+
+def make_limb_mode_scratch_robot(
+    domain: LimbModeDomain,
+    num_rollouts: int = 32,
+    num_particles: int = 32,
+    confidence: float = 0.5,
+    recorder: CycleRecorder[Any, Any, Any] | None = None,
+) -> LimbModeRobot:
+    """A robot for a person with good days and bad days that never learns."""
+    del recorder  # unused because the robot imagines nothing while it sleeps
+    return _make_limb_mode_robot(
+        domain,
+        None,
+        Budget(),
+        None,
+        1,
+        num_rollouts,
+        num_particles,
+        confidence,
+        SeedConfig(),
+    )
+
+
+def make_limb_mode_current_belief_robot(
+    domain: LimbModeDomain,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_training_tasks: int = 1,
+    num_rollouts: int = 32,
+    num_particles: int = 32,
+    confidence: float = 0.5,
+    seed_tolerance: float = 0.0,
+    num_proposals: int = 8,
+    seed_commit_steps: int = 1,
+    training_budget: Budget | None = None,
+    recorder: CycleRecorder[Any, Any, Any] | None = None,
+) -> LimbModeRobot:
+    """A robot for a person with good days and bad days whose units each train
+    for a mode drawn by its chance of being the next day's, under the current
+    belief about it. Training plans get training_budget, if given, instead of
+    planning_budget."""
+    del recorder  # unused because the robot imagines nothing while it sleeps
+    return _make_limb_mode_robot(
+        domain,
+        model,
+        planning_budget if training_budget is None else training_budget,
+        lambda schedule: SiteFocusSource(CurrentBeliefSource(), schedule),
+        num_training_tasks,
+        num_rollouts,
+        num_particles,
+        confidence,
+        SeedConfig(num_proposals, seed_tolerance, seed_commit_steps),
+    )
+
+
+def make_limb_mode_belief_coverage_robot(
+    domain: LimbModeDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_candidates: int = 4,
+    num_training_tasks: int = 1,
+    num_rollouts: int = 32,
+    num_particles: int = 32,
+    confidence: float = 0.5,
+    seed_tolerance: float = 0.0,
+    num_proposals: int = 8,
+    seed_commit_steps: int = 1,
+    training_budget: Budget | None = None,
+    recorder: CycleRecorder[Any, Any, Any] | None = None,
+) -> LimbModeRobot:
+    """A robot for a person with good days and bad days whose units each train
+    for the farthest of num_candidates (mode, belief) pairs, drawn by each
+    mode's chance of being the next day's, from those it has trained for, by
+    the mode's index, the moments of its belief, and how many times its
+    exercises have been revised. The candidates are the current belief, so the
+    gathering and execution budgets, which dreams would imagine, are unused."""
+    del recorder, gathering_budget, execution_budget  # unused without dreams
+    _, routines, prior = _get_mode_parts(domain)
+    features = make_site_revision_features(prior, routines.get_num_revisions)
+    return _make_limb_mode_robot(
+        domain,
+        model,
+        planning_budget if training_budget is None else training_budget,
+        lambda schedule: BeliefCoverageSource(
+            SiteFocusSource(CurrentBeliefSource(), schedule),
+            features,
+            num_candidates,
+        ),
+        num_training_tasks,
+        num_rollouts,
+        num_particles,
+        confidence,
+        SeedConfig(num_proposals, seed_tolerance, seed_commit_steps),
+    )
+
+
+def make_limb_mode_allocation_robot(
+    domain: LimbModeDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_units: int,
+    rule: str,
+    run_length: float,
+    dreams_per_unit: int = 4,
+    transfer_length: float = 2.2,
+    narrowing_rate: float = 0.2,
+    num_training_tasks: int = 1,
+    num_rollouts: int = 32,
+    num_particles: int = 32,
+    confidence: float = 0.5,
+    seed_tolerance: float = 0.0,
+    num_proposals: int = 8,
+    seed_commit_steps: int = 1,
+    training_budget: Budget | None = None,
+    recorder: CycleRecorder[Any, Any, Any] | None = None,
+) -> LimbModeRobot:
+    """A robot for a person with good days and bad days that splits each
+    sleep's num_units units among (mode, belief) pairs, drawn by each mode's
+    chance of being the next day's, by an allocation rule.
+
+    The rule predicts a plateau: planning for a mode gains nothing until the
+    model has run_length effective units for it. A unit for one mode counts
+    toward another by the share of exercises their routines have in common,
+    times the transfer between the beliefs' moments (see
+    make_moment_transfer). deliberate_practice counts units only toward the
+    mode and routine they trained for, by the same transfer. num_units should
+    match the sleep budget's iterations. The candidates are the current belief,
+    so the gathering and execution budgets, which dreams would imagine, are
+    unused. Training plans get training_budget, if given, instead of
+    planning_budget.
+    """
+    del recorder, gathering_budget, execution_budget  # unused without dreams
+    _, routines, prior = _get_mode_parts(domain)
+    num_blocks = len(routines.get_block_ids(0))
+    transfer = make_moment_transfer(transfer_length, narrowing_rate)
+    allocation_model = AllocationModel(
+        get_features=make_site_block_features(prior, routines.get_block_ids),
+        transfer=make_block_overlap_transfer(num_blocks, transfer),
+        gain=get_cliff_gain(run_length),
+        combine="sum",
+        run_length=run_length,
+        independent_transfer=make_same_routine_transfer(num_blocks, transfer),
+        include_current_belief=False,
+    )
+    return _make_limb_mode_robot(
+        domain,
+        model,
+        planning_budget if training_budget is None else training_budget,
+        lambda schedule: AllocationSource(
+            SiteFocusSource(CurrentBeliefSource(), schedule),
+            allocation_model,
+            rule,
+            num_units,
+            dreams_per_unit,
+        ),
+        num_training_tasks,
+        num_rollouts,
+        num_particles,
+        confidence,
+        SeedConfig(num_proposals, seed_tolerance, seed_commit_steps),
     )
