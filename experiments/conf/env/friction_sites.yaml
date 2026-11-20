@@ -10,6 +10,9 @@ env:
     group_sizes: [2, 4, 6]
     # Tasks in each group's routine.
     routine_size: 8
+    # Chance that each routine task is drawn from the whole maze instead of the
+    # group's corridor: 0 keeps each group in its own corridor.
+    region_overlap: 0.0
     # Chance that each group's routine is revised at the start of each new day.
     revision_rate: 0.0
     sim: 2d

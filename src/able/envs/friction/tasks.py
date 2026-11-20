@@ -1,6 +1,7 @@
 """Tasks and domains for the friction environment."""
 
 import dataclasses
+from typing import Collection
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -37,7 +38,8 @@ class FrictionTaskDistribution(TaskDistribution[FrictionTask]):
     max_distance long. So one task crosses some of the floors, and later tasks
     reach floors that earlier ones did not. Both lie on the grid of the paths
     behind the planner's leaf values (PuckPushingModel.value_resolution). The robot
-    starts at a random spot robot_distance from the puck, facing +x.
+    starts at a random spot robot_distance from the puck, facing +x. With floors,
+    the start, the goal, and a shortest path between them lie on those floors.
     """
 
     def __init__(
@@ -47,6 +49,7 @@ class FrictionTaskDistribution(TaskDistribution[FrictionTask]):
         max_distance: float = 3.5,
         robot_distance: tuple[float, float] = (0.6, 1.2),
         hole_clearance: float = 0.1,
+        floors: Collection[int] | None = None,
     ) -> None:
         assert 0.0 < min_distance <= max_distance, "Need 0 < min <= max distance"
         self._model = model
@@ -64,9 +67,15 @@ class FrictionTaskDistribution(TaskDistribution[FrictionTask]):
         for hole in world.holes:
             gaps = np.minimum(gaps, np.linalg.norm(points - hole, axis=1))
         clear = phys.hole_radius + hole_clearance
-        self._goals = points[gaps >= clear + phys.goal_radius]
-        starts = (gaps >= clear + phys.puck_radius) & np.array(
-            [world.has_room(p) for p in points], dtype=bool
+        self._floors = None if floors is None else frozenset(floors)
+        on_floors = np.ones(len(points), dtype=bool)
+        if self._floors is not None:
+            on_floors = np.isin(self._paths.cell_floors[j, i], list(self._floors))
+        self._goals = points[(gaps >= clear + phys.goal_radius) & on_floors]
+        starts = (
+            (gaps >= clear + phys.puck_radius)
+            & np.array([world.has_room(p) for p in points], dtype=bool)
+            & on_floors
         )
         self._starts = points[starts]
         self._start_cells = (j * pushable.shape[1] + i)[starts]
@@ -78,6 +87,9 @@ class FrictionTaskDistribution(TaskDistribution[FrictionTask]):
             goal_point = (round(float(goal[0]), 4), round(float(goal[1]), 4))
             distances = self._paths.path_distances(goal_point).flat[self._start_cells]
             ok = (distances >= self._min_distance) & (distances <= self._max_distance)
+            if self._floors is not None:
+                paths = self._paths.path_distances(goal_point, self._floors)
+                ok &= np.isclose(paths.flat[self._start_cells], distances)
             starts = [p for p in self._starts[ok] if not world.in_goal(p, goal_point)]
             if not starts:
                 continue
