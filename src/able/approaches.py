@@ -34,6 +34,14 @@ from able.info_gatherers.bisect_limits import BisectLimitGatherer
 from able.info_gatherers.probe_floor import ProbeFloorGatherer
 from able.info_gatherers.push_to_limit import PushToLimitGatherer
 from able.info_gatherers.reach_query import ReachQueryGatherer
+from able.learners.allocation import (
+    AllocationModel,
+    AllocationSource,
+    get_cliff_gain,
+    get_diminishing_gain,
+    get_saturating_gain,
+    make_moment_transfer,
+)
 from able.learners.base import NullLearner
 from able.learners.belief_features import make_moment_features
 from able.learners.belief_sources import (
@@ -331,6 +339,87 @@ def make_belief_coverage_robot(
     )
 
 
+def make_key_distance_transfer(
+    transfer_by_distance: list[float],
+) -> Callable[[ArmArray, ArmArray], ArmArray]:
+    """Transfer between beliefs from the largest difference between their cache
+    keys' belief entries: 1 at distance 0, transfer_by_distance[d - 1] at distance
+    d, and 0 beyond the list."""
+    values = np.array([1.0, *transfer_by_distance])
+
+    def transfer(a: ArmArray, b: ArmArray) -> ArmArray:
+        distances = np.abs(a[:, None, :] - b[None, :, :]).max(axis=2)
+        index = np.minimum(np.round(distances).astype(int), len(values))
+        return np.append(values, 0.0)[index]
+
+    return transfer
+
+
+def make_allocation_robot(
+    domain: ArmDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    num_units: int,
+    rule: str,
+    dreams_per_unit: int = 4,
+    max_warm_starts_per_key: int = 4,
+    max_key_distance: int = 0,
+    transfer_by_distance: list[float] | None = None,
+    first_unit_gain: float = 0.9,
+    extra_unit_decay: float = 0.7,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+) -> ArmRobot:
+    """A robot that plans with random shooting and, while it sleeps, splits its
+    num_units training beliefs among dreamed beliefs by an allocation rule.
+
+    A training belief caches plans for every task under its key, so one unit
+    makes a key fast, and later units add cheaper plans. The rule predicts that
+    k units at a key buy 1 - (1 - first_unit_gain) * extra_unit_decay^(k - 1)
+    of what a key can gain. With max_key_distance above 0,
+    the cache lends a key's plans to nearby keys, and the rule predicts that a
+    trained key helps a key at distance d by transfer_by_distance[d - 1], or fully
+    if transfer_by_distance is None. The budgets should match the cycle budgets,
+    and num_units should match the sleep budget's iterations.
+    """
+    task_distribution, planner, belief_updater, info_gatherer, dreamer = (
+        _make_arm_dreaming_parts(
+            domain,
+            gathering_budget,
+            execution_budget,
+            planning_budget,
+            max_warm_starts_per_key,
+            recorder,
+            max_key_distance,
+        )
+    )
+    cache = planner.get_default_params().model
+    assert isinstance(cache, ExactMatchCache)
+    if transfer_by_distance is None:
+        transfer_by_distance = [1.0] * max_key_distance
+    assert (
+        len(transfer_by_distance) == max_key_distance
+    ), "Need a transfer for each key distance the cache lends plans across"
+    model = AllocationModel(
+        get_features=get_cache_key_features(cache.key_resolution),
+        transfer=make_key_distance_transfer(list(transfer_by_distance)),
+        gain=get_diminishing_gain(first_unit_gain, extra_unit_decay),
+        combine="max",
+    )
+    belief_source: AllocationSource = AllocationSource(
+        dreamer, model, rule, num_units, dreams_per_unit
+    )
+    return Robot(
+        planner=planner,
+        learner=ModelLearner(
+            planner, task_distribution, belief_source, planning_budget
+        ),
+        belief_updater=belief_updater,
+        info_gatherer=info_gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
 def _make_dreamer(
     domain: Any,
     env_model: Any,
@@ -550,6 +639,74 @@ def make_sampled_arm_belief_coverage_robot(
         planning_budget,
         lambda dreamer: _make_coverage_source(
             dreamer, domain.initial_belief, num_candidates
+        ),
+        gathering_budget=gathering_budget,
+        execution_budget=execution_budget,
+        recorder=recorder,
+        training_iterations=training_iterations,
+    )
+
+
+def make_sampled_arm_allocation_robot(
+    domain: ArmDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_units: int,
+    rule: str,
+    dreams_per_unit: int = 4,
+    transfer_length: float = 2.2,
+    narrowing_rate: float = 0.2,
+    gain_scale: float = 11.0,
+    gain_power: float = 1.5,
+    run_length: float | None = None,
+    num_proposals: int = 4,
+    num_training_tasks: int = 8,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+    training_iterations: int | None = None,
+) -> ArmRobot:
+    """A sampled-arm robot that splits each sleep's num_units training beliefs
+    among dreamed beliefs by an allocation rule.
+
+    The rule predicts that k units at a belief buy 1 - (1 + k / gain_scale)^
+    (-gain_power) of what planning there can gain, and that they buy a fraction
+    of that at other beliefs, falling with the distance between the beliefs'
+    means and with how much narrower the training belief is (see
+    make_moment_transfer), as measured on this arm. A belief benefits from its
+    best training belief.
+
+    If run_length is set, the rule instead predicts a plateau, as when a tight
+    planning budget makes the model's proposals useless until it has trained
+    enough near a belief: a belief gains nothing until it has run_length
+    effective units, which add over training beliefs weighted by transfer.
+
+    The budgets should match the cycle budgets, and num_units should match the
+    sleep budget's iterations.
+    """
+    transfer = make_moment_transfer(transfer_length, narrowing_rate)
+    allocation_model = AllocationModel(
+        get_features=make_moment_features(domain.initial_belief),
+        transfer=transfer,
+        gain=get_saturating_gain(gain_scale, gain_power),
+        combine="max",
+    )
+    if run_length is not None:
+        allocation_model = AllocationModel(
+            get_features=make_moment_features(domain.initial_belief),
+            transfer=transfer,
+            gain=get_cliff_gain(run_length),
+            combine="sum",
+            run_length=run_length,
+        )
+    return _make_sampled_arm_robot(
+        domain,
+        model,
+        num_proposals,
+        num_training_tasks,
+        planning_budget,
+        lambda dreamer: AllocationSource(
+            dreamer, allocation_model, rule, num_units, dreams_per_unit
         ),
         gathering_budget=gathering_budget,
         execution_budget=execution_budget,
