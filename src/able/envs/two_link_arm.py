@@ -388,18 +388,22 @@ def make_sampled_domain(
     seed: int,
     goal_tolerance: float = 0.1,
     goal_lean: float = 4.0,
+    true_limits: NDArray[np.float64] | None = None,
     drift: float = 0.0,
 ) -> ArmDomain:
     """An arm domain whose tasks are drawn anew within the true joint limits,
     leaning toward them by goal_lean (see ArmTaskDistribution).
 
-    The true joint limits are drawn from the prior and drift as in make_domain().
-    Tasks are drawn within the first day's limits. Dreams and training draw tasks
-    given their own hypothesized limits.
+    The true joint limits are drawn from the prior as in make_domain() unless
+    given, and drift as in make_domain(). Tasks are drawn within the first day's
+    limits. Dreams and training draw tasks given their own hypothesized limits.
     """
     rng = np.random.default_rng(seed)
     model = TwoLinkArmModel(goal_tolerance=goal_tolerance)
-    true_limits = rng.uniform(JOINT_LIMIT_PRIOR[:, 0], JOINT_LIMIT_PRIOR[:, 1])
+    drawn_limits = rng.uniform(JOINT_LIMIT_PRIOR[:, 0], JOINT_LIMIT_PRIOR[:, 1])
+    if true_limits is None:
+        true_limits = drawn_limits
+    true_limits = np.asarray(true_limits, dtype=np.float64)
     return _make_arm_domain(
         model,
         ArmTaskDistribution(model, true_limits, goal_lean),
