@@ -39,7 +39,11 @@ from able.envs.multi_person_arm import (
     ScheduleTaskDistribution,
     get_person_plan_features,
 )
-from able.envs.multi_site import MultiSiteModel, SiteRoutineTaskDistribution
+from able.envs.multi_site import (
+    ImaginedDay,
+    MultiSiteModel,
+    SiteRoutineTaskDistribution,
+)
 from able.envs.two_link_arm import (
     JOINT_LIMIT_PRIOR,
     ArmDomain,
@@ -1882,7 +1886,7 @@ def _make_friction_site_robot(
     domain: FrictionSiteDomain,
     model: ConditionalModel | None,
     planning_budget: Budget,
-    make_source: Callable[[NDArray[np.float64]], Any] | None,
+    make_source: Callable[[NDArray[np.float64], Any], Any] | None,
     num_sims: int,
     max_depth: int,
     early_stop: EarlyStopConfig | None,
@@ -1891,13 +1895,17 @@ def _make_friction_site_robot(
     value_model: KernelRegressor | None,
     num_training_tasks: int,
     keep_only_last_sleep: bool,
+    dream_budgets: tuple[Budget, Budget] | None = None,
+    recorder: CycleRecorder[Any, Any, Any] | None = None,
 ) -> FrictionSiteRobot:
     """A robot for several friction sites that plans each site's task with
     POMCPOW under the site's belief, and probes the day's site's floors, weighted
     by how many of its routine tasks cross each. Its learner rolls out the routine
-    of the site each unit of sleep names, under make_source(schedule), or never
-    learns if make_source is None. The model is refit once per sleep, on that
-    sleep's rollouts only if keep_only_last_sleep.
+    of the site each unit of sleep names, under make_source(schedule, dreamer), or
+    never learns if make_source is None. With dream_budgets (gathering,
+    execution), the dreamer imagines a day at a site drawn with the schedule;
+    otherwise it is None. The model is refit once per sleep, on that sleep's
+    rollouts only if keep_only_last_sleep.
     """
     site_model = domain.env_model
     routines = domain.task_distribution
@@ -1915,18 +1923,7 @@ def _make_friction_site_robot(
         value_model,
     )
     planner = MultiSitePlanner(inner_planner)
-    learner: Any = NullLearner()
-    if make_source is not None:
-        learner = SiteRolloutModelLearner(
-            planner,
-            routines,
-            make_source(routines.schedule),
-            planning_budget,
-            site_model,
-            refit="per_sleep",
-            num_training_tasks=num_training_tasks,
-            keep_only_last_sleep=keep_only_last_sleep,
-        )
+    updater = MultiSiteUpdater(inner_updater)
     world = site_model.inner.world
     paths = PuckPushingModel(world)
 
@@ -1935,11 +1932,37 @@ def _make_friction_site_robot(
         weights = count_route_floors(paths, routine, world.puck_map.num_surfaces)
         return ProbeFloorGatherer(world, inner_updater, floor_weights=weights)
 
+    dreamer = None
+    if dream_budgets is not None:
+        day = ImaginedDay(routines)
+        dreamer = ImaginedNextBeliefSource(
+            site_model,
+            day,
+            planner,
+            updater,
+            MultiSiteGatherer(get_gatherer, day.draw_site),
+            gathering_budget=dream_budgets[0],
+            execution_budget=dream_budgets[1],
+            planning_budget=planning_budget,
+            recorder=recorder,
+        )
+    learner: Any = NullLearner()
+    if make_source is not None:
+        learner = SiteRolloutModelLearner(
+            planner,
+            routines,
+            make_source(routines.schedule, dreamer),
+            planning_budget,
+            site_model,
+            refit="per_sleep",
+            num_training_tasks=num_training_tasks,
+            keep_only_last_sleep=keep_only_last_sleep,
+        )
     return Robot(
         planner=planner,
         learner=learner,
-        belief_updater=MultiSiteUpdater(inner_updater),
-        info_gatherer=MultiSiteGatherer(get_gatherer, lambda: routines.site),
+        belief_updater=updater,
+        info_gatherer=MultiSiteGatherer(get_gatherer, lambda _: routines.site),
         initial_belief=domain.initial_belief,
     )
 
@@ -1990,7 +2013,7 @@ def make_friction_site_current_belief_robot(
         domain,
         model,
         planning_budget,
-        lambda schedule: SiteFocusSource(CurrentBeliefSource(), schedule),
+        lambda schedule, _: SiteFocusSource(CurrentBeliefSource(), schedule),
         num_sims,
         max_depth,
         early_stop,
@@ -1999,6 +2022,45 @@ def make_friction_site_current_belief_robot(
         value_model,
         num_training_tasks,
         keep_only_last_sleep,
+    )
+
+
+def make_friction_site_dreaming_robot(
+    domain: FrictionSiteDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    model: ConditionalModel,
+    num_training_tasks: int = 2,
+    num_sims: int = 100,
+    max_depth: int = 8,
+    early_stop: EarlyStopConfig | None = None,
+    proposal: ProposalConfig | None = None,
+    training_num_sims: int | None = None,
+    value_model: KernelRegressor | None = None,
+    keep_only_last_sleep: bool = False,
+    recorder: CycleRecorder[Any, Any, Any] | None = None,
+) -> FrictionSiteRobot:
+    """A robot for several friction sites whose units each train for a site
+    drawn by its share of the schedule, under the belief it dreams of holding
+    after a day at a site drawn the same way. The budgets should match the cycle
+    budgets."""
+    return _make_friction_site_robot(
+        domain,
+        model,
+        planning_budget,
+        # A changing schedule keeps the dreams here, where routines stay current.
+        lambda schedule, dreamer: SiteFocusSource(dreamer, lambda: schedule),
+        num_sims,
+        max_depth,
+        early_stop,
+        proposal,
+        training_num_sims,
+        value_model,
+        num_training_tasks,
+        keep_only_last_sleep,
+        (gathering_budget, execution_budget),
+        recorder,
     )
 
 
@@ -2041,7 +2103,7 @@ def make_friction_site_belief_coverage_robot(
         domain,
         model,
         planning_budget,
-        lambda schedule: BeliefCoverageSource(
+        lambda schedule, _: BeliefCoverageSource(
             SiteFocusSource(CurrentBeliefSource(), schedule),
             features,
             num_candidates,
@@ -2132,7 +2194,7 @@ def make_friction_site_allocation_robot(
         domain,
         model,
         planning_budget,
-        lambda schedule: AllocationSource(
+        lambda schedule, _: AllocationSource(
             SiteFocusSource(CurrentBeliefSource(), schedule),
             allocation_model,
             rule,

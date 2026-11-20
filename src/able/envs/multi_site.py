@@ -24,7 +24,11 @@ from typing import Any, Callable, Generic, Hashable, Sequence
 import numpy as np
 from numpy.typing import NDArray
 
-from able.envs.base import EnvironmentModel, FiniteTaskDistribution
+from able.envs.base import (
+    EnvironmentModel,
+    FiniteTaskDistribution,
+    TaskDistribution,
+)
 from able.structs import QueryType, StateType, Task
 
 
@@ -155,10 +159,11 @@ class SiteRoutineTaskDistribution(FiniteTaskDistribution[SiteTask]):
         self._routine_ids = list(range(len(routines)))
         self._num_revisions = [0] * len(routines)
         self._num_routines = len(routines)
-        self._site = None if rng is None else self._draw_site(rng)
+        self._site = None if rng is None else self.draw_site(rng)
         super().__init__(self._set_routines(routines))
 
-    def _draw_site(self, rng: np.random.Generator) -> int:
+    def draw_site(self, rng: np.random.Generator) -> int:
+        """A site drawn with its share of the schedule."""
         return int(rng.choice(len(self._schedule), p=self._schedule))
 
     def _set_routines(
@@ -201,7 +206,7 @@ class SiteRoutineTaskDistribution(FiniteTaskDistribution[SiteTask]):
         return list(self._routines[site])
 
     def sample(self, rng: np.random.Generator) -> SiteTask:
-        site = self._draw_site(rng) if self._site is None else self._site
+        site = self.draw_site(rng) if self._site is None else self._site
         routine = self._routines[site]
         return routine[int(rng.integers(len(routine)))]
 
@@ -210,7 +215,7 @@ class SiteRoutineTaskDistribution(FiniteTaskDistribution[SiteTask]):
         the day's site if there is one."""
         self._revise(rng)
         if self._site is not None:
-            self._site = self._draw_site(rng)
+            self._site = self.draw_site(rng)
 
     def _revise(self, rng: np.random.Generator) -> None:
         if self._revision_rate == 0.0:
@@ -224,6 +229,26 @@ class SiteRoutineTaskDistribution(FiniteTaskDistribution[SiteTask]):
                 self._num_revisions[group] += 1
                 self._num_routines += 1
         super().__init__(self._set_routines(routines))
+
+
+class ImaginedDay(TaskDistribution[SiteTask]):
+    """A day the robot imagines with routines: its site is drawn with the
+    schedule by draw_site(), never the real day's, and its tasks are that site's
+    routine tasks, so a dream that gathers and then acts does both at one site."""
+
+    def __init__(self, routines: SiteRoutineTaskDistribution) -> None:
+        self._routines = routines
+        self._site: int | None = None
+
+    def draw_site(self, rng: np.random.Generator) -> int:
+        """Draw the imagined day's site."""
+        self._site = self._routines.draw_site(rng)
+        return self._site
+
+    def sample(self, rng: np.random.Generator) -> SiteTask:
+        site = self.draw_site(rng) if self._site is None else self._site
+        routine = self._routines.get_routine(site)
+        return routine[int(rng.integers(len(routine)))]
 
 
 class MarkovSiteTaskDistribution(FiniteTaskDistribution[SiteTask]):

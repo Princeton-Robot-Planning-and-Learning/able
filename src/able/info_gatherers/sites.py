@@ -33,13 +33,13 @@ class _SiteEnvironment(Environment[Any, Any, Any, Any, Any]):
 
 
 class MultiSiteGatherer(InformationGatherer[Any, SiteQuery[Any], Any]):
-    """Asks queries at the day's site, get_site(), with get_gatherer(site) under
-    the belief about that site, and none on a day with no site."""
+    """Asks queries at the day's site, get_site(rng), with get_gatherer(site)
+    under the belief about that site, and none on a day with no site."""
 
     def __init__(
         self,
         get_gatherer: Callable[[int], InformationGatherer[Any, Any, Any]],
-        get_site: Callable[[], int | None],
+        get_site: Callable[[np.random.Generator], int | None],
     ) -> None:
         self._get_gatherer = get_gatherer
         self._get_site = get_site
@@ -51,7 +51,7 @@ class MultiSiteGatherer(InformationGatherer[Any, SiteQuery[Any], Any]):
         budget: Budget,
         rng: np.random.Generator,
     ) -> list[QueryResponse[SiteQuery[Any], Any]]:
-        site = self._get_site()
+        site = self._get_site(rng)
         if site is None:
             return []
         assert isinstance(belief, SiteBelief), "Need a SiteBelief"
