@@ -3,6 +3,7 @@
 import dataclasses
 import time
 from dataclasses import dataclass, field
+from typing import Callable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -67,18 +68,23 @@ class RandomShootingPlanner(
     planner returns an open-loop policy. Its planning statistics are the number of
     sequences evaluated, the expected cost of the plan, and whether a warm start
     was used. The default parameters, if given, replace RandomShootingParams(), for
-    example to choose the model.
+    example to choose the model. get_features gives the model's input for a task
+    under a belief.
     """
 
     def __init__(
         self,
         model: TwoLinkArmModel,
         default_params: RandomShootingParams | None = None,
+        get_features: Callable[
+            [ArmTask, IntervalBelief], NDArray[np.float64]
+        ] = get_plan_features,
     ) -> None:
         self._model = model
         self._default_params = (
             RandomShootingParams() if default_params is None else default_params
         )
+        self._get_features = get_features
 
     def get_default_params(self) -> RandomShootingParams:
         return self._default_params
@@ -104,7 +110,7 @@ class RandomShootingPlanner(
             self._model.get_cost_lower_bound(task, hidden_params).mean()
         )
         target_cost = lower_bound + params.threshold
-        features = get_plan_features(task, belief)
+        features = self._get_features(task, belief)
         warm_start_batch = self._get_warm_start_batch(features, params, rng)
 
         best_cost = np.inf
@@ -176,7 +182,7 @@ class RandomShootingPlanner(
         assert isinstance(belief, IntervalBelief), "Plan features need IntervalBelief"
         assert isinstance(policy, OpenLoopPolicy), "Need a plan from plan()"
         return Dataset(
-            x=get_plan_features(task, belief)[None],
+            x=self._get_features(task, belief)[None],
             y=np.array(policy.actions).reshape(1, -1),
             costs=np.array([policy.get_planning_stats()["expected_cost"]]),
             groups=np.zeros(1, dtype=np.int64),

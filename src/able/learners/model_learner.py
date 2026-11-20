@@ -30,10 +30,11 @@ class ModelLearner(
     belief source.
 
     Each iteration of a sleep gets a belief from the belief source, plans for the
-    training tasks under it, and adds the plans to the training data. The data
-    accumulates across sleeps. One iteration of the budget is one training belief.
-    The training tasks of a finite task distribution are all of its tasks. Other
-    distributions draw num_training_tasks new tasks in each iteration.
+    training tasks under it, and adds the plans to the training data. By default
+    the data accumulates across sleeps. One iteration of the budget is one
+    training belief. The training tasks of a finite task distribution are all of
+    its tasks. Other distributions draw num_training_tasks new tasks in each
+    iteration.
 
     The model is fit to all of the data either after every iteration, so later
     iterations plan with what earlier ones learned, or once at the end of each
@@ -42,7 +43,8 @@ class ModelLearner(
 
     The learner never sees the real environment: all of its data comes from
     planning. After max_sleeps sleeps, if set, the learner stops changing the
-    parameters.
+    parameters. With keep_only_last_sleep, each sleep starts from no data, as
+    for a robot that can store only one night's plans.
 
     Given a pool, a sleep that refits once at its end and has a fixed number of
     iterations runs in parallel: the pool's workers make every draw of the belief
@@ -62,6 +64,7 @@ class ModelLearner(
         refit: str = "per_iteration",
         max_sleeps: int | None = None,
         num_training_tasks: int = 8,
+        keep_only_last_sleep: bool = False,
     ) -> None:
         assert refit in REFIT_TIMINGS, f"refit must be one of {REFIT_TIMINGS}"
         assert num_training_tasks > 0, "Need at least one training task"
@@ -74,6 +77,7 @@ class ModelLearner(
         self._max_sleeps = max_sleeps
         self._dataset = Dataset.empty()
         self._num_sleeps = 0
+        self._keep_only_last_sleep = keep_only_last_sleep
 
     @property
     def dataset(self) -> Dataset:
@@ -101,6 +105,8 @@ class ModelLearner(
         if self._max_sleeps is not None and self._num_sleeps >= self._max_sleeps:
             return params
         self._num_sleeps += 1
+        if self._keep_only_last_sleep:
+            self._dataset = Dataset.empty()
         if (
             pool is not None
             and self._refit == "per_sleep"
@@ -141,13 +147,7 @@ class ModelLearner(
             _draw_in_worker,
             [(i + 1, belief, params, r) for i, r in enumerate(draw_rngs)],
         )
-        training_beliefs = [
-            self._belief_source.choose(
-                iteration + 1,
-                draws[iteration * num_draws : (iteration + 1) * num_draws],
-            )
-            for iteration in range(num_iterations)
-        ]
+        training_beliefs = self._belief_source.choose_all(draws, num_iterations, belief)
         plan_rngs = rng.spawn(num_iterations)
         examples = pool.map(
             _plan_training_tasks_in_worker,
@@ -169,26 +169,30 @@ class ModelLearner(
             self._task_distribution.sample(rng) for _ in range(self._num_training_tasks)
         ]
 
+    def draw_training_tasks(
+        self, belief: Belief[HiddenParamsType], rng: np.random.Generator
+    ) -> list[Any]:
+        """The tasks to plan for under a training belief. Tasks that depend on the
+        hidden parameters are drawn given parameters sampled from the belief."""
+        if self._task_distribution.depends_on_hidden_params:
+            return [
+                self._task_distribution.given(belief.sample(rng)).sample(rng)
+                for _ in range(self._num_training_tasks)
+            ]
+        return self._get_training_tasks(rng)
+
     def plan_training_tasks(
         self,
         belief: Belief[HiddenParamsType],
         params: PlannerParamsType,
         rng: np.random.Generator,
     ) -> Dataset:
-        """Plan for the training tasks under the belief, with the planner's
-        training parameters, and return the planner's rows. Tasks that depend on
-        the hidden parameters are drawn given parameters sampled from the
-        belief."""
+        """Plan for the training tasks under the belief (see
+        draw_training_tasks()), with the planner's training parameters, and
+        return the planner's rows."""
         params = self._planner.get_training_params(params)
         examples = []
-        if self._task_distribution.depends_on_hidden_params:
-            tasks = [
-                self._task_distribution.given(belief.sample(rng)).sample(rng)
-                for _ in range(self._num_training_tasks)
-            ]
-        else:
-            tasks = self._get_training_tasks(rng)
-        for task in tasks:
+        for task in self.draw_training_tasks(belief, rng):
             try:
                 policy = self._planner.plan(
                     task, belief, params, self._planning_budget, rng

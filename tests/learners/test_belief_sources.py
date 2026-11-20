@@ -208,3 +208,17 @@ def test_dreams_draw_tasks_given_their_hypotheses():
         assert not np.allclose(params, truth)
         assert np.all(params >= JOINT_LIMIT_PRIOR[:, 0])
         assert np.all(params <= JOINT_LIMIT_PRIOR[:, 1])
+
+
+def test_belief_coverage_can_forget_earlier_sleeps():
+    """Tests that coverage without memory counts only the current sleep's
+    choices."""
+    candidates = [_point(v) for v in (0, 5, 1, 3, 2, 6, 0, 4.5)]
+    source = BeliefCoverageSource(
+        _ScriptedSource(candidates), _get_low, num_candidates=2, remember_chosen=False
+    )
+    rng = np.random.default_rng(0)
+    chosen = [source.get_training_belief(i, _point(0), None, rng) for i in (1, 2, 3)]
+    assert chosen == [_point(0), _point(3), _point(6)]
+    # In the next sleep nothing has been chosen, so the first candidate wins.
+    assert source.get_training_belief(1, _point(0), None, rng) == _point(0)

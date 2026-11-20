@@ -3,3 +3,4 @@ _target_: able.approaches.make_belief_coverage_robot
 # this many times as often as the dreaming robot's.
 num_candidates: 4
 max_warm_starts_per_key: 4
+max_key_distance: 0

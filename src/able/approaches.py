@@ -88,14 +88,24 @@ ReachRobot = Robot[
 ]
 
 
+# The goal's entries in a plan cache key, which a nearest-key lookup must match.
+_GOAL_KEY_DIMS = 2
+
+
 def _make_caching_planner(
-    env_model: TwoLinkArmModel, max_warm_starts_per_key: int
+    env_model: TwoLinkArmModel, max_warm_starts_per_key: int, max_key_distance: int = 0
 ) -> RandomShootingPlanner:
     """Random shooting with warm starts from a cache of the cheapest plans per
-    discretized (goal, belief) key."""
+    discretized (goal, belief) key. With max_key_distance above 0, a belief whose
+    key has no plans for the goal uses the plans of the nearest key for the same
+    goal, if each belief entry is within max_key_distance steps of resolution."""
     params = RandomShootingParams(
         num_proposals=max_warm_starts_per_key,
-        model=ExactMatchCache(max_per_key=max_warm_starts_per_key),
+        model=ExactMatchCache(
+            max_per_key=max_warm_starts_per_key,
+            max_key_distance=max_key_distance,
+            num_exact_dims=_GOAL_KEY_DIMS,
+        ),
     )
     return RandomShootingPlanner(env_model, params)
 
@@ -121,6 +131,7 @@ def make_current_belief_robot(
     domain: ArmDomain,
     planning_budget: Budget,
     max_warm_starts_per_key: int = 4,
+    max_key_distance: int = 0,
     recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
 ) -> ArmRobot:
     """A robot that plans with random shooting and, while it sleeps, caches plans
@@ -134,7 +145,9 @@ def make_current_belief_robot(
     task_distribution = domain.task_distribution
     assert isinstance(env_model, TwoLinkArmModel)
     assert isinstance(task_distribution, FiniteTaskDistribution)
-    planner = _make_caching_planner(env_model, max_warm_starts_per_key)
+    planner = _make_caching_planner(
+        env_model, max_warm_starts_per_key, max_key_distance
+    )
     return Robot(
         planner=planner,
         learner=ModelLearner(
@@ -150,6 +163,7 @@ def make_prior_only_robot(
     domain: ArmDomain,
     planning_budget: Budget,
     max_warm_starts_per_key: int = 4,
+    max_key_distance: int = 0,
     recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
 ) -> ArmRobot:
     """A robot that plans with random shooting and caches plans for every task
@@ -161,7 +175,9 @@ def make_prior_only_robot(
     assert isinstance(env_model, TwoLinkArmModel)
     assert isinstance(task_distribution, FiniteTaskDistribution)
     assert isinstance(prior, IntervalBelief)
-    planner = _make_caching_planner(env_model, max_warm_starts_per_key)
+    planner = _make_caching_planner(
+        env_model, max_warm_starts_per_key, max_key_distance
+    )
     return Robot(
         planner=planner,
         learner=ModelLearner(
@@ -184,6 +200,7 @@ def _make_arm_dreaming_parts(
     planning_budget: Budget,
     max_warm_starts_per_key: int,
     recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None,
+    max_key_distance: int = 0,
 ) -> tuple[
     FiniteTaskDistribution[ArmTask],
     RandomShootingPlanner,
@@ -197,7 +214,9 @@ def _make_arm_dreaming_parts(
     task_distribution = domain.task_distribution
     assert isinstance(env_model, TwoLinkArmModel)
     assert isinstance(task_distribution, FiniteTaskDistribution)
-    planner = _make_caching_planner(env_model, max_warm_starts_per_key)
+    planner = _make_caching_planner(
+        env_model, max_warm_starts_per_key, max_key_distance
+    )
     belief_updater = JointLimitBeliefUpdater()
     info_gatherer: NullInformationGatherer = NullInformationGatherer()
     dreamer: ImaginedNextBeliefSource = ImaginedNextBeliefSource(
@@ -220,6 +239,7 @@ def make_dreaming_robot(
     execution_budget: Budget,
     planning_budget: Budget,
     max_warm_starts_per_key: int = 4,
+    max_key_distance: int = 0,
     recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
 ) -> ArmRobot:
     """A robot that plans with random shooting and dreams while it sleeps.
@@ -236,6 +256,7 @@ def make_dreaming_robot(
             planning_budget,
             max_warm_starts_per_key,
             recorder,
+            max_key_distance,
         )
     )
     return Robot(
@@ -271,6 +292,7 @@ def make_belief_coverage_robot(
     planning_budget: Budget,
     num_candidates: int = 4,
     max_warm_starts_per_key: int = 4,
+    max_key_distance: int = 0,
     recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
 ) -> ArmRobot:
     """A robot that plans with random shooting and, while it sleeps, caches
@@ -290,6 +312,7 @@ def make_belief_coverage_robot(
             planning_budget,
             max_warm_starts_per_key,
             recorder,
+            max_key_distance,
         )
     )
     cache = planner.get_default_params().model
@@ -372,9 +395,14 @@ def _make_sampled_arm_robot(
     gathering_budget: Budget | None = None,
     execution_budget: Budget | None = None,
     recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+    training_iterations: int | None = None,
 ) -> ArmRobot:
     """A sampled-arm robot whose learner trains under make_source(dreamer), or
-    never learns if make_source is None. The model is refit once per sleep."""
+    never learns if make_source is None. The model is refit once per sleep.
+
+    Dreams plan with planning_budget, as the robot does while awake. Training
+    plans get training_iterations iterations if given, since planning during
+    sleep need not be as fast, and planning_budget otherwise."""
     env_model, planner, belief_updater, gatherer = _make_sampled_arm_parts(
         domain, model, num_proposals
     )
@@ -397,7 +425,11 @@ def _make_sampled_arm_robot(
             planner,
             domain.task_distribution,
             make_source(dreamer),
-            planning_budget,
+            (
+                planning_budget
+                if training_iterations is None
+                else Budget(max_iterations=training_iterations)
+            ),
             max_sleeps=max_sleeps,
             refit="per_sleep",
             num_training_tasks=num_training_tasks,
@@ -429,6 +461,7 @@ def make_sampled_arm_current_belief_robot(
     num_proposals: int = 4,
     num_training_tasks: int = 8,
     recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+    training_iterations: int | None = None,
 ) -> ArmRobot:
     """A sampled-arm robot that trains its model under its current belief."""
     del recorder  # unused because the robot imagines nothing while it sleeps
@@ -439,6 +472,7 @@ def make_sampled_arm_current_belief_robot(
         num_training_tasks,
         planning_budget,
         lambda _: CurrentBeliefSource(),
+        training_iterations=training_iterations,
     )
 
 
@@ -449,6 +483,7 @@ def make_sampled_arm_prior_only_robot(
     num_proposals: int = 4,
     num_training_tasks: int = 8,
     recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+    training_iterations: int | None = None,
 ) -> ArmRobot:
     """A sampled-arm robot that trains its model under the prior in its first
     sleep, then never learns again."""
@@ -461,6 +496,7 @@ def make_sampled_arm_prior_only_robot(
         planning_budget,
         lambda _: PriorSource(domain.initial_belief),
         max_sleeps=1,
+        training_iterations=training_iterations,
     )
 
 
@@ -473,6 +509,7 @@ def make_sampled_arm_dreaming_robot(
     num_proposals: int = 4,
     num_training_tasks: int = 8,
     recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+    training_iterations: int | None = None,
 ) -> ArmRobot:
     """A sampled-arm robot that trains its model under the beliefs it dreams of
     holding at evaluation. The budgets should match the cycle budgets."""
@@ -486,6 +523,7 @@ def make_sampled_arm_dreaming_robot(
         gathering_budget=gathering_budget,
         execution_budget=execution_budget,
         recorder=recorder,
+        training_iterations=training_iterations,
     )
 
 
@@ -499,6 +537,7 @@ def make_sampled_arm_belief_coverage_robot(
     num_proposals: int = 4,
     num_training_tasks: int = 8,
     recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+    training_iterations: int | None = None,
 ) -> ArmRobot:
     """A sampled-arm robot that trains under the farthest of num_candidates dreams
     from the beliefs it has trained under, by moment features. The budgets should
@@ -515,6 +554,7 @@ def make_sampled_arm_belief_coverage_robot(
         gathering_budget=gathering_budget,
         execution_budget=execution_budget,
         recorder=recorder,
+        training_iterations=training_iterations,
     )
 
 
