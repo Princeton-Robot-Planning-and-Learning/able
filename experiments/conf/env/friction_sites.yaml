@@ -31,10 +31,10 @@ env:
 budgets:
   sleep:
     max_iterations: 8
-  # Probes at the day's site, each on the floor whose standard deviation, times
-  # how many of the site's routine tasks cross it, is largest.
+  # One probe a day at the day's site, on the floor whose standard deviation,
+  # times how many of the site's routine tasks cross it, is largest.
   information_gathering:
-    max_iterations: 2
+    max_iterations: 1
   # As for one friction site: at most 15000 POMCPOW simulations per task.
   planning:
     max_wall_time: 600
