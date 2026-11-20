@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from able.envs.multi_site import (
+    ImaginedDay,
     MarkovSiteTaskDistribution,
     MultiSiteModel,
     SiteQuery,
@@ -83,6 +84,21 @@ def test_routines():
     fixed.start_day(rng)
     assert fixed.get_tasks() == before
     assert fixed.site is None
+
+
+def test_imagined_day():
+    """Tests that an imagined day draws its own site with the schedule and keeps
+    its tasks there."""
+    routines = [[_task(1.0), _task(1.5)], [_task(-1.0), _task(-1.5)]]
+    rng = np.random.default_rng(0)
+    tasks = SiteRoutineTaskDistribution(routines, [0, 1], [0.5, 0.5], rng=rng)
+    day = ImaginedDay(tasks)
+    sites = set()
+    for _ in range(10):
+        site = day.draw_site(rng)
+        assert all(day.sample(rng).site == site for _ in range(3))
+        sites.add(site)
+    assert sites == {0, 1}
 
 
 def test_routines_one_site_a_day():

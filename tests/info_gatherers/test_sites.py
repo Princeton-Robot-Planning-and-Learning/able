@@ -23,7 +23,7 @@ def test_asks_at_the_days_site():
     belief = SiteBelief([wide, wide])
     sites: list[int | None] = [1]
     inner = BisectLimitGatherer(JointLimitBeliefUpdater())
-    gatherer = MultiSiteGatherer(lambda site: inner, lambda: sites[0])
+    gatherer = MultiSiteGatherer(lambda site: inner, lambda _: sites[0])
     data = gatherer.gather(belief, env, Budget(max_iterations=2), rng)
     assert len(data) == 2
     for datum in data:

@@ -658,17 +658,20 @@ def test_make_multi_person_robots():
 
 def test_make_friction_site_robots():
     """Tests that every friction-site robot sleeps, with a push cache or another
-    model, and probes the day's site."""
+    model, that the dreaming robot also trains its value model, and that robots
+    probe the day's site."""
     # pylint: disable=import-outside-toplevel,no-member
     from able.approaches import (
         make_friction_site_allocation_robot,
         make_friction_site_belief_coverage_robot,
         make_friction_site_cache,
         make_friction_site_current_belief_robot,
+        make_friction_site_dreaming_robot,
         make_friction_site_scratch_robot,
     )
     from able.envs.friction.sites import make_site_domain
     from able.envs.multi_site import SiteRoutineTaskDistribution
+    from able.models.kernel_regression import KernelRegressor
 
     # One push per episode keeps the rollouts short.
     domain = make_site_domain(
@@ -708,6 +711,15 @@ def test_make_friction_site_robots():
             dreams_per_unit=2,
             **options,
         ),
+        make_friction_site_dreaming_robot(
+            domain,
+            one,
+            one,
+            Budget(),
+            MLPRegressor(num_steps=5),
+            value_model=KernelRegressor((0.75, 1.0, 1.0, 3.0, 0.05, 0.05)),
+            **options,
+        ),
     ]
     rng = np.random.default_rng(0)
     scratch.sleep(Budget(max_iterations=2), rng)
@@ -719,3 +731,4 @@ def test_make_friction_site_robots():
         robot.sleep(Budget(max_iterations=2), rng)
     for robot in robots[:3]:
         assert isinstance(robot.planner_params.model, ExactMatchCache)
+    assert robots[-1].planner_params.value_model.x is not None
