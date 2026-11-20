@@ -1,0 +1,24 @@
+_target_: able.approaches.make_multi_person_allocation_robot
+# Dreams per unit of the sleep, which estimate where the robot will plan next.
+dreams_per_unit: 4
+# Effective units a person needs before their whole routine is cached.
+run_length: 4
+# Predicted transfer between beliefs (see make_moment_transfer).
+transfer_length: 2.2
+narrowing_rate: 0.2
+# Predict full transfer between beliefs whose cache keys are this close, as the
+# cache lends plans.
+max_key_distance: 6
+# Routine goals each unit plans, so a ward needs 4 units to cover a routine of 8.
+num_training_tasks: 2
+training_iterations: 10
+# The cache keeps only the last night's plans.
+keep_only_last_sleep: true
+# Plans cached per (goal, person's belief) key, lent to keys whose belief entries are
+# within max_key_distance steps of resolution for the same goal.
+model:
+  _target_: able.models.exact_match_cache.ExactMatchCache
+  max_per_key: 4
+  max_key_distance: 6
+  num_exact_dims: 2
+num_proposals: 4
