@@ -13,7 +13,7 @@ from typing import Sequence
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_matrix, diags
 from scipy.sparse.csgraph import dijkstra
 
 from able.envs.friction.model import PuckRewards
@@ -73,9 +73,9 @@ class PuckPushingModel:
     hole_margin: float = 0.05
     # Path length (m) a leaf value assumes one push covers.
     push_length: float = 1.0
-    # Path distances per goal cell, computed on first use.
-    _distance_cache: dict[int, NDArray[np.float64]] = field(
-        default_factory=dict, init=False, repr=False
+    # Path distances per goal cell and floors, computed on first use.
+    _distance_cache: dict[tuple[int, frozenset[int] | None], NDArray[np.float64]] = (
+        field(default_factory=dict, init=False, repr=False)
     )
 
     def initial_state(
@@ -297,18 +297,39 @@ class PuckPushingModel:
         j = min(max(int(point[1] // res), 0), ny - 1)
         return j * nx + i
 
-    def path_distances(self, goal: Sequence[float]) -> NDArray[np.float64]:
+    @cached_property
+    def cell_floors(self) -> NDArray[np.int64]:
+        """The floor under each cell of the value grid, indexed [j, i], or -1."""
+        nx, ny = self.value_grid_shape
+        res = self.value_resolution
+        return np.array(
+            [
+                [
+                    self.world.surface_at(np.array([(i + 0.5) * res, (j + 0.5) * res]))
+                    for i in range(nx)
+                ]
+                for j in range(ny)
+            ],
+            dtype=np.int64,
+        )
+
+    def path_distances(
+        self, goal: Sequence[float], floors: frozenset[int] | None = None
+    ) -> NDArray[np.float64]:
         """Lengths (m) of the shortest pushable paths to the goal's grid cell from
         every cell of the value grid, indexed [j, i] (infinite where there is no
-        path)."""
-        cell = self._cell_index(goal)
-        if cell not in self._distance_cache:
+        path), only through cells on the given floors if any."""
+        key = (self._cell_index(goal), floors)
+        if key not in self._distance_cache:
             _, graph = self._path_graph
-            distances = dijkstra(graph, indices=cell)
-            self._distance_cache[cell] = np.asarray(distances).reshape(
+            if floors is not None:
+                keep = diags(np.isin(self.cell_floors.ravel(), list(floors)) * 1.0)
+                graph = csr_matrix(keep @ graph @ keep)
+            distances = dijkstra(graph, indices=key[0])
+            self._distance_cache[key] = np.asarray(distances).reshape(
                 self.value_grid_shape[::-1]
             )
-        return self._distance_cache[cell]
+        return self._distance_cache[key]
 
     def _pushable(self, point: NDArray[np.float64], num_angles: int = 16) -> bool:
         """Whether some push is feasible from `point` on evenly spaced headings."""

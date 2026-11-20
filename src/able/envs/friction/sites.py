@@ -4,7 +4,9 @@
 Every site has the same maze, by default three corridors (see layout.py). Sites
 come in groups: the sites in a group share each floor's friction level and
 differ only in its jitter, as for buildings fitted out with the same materials.
-Each group runs a routine of pushing tasks, which every site in the group does.
+Each group runs a routine of pushing tasks, which every site in the group does,
+in its own region of the maze: on the corridors maze, group g's tasks stay in
+corridor g mod 3.
 """
 
 import dataclasses
@@ -15,8 +17,9 @@ import numpy as np
 from able.beliefs.particles import ParticleBelief
 from able.beliefs.sites import SiteBelief
 from able.envs.base import Domain
-from able.envs.friction.model import FrictionTask
-from able.envs.friction.tasks import make_domain
+from able.envs.friction.layout import make_world
+from able.envs.friction.model import FrictionModel, FrictionTask
+from able.envs.friction.tasks import FrictionTaskDistribution, make_domain
 from able.envs.friction.world import DEFAULT_FRICTION_PRIOR, FrictionPrior
 from able.envs.multi_site import MultiSiteModel, SiteRoutineTaskDistribution
 from able.envs.simulated import SimulatedEnvironment
@@ -38,6 +41,7 @@ def make_site_domain(
     num_floors: int = 9,
     prior: FrictionPrior = DEFAULT_FRICTION_PRIOR,
     maze: str = "corridors",
+    region_overlap: float = 0.0,
 ) -> FrictionSiteDomain:
     """A domain with group_sizes[g] sites in group g.
 
@@ -46,9 +50,11 @@ def make_site_domain(
     The robot starts with a survey of each site: it knows the site's levels but
     not the jitter, so its belief is particles with those levels and jitter drawn
     from the prior. Each group's routine has routine_size tasks drawn as for the
-    single-site friction domain, and each new day revises each group's routine
-    with probability revision_rate. The schedule gives each site a random share
-    of the robot's time.
+    single-site friction domain, each from anywhere in the maze with probability
+    region_overlap and otherwise from the group's region: the floors of one
+    color, group g's being color g mod 3. Each new day revises each group's
+    routine with probability revision_rate. The schedule gives each site a
+    random share of the robot's time.
     """
     rng = np.random.default_rng(seed)
     base = make_domain(
@@ -84,11 +90,31 @@ def make_site_domain(
         for g in group_of
     ]
 
+    assert 0.0 <= region_overlap <= 1.0, "Need a region overlap in [0, 1]"
+    friction_model = base.env_model
+    assert isinstance(friction_model, FrictionModel)
+    colors = np.asarray(
+        make_world(num_holes, goal_radius, num_floors, maze).puck_map.surface_colors
+    )
+    regions = [
+        FrictionTaskDistribution(
+            friction_model, *task_distances, floors=np.flatnonzero(colors == color)
+        )
+        for color in range(int(colors.max()) + 1)
+    ]
+
     def draw_routine(
         group: int, routine_rng: np.random.Generator
     ) -> list[FrictionTask]:
-        del group  # unused because every group draws from the same maze
-        return [base.task_distribution.sample(routine_rng) for _ in range(routine_size)]
+        region = regions[group % len(regions)]
+        return [
+            (
+                base.task_distribution
+                if routine_rng.random() < region_overlap
+                else region
+            ).sample(routine_rng)
+            for _ in range(routine_size)
+        ]
 
     routines = [draw_routine(g, rng) for g in range(len(group_sizes))]
     schedule = rng.dirichlet(np.ones(len(group_of)))

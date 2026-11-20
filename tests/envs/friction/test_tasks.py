@@ -87,3 +87,22 @@ def test_seeds_and_given_frictions():
     assert not np.allclose(frictions[0], frictions[1])
     domain = make_domain(seed=0, num_holes=0, true_frictions=[0.1, 0.05, 0.03])
     assert np.allclose(_get_parts(domain)[1].hidden_params, [0.1, 0.05, 0.03])
+
+
+def test_tasks_stay_on_their_floors():
+    """With floors, every task's start, goal, and shortest path lie on them."""
+    model = FrictionModel(num_holes=2, goal_radius=0.2, num_floors=9, maze="corridors")
+    floors = {3, 4, 5}
+    tasks = FrictionTaskDistribution(model, floors=floors)
+    paths = PuckPushingModel(model.world)
+    rng = np.random.default_rng(0)
+    for _ in range(10):
+        task = tasks.sample(rng)
+        start, goal = np.array(task.initial_state.puck), np.array(task.goal)
+        assert model.world.surface_at(start) in floors
+        assert model.world.surface_at(goal) in floors
+        cell = paths.cell_floors.shape[1] * int(start[1] // 0.1) + int(start[0] // 0.1)
+        within = paths.path_distances(task.goal, frozenset(floors)).flat[cell]
+        assert np.isclose(within, paths.path_distances(task.goal).flat[cell])
+    blue_only = paths.path_distances((3.0, 2.6), frozenset({0, 1, 2}))
+    assert np.sum(np.isfinite(blue_only)) <= 1  # a tan goal, reached on blue only
