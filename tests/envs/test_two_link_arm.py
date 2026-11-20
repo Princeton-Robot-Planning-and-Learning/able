@@ -240,3 +240,23 @@ def test_make_sampled_domain():
     rng = np.random.default_rng(0)
     goals = {tuple(domain.task_distribution.sample(rng).goal) for _ in range(5)}
     assert len(goals) == 5
+
+
+def test_make_sampled_domain_with_true_limits():
+    """Tests that given true limits replace the drawn ones and bound the goals."""
+    limits = np.array([-1.0, 1.0, -0.8, 0.6])
+    domain = make_sampled_domain(seed=3, true_limits=limits)
+    real_env = domain.real_env
+    assert isinstance(real_env, SimulatedEnvironment)
+    # pylint: disable-next=no-member
+    np.testing.assert_allclose(real_env.hidden_params, limits)
+    model = TwoLinkArmModel()
+    rng = np.random.default_rng(0)
+    for _ in range(10):
+        goal = domain.task_distribution.sample(rng).goal
+        reachable = [
+            q
+            for q in model.inverse_kinematics(goal)
+            if limits[0] <= q[0] <= limits[1] and limits[2] <= q[1] <= limits[3]
+        ]
+        assert reachable
