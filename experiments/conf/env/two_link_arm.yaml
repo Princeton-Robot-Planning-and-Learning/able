@@ -2,6 +2,9 @@ domain:
   _target_: able.envs.two_link_arm.make_domain
   num_goals: 12
   goal_tolerance: 0.1
+  # How far each true joint limit can move each night (uniformly, within the
+  # prior's range). The robot knows this and widens its belief to match.
+  drift: 0.0
 # Instantiated with the domain's environment model, only when recording videos.
 renderer:
   _target_: able.rendering.two_link_arm.TwoLinkArmRenderer

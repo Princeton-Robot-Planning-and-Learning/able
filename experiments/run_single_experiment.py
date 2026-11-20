@@ -71,6 +71,7 @@ def _main(cfg: DictConfig) -> None:
             recorder,
             on_cycle_end=writer,
             pool=pool,
+            predict_belief=domain.predict_belief,
         )
     finally:
         if pool is not None:
