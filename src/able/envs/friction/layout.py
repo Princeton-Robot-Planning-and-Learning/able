@@ -7,15 +7,20 @@ of the blue and green corridors.
 
 With more than 3 floors, each color is cut into stretches along x, each with its
 own friction, so a task crosses only some of the floors.
+
+The corridors maze, for several sites, has three walled corridors (blue, tan, and
+green) joined at their left ends, each with the same holes.
 """
 
 import dataclasses
 from typing import Any
 
 from able.envs.friction.world import (
+    CORRIDORS,
     DEFAULT_FRICTION_PRIOR,
     MAPS,
     THREE_ROUTES,
+    PuckMap,
     PuckPhysics,
     PuckWorld,
 )
@@ -35,23 +40,48 @@ HOLES = THREE_ROUTES.holes + (
 # and the tan floor on either side of the central block, whose slot is blue.
 FLOOR_SPLITS: dict[int, tuple[float, ...]] = {3: (), 6: (2.8,), 8: (2.0, 3.2)}
 
+# The corridors maze's holes, as offsets from each corridor's bottom-left corner,
+# so every corridor has the same holes, and its floors: each color whole, or cut
+# into thirds.
+CORRIDOR_HOLES = ((2.2, 0.5), (4.4, 0.8))
+CORRIDOR_BOTTOMS = (3.6, 2.0, 0.4)
+CORRIDOR_LEFT = 0.4
+CORRIDOR_FLOOR_SPLITS: dict[int, tuple[float, ...]] = {3: (), 9: (2.0, 3.6)}
+
 
 def make_world(
-    num_holes: int = 2, goal_radius: float = 0.3, num_floors: int = 3
+    num_holes: int = 2,
+    goal_radius: float = 0.3,
+    num_floors: int = 3,
+    maze: str = "threeroutes",
 ) -> PuckWorld:
-    """The threeroutes maze with the first num_holes holes, the goal radius, and
-    num_floors floors (a key of FLOOR_SPLITS)."""
-    if not 0 <= num_holes <= len(HOLES):
-        raise ValueError(f"num_holes must be in [0, {len(HOLES)}], got {num_holes}")
-    if num_floors not in FLOOR_SPLITS:
-        raise ValueError(
-            f"num_floors must be in {list(FLOOR_SPLITS)}, got {num_floors}"
+    """The maze ("threeroutes" or "corridors") with num_holes holes, the goal
+    radius, and num_floors floors (a key of FLOOR_SPLITS or
+    CORRIDOR_FLOOR_SPLITS). On threeroutes the holes are the first num_holes of
+    HOLES; on corridors, every corridor gets the first num_holes of
+    CORRIDOR_HOLES."""
+    base: PuckMap
+    if maze == "threeroutes":
+        base, all_holes, splits = THREE_ROUTES, HOLES, FLOOR_SPLITS
+        holes = all_holes[:num_holes]
+    elif maze == "corridors":
+        base, all_holes, splits = CORRIDORS, CORRIDOR_HOLES, CORRIDOR_FLOOR_SPLITS
+        holes = tuple(
+            (CORRIDOR_LEFT + dx, bottom + dy)
+            for bottom in CORRIDOR_BOTTOMS
+            for dx, dy in CORRIDOR_HOLES[:num_holes]
         )
+    else:
+        raise ValueError(f"Unknown maze {maze!r}; expected threeroutes or corridors")
+    if not 0 <= num_holes <= len(all_holes):
+        raise ValueError(f"num_holes must be in [0, {len(all_holes)}], got {num_holes}")
+    if num_floors not in splits:
+        raise ValueError(f"num_floors must be in {list(splits)}, got {num_floors}")
     puck_map = dataclasses.replace(
-        THREE_ROUTES,
-        name=f"threeroutes_h{num_holes}_f{num_floors}",
-        holes=HOLES[:num_holes],
-        floor_splits=FLOOR_SPLITS[num_floors],
+        base,
+        name=f"{maze}_h{num_holes}_f{num_floors}",
+        holes=holes,
+        floor_splits=splits[num_floors],
     )
     assert puck_map.num_surfaces == num_floors
     return PuckWorld(puck_map, PuckPhysics(goal_radius=goal_radius))

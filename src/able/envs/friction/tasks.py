@@ -132,14 +132,18 @@ def make_domain(
     prior: FrictionPrior = DEFAULT_FRICTION_PRIOR,
     rewards: PuckRewards = PuckRewards(),
     true_frictions: ArrayLike | None = None,
+    maze: str = "threeroutes",
 ) -> FrictionDomain:
-    """A friction domain on the maze with num_holes holes, the goal radius, and
-    num_floors floors, with floor frictions drawn from the prior unless given.
+    """A friction domain on the maze (see make_world) with num_holes holes, the
+    goal radius, and num_floors floors, with floor frictions drawn from the prior
+    unless given.
     Each task's start is task_distances (least, most) from its goal along the
     shortest pushable path. The robot's initial belief is particles from the
     prior."""
     rng = np.random.default_rng(seed)
-    model = FrictionModel(sim, num_holes, goal_radius, horizon, rewards, num_floors)
+    model = FrictionModel(
+        sim, num_holes, goal_radius, horizon, rewards, num_floors, maze
+    )
     prior = dataclasses.replace(prior, num_surfaces=num_floors)  # a draw per floor
     frictions = prior.sample(rng) if true_frictions is None else true_frictions
     frictions = np.asarray(frictions, dtype=np.float64)

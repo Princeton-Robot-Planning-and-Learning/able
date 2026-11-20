@@ -187,9 +187,10 @@ class ProbeSimulator:
         num_holes: int = 2,
         goal_radius: float = 0.3,
         num_floors: int = 3,
+        maze: str = "threeroutes",
     ) -> None:
         self._sim = sim
-        self.world = make_world(num_holes, goal_radius, num_floors)
+        self.world = make_world(num_holes, goal_radius, num_floors, maze)
         self._env: Any = None
 
     @property

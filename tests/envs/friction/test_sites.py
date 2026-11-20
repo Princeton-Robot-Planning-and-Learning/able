@@ -19,7 +19,7 @@ def test_make_site_domain():
     )
     assert isinstance(domain.env_model, MultiSiteModel)
     truths = domain.real_env.hidden_params  # type: ignore[attr-defined]
-    assert truths.shape == (3, 8)
+    assert truths.shape == (3, 9)
     levels = np.array(DEFAULT_FRICTION_PRIOR.levels)
     jitter = DEFAULT_FRICTION_PRIOR.jitter
 

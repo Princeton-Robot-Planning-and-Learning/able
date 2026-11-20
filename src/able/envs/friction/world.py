@@ -146,6 +146,11 @@ class PuckMap:
             rgbs.append((r, g, b))
         return tuple(rgbs)
 
+    @property
+    def surface_colors(self) -> tuple[int, ...]:
+        """Each floor's color, as an index into COLOR_NAMES."""
+        return tuple(color for color, _, _ in self._floor_colors())
+
     def surface_grid(self) -> NDArray[np.int64]:
         """Floor index per cell, indexed [row_from_bottom, col]; -1 is a wall."""
         codes = self._code_grid()
@@ -253,7 +258,32 @@ THREE_ROUTES = PuckMap(
     holes=((4.8, 3.6), (2.6, 1.0)),
 )
 
-MAPS: dict[str, PuckMap] = {m.name: m for m in (THREE_ROUTES,)}
+# Three walled corridors, joined at their left ends by 1.2 m gaps, for sites that
+# each work in one corridor. Each gap is floor of the outer corridor's color.
+CORRIDORS = PuckMap(
+    name="corridors",
+    rows=(
+        "##############",
+        "#bbbbbbbbbbbb#",
+        "#bbbbbbbbbbbb#",
+        "#bbbbbbbbbbbb#",
+        "#bbb##########",
+        "#tttttttttttt#",
+        "#tttttttttttt#",
+        "#tttttttttttt#",
+        "#ggg##########",
+        "#gggggggggggg#",
+        "#gggggggggggg#",
+        "#gggggggggggg#",
+        "##############",
+    ),
+    cell_size=0.4,
+    puck_start=(1.6, 4.2),
+    robot_start=(0.8, 4.2),
+    goal=(4.0, 4.2),
+)
+
+MAPS: dict[str, PuckMap] = {m.name: m for m in (THREE_ROUTES, CORRIDORS)}
 
 
 @dataclass(frozen=True)

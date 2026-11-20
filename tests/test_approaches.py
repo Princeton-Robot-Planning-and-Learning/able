@@ -678,17 +678,17 @@ def test_make_friction_site_robots():
     scratch = make_friction_site_scratch_robot(domain, num_sims=10, max_depth=2)
     robots = [
         make_friction_site_current_belief_robot(
-            domain, Budget(), make_friction_site_cache(8), **options
+            domain, Budget(), make_friction_site_cache(9), **options
         ),
         make_friction_site_belief_coverage_robot(
-            domain, one, one, Budget(), make_friction_site_cache(8), **options
+            domain, one, one, Budget(), make_friction_site_cache(9), **options
         ),
         make_friction_site_allocation_robot(
             domain,
             one,
             one,
             Budget(),
-            make_friction_site_cache(8),
+            make_friction_site_cache(9),
             num_units=2,
             rule="transfer_practice",
             run_length=2,
