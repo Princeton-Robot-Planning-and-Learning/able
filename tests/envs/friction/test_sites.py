@@ -4,7 +4,8 @@ import numpy as np
 
 from able.beliefs.particles import ParticleBelief
 from able.beliefs.sites import SiteBelief
-from able.envs.friction.sites import make_site_domain
+from able.envs.friction.pomdp import PuckPushingModel
+from able.envs.friction.sites import count_route_floors, make_site_domain
 from able.envs.friction.world import DEFAULT_FRICTION_PRIOR
 from able.envs.multi_site import MultiSiteModel, SiteRoutineTaskDistribution
 
@@ -15,7 +16,12 @@ def test_make_site_domain():
     # pylint does not narrow a domain's fields with isinstance.
     # pylint: disable=no-member
     domain = make_site_domain(
-        seed=0, group_sizes=(1, 2), routine_size=3, num_particles=20, revision_rate=1.0
+        seed=0,
+        group_sizes=(1, 2),
+        routine_size=3,
+        num_particles=20,
+        revision_rate=1.0,
+        survey="levels",
     )
     assert isinstance(domain.env_model, MultiSiteModel)
     truths = domain.real_env.hidden_params  # type: ignore[attr-defined]
@@ -69,3 +75,28 @@ def test_routines_stay_in_their_corridors():
             for point in (task.inner.initial_state.puck, task.inner.goal)
         ]
         assert all(in_corridor) if inside else not all(in_corridor)
+
+
+def test_prior_survey_and_route_floors():
+    """Tests that the prior survey starts every site from the prior, that the robot
+    works at one site a day, and that a corridor's routine crosses only its
+    floors."""
+    # pylint: disable=no-member
+    domain = make_site_domain(seed=0, group_sizes=(1, 1, 1), num_particles=50)
+    belief = domain.initial_belief
+    assert isinstance(belief, SiteBelief)
+    for survey in belief.beliefs:
+        assert isinstance(survey, ParticleBelief)
+        first_floor = survey.particles[:, 0]
+        assert first_floor.min() < 0.05 and first_floor.max() > 0.1
+    routines = domain.task_distribution
+    assert isinstance(routines, SiteRoutineTaskDistribution)
+    assert routines.site in (0, 1, 2)
+    world = domain.env_model.inner.world  # type: ignore[attr-defined]
+    paths = PuckPushingModel(world)
+    colors = np.array(world.puck_map.surface_colors)
+    for site in range(3):
+        routine = [task.inner for task in routines.get_routine(site)]
+        counts = count_route_floors(paths, routine, 9)
+        assert counts.sum() >= len(routine)
+        assert np.all(counts[colors != site] == 0)

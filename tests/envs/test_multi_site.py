@@ -6,6 +6,7 @@ import pytest
 from able.envs.multi_site import (
     MarkovSiteTaskDistribution,
     MultiSiteModel,
+    SiteQuery,
     SiteRoutineTaskDistribution,
     SiteState,
     make_site_task,
@@ -50,8 +51,11 @@ def test_model_uses_each_sites_parameters():
     env = SimulatedEnvironment(model, limits, rng)
     assert env.reset(task) == SiteState(1, task.inner.initial_state)
     assert env.step(action).state.site == 1
-    with pytest.raises(NotImplementedError):
-        model.sample_response(JointQuery(joint=0, angle=0.0), limits, rng)
+    query = JointQuery(joint=1, angle=1.0)
+    assert model.sample_response(SiteQuery(0, query), limits, rng)
+    assert not model.sample_response(SiteQuery(1, query), limits, rng)
+    with pytest.raises(AssertionError):
+        model.sample_response(query, limits, rng)
 
 
 def test_routines():
@@ -78,6 +82,23 @@ def test_routines():
     before = fixed.get_tasks()
     fixed.start_day(rng)
     assert fixed.get_tasks() == before
+    assert fixed.site is None
+
+
+def test_routines_one_site_a_day():
+    """Tests that with a random stream the robot works at one site each day, drawn
+    again each new day."""
+    routines = [[_task(1.0), _task(1.5)], [_task(-1.0), _task(-1.5)]]
+    rng = np.random.default_rng(0)
+    tasks = SiteRoutineTaskDistribution(routines, [0, 1], [0.5, 0.5], rng=rng)
+    sites = []
+    for _ in range(10):
+        site = tasks.site
+        assert site is not None
+        assert all(tasks.sample(rng).site == site for _ in range(5))
+        sites.append(site)
+        tasks.start_day(rng)
+    assert set(sites) == {0, 1}
 
 
 def test_markov_sites():

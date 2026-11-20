@@ -14,6 +14,8 @@ others in its group.
 A site can also be one condition of a single person, whose condition changes
 from day to day (see MarkovSiteTaskDistribution). The robot then works at one
 site each day, and sites share parts of their routines.
+
+A query is a SiteQuery: a single-site query asked at one site.
 """
 
 from dataclasses import dataclass, field
@@ -23,7 +25,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from able.envs.base import EnvironmentModel, FiniteTaskDistribution
-from able.structs import StateType, Task
+from able.structs import QueryType, StateType, Task
 
 
 @dataclass(frozen=True)
@@ -47,14 +49,22 @@ class SiteTask(Task[SiteState[Any], Any]):
         return int(self.initial_state.site)
 
 
+@dataclass(frozen=True)
+class SiteQuery(Generic[QueryType]):
+    """A single-site query asked at one site."""
+
+    site: int
+    inner: QueryType
+
+
 def make_site_task(site: int, inner: Task[Any, Any]) -> SiteTask:
     """The single-site task at the site."""
     return SiteTask(SiteState(site, inner.initial_state), inner.goal, inner=inner)
 
 
 class MultiSiteModel(EnvironmentModel[SiteState[Any], Any, SiteTask, Any, Any, Any]):
-    """The single-site model at the site in each state, with that site's hidden
-    parameters. Sites take no queries."""
+    """The single-site model at the site in each state or query, with that site's
+    hidden parameters."""
 
     def __init__(self, inner: EnvironmentModel[Any, Any, Any, Any, Any, Any]) -> None:
         self.inner = inner
@@ -108,7 +118,8 @@ class MultiSiteModel(EnvironmentModel[SiteState[Any], Any, SiteTask, Any, Any, A
     def sample_response(
         self, query: Any, hidden_params: NDArray[np.float64], rng: np.random.Generator
     ) -> Any:
-        raise NotImplementedError("Sites take no queries")
+        assert isinstance(query, SiteQuery), "Need a SiteQuery"
+        return self.inner.sample_response(query.inner, hidden_params[query.site], rng)
 
 
 class SiteRoutineTaskDistribution(FiniteTaskDistribution[SiteTask]):
@@ -119,6 +130,10 @@ class SiteRoutineTaskDistribution(FiniteTaskDistribution[SiteTask]):
     The routines stay fixed unless revision_rate is above 0. Then at the start
     of each new day, each group's routine is replaced with that probability by
     draw_routine(group, rng).
+
+    With rng, the robot works at one site each day instead: the day's site is
+    drawn with its share of the schedule, from rng for the first day and from
+    each new day's stream after, and every task that day is at that site.
     """
 
     def __init__(
@@ -130,6 +145,7 @@ class SiteRoutineTaskDistribution(FiniteTaskDistribution[SiteTask]):
         draw_routine: (
             Callable[[int, np.random.Generator], list[Task[Any, Any]]] | None
         ) = None,
+        rng: np.random.Generator | None = None,
     ) -> None:
         assert revision_rate == 0.0 or draw_routine is not None, "Need draw_routine"
         self._group_of = list(group_of)
@@ -139,7 +155,11 @@ class SiteRoutineTaskDistribution(FiniteTaskDistribution[SiteTask]):
         self._routine_ids = list(range(len(routines)))
         self._num_revisions = [0] * len(routines)
         self._num_routines = len(routines)
+        self._site = None if rng is None else self._draw_site(rng)
         super().__init__(self._set_routines(routines))
+
+    def _draw_site(self, rng: np.random.Generator) -> int:
+        return int(rng.choice(len(self._schedule), p=self._schedule))
 
     def _set_routines(
         self, routines: Sequence[Sequence[Task[Any, Any]]]
@@ -157,6 +177,11 @@ class SiteRoutineTaskDistribution(FiniteTaskDistribution[SiteTask]):
     def schedule(self) -> NDArray[np.float64]:
         """Each site's share of the tasks."""
         return self._schedule
+
+    @property
+    def site(self) -> int | None:
+        """The day's site, if the robot works at one site each day."""
+        return self._site
 
     def get_group(self, site: int) -> int:
         """The group a site belongs to."""
@@ -176,12 +201,18 @@ class SiteRoutineTaskDistribution(FiniteTaskDistribution[SiteTask]):
         return list(self._routines[site])
 
     def sample(self, rng: np.random.Generator) -> SiteTask:
-        site = int(rng.choice(len(self._schedule), p=self._schedule))
+        site = self._draw_site(rng) if self._site is None else self._site
         routine = self._routines[site]
         return routine[int(rng.integers(len(routine)))]
 
     def start_day(self, rng: np.random.Generator) -> None:
-        """Revise each group's routine with probability revision_rate."""
+        """Revise each group's routine with probability revision_rate, then draw
+        the day's site if there is one."""
+        self._revise(rng)
+        if self._site is not None:
+            self._site = self._draw_site(rng)
+
+    def _revise(self, rng: np.random.Generator) -> None:
         if self._revision_rate == 0.0:
             return
         assert self._draw_routine is not None

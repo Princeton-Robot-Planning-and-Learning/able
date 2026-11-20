@@ -20,8 +20,9 @@ from able.beliefs.base import Belief
 from able.beliefs.interval import IntervalBelief
 from able.envs.base import FiniteTaskDistribution
 from able.envs.friction.model import FrictionModel, FrictionState, FrictionTask
+from able.envs.friction.pomdp import PuckPushingModel
 from able.envs.friction.query import FrictionQuery, PushRecord
-from able.envs.friction.sites import FrictionSiteDomain
+from able.envs.friction.sites import FrictionSiteDomain, count_route_floors
 from able.envs.friction.tasks import FrictionDomain, make_prior_belief
 from able.envs.friction.world import DEFAULT_FRICTION_PRIOR, Push
 from able.envs.human_reach.model import ReachAction, ReachModel, ReachState, ReachTask
@@ -51,6 +52,7 @@ from able.info_gatherers.bisect_limits import BisectLimitGatherer
 from able.info_gatherers.probe_floor import ProbeFloorGatherer
 from able.info_gatherers.push_to_limit import PushToLimitGatherer
 from able.info_gatherers.reach_query import ReachQueryGatherer
+from able.info_gatherers.sites import MultiSiteGatherer
 from able.learners.allocation import (
     AllocationModel,
     AllocationSource,
@@ -1891,10 +1893,11 @@ def _make_friction_site_robot(
     keep_only_last_sleep: bool,
 ) -> FrictionSiteRobot:
     """A robot for several friction sites that plans each site's task with
-    POMCPOW under the site's belief, and takes no queries. Its learner rolls
-    out the routine of the site each unit of sleep names, under
-    make_source(schedule), or never learns if make_source is None. The model is
-    refit once per sleep, on that sleep's rollouts only if keep_only_last_sleep.
+    POMCPOW under the site's belief, and probes the day's site's floors, weighted
+    by how many of its routine tasks cross each. Its learner rolls out the routine
+    of the site each unit of sleep names, under make_source(schedule), or never
+    learns if make_source is None. The model is refit once per sleep, on that
+    sleep's rollouts only if keep_only_last_sleep.
     """
     site_model = domain.env_model
     routines = domain.task_distribution
@@ -1924,11 +1927,19 @@ def _make_friction_site_robot(
             num_training_tasks=num_training_tasks,
             keep_only_last_sleep=keep_only_last_sleep,
         )
+    world = site_model.inner.world
+    paths = PuckPushingModel(world)
+
+    def get_gatherer(site: int) -> ProbeFloorGatherer:
+        routine = [task.inner for task in routines.get_routine(site)]
+        weights = count_route_floors(paths, routine, world.puck_map.num_surfaces)
+        return ProbeFloorGatherer(world, inner_updater, floor_weights=weights)
+
     return Robot(
         planner=planner,
         learner=learner,
         belief_updater=MultiSiteUpdater(inner_updater),
-        info_gatherer=NullInformationGatherer(),
+        info_gatherer=MultiSiteGatherer(get_gatherer, lambda: routines.site),
         initial_belief=domain.initial_belief,
     )
 

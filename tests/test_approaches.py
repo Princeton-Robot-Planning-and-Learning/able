@@ -658,8 +658,8 @@ def test_make_multi_person_robots():
 
 def test_make_friction_site_robots():
     """Tests that every friction-site robot sleeps, with a push cache or another
-    model."""
-    # pylint: disable=import-outside-toplevel
+    model, and probes the day's site."""
+    # pylint: disable=import-outside-toplevel,no-member
     from able.approaches import (
         make_friction_site_allocation_robot,
         make_friction_site_belief_coverage_robot,
@@ -668,6 +668,7 @@ def test_make_friction_site_robots():
         make_friction_site_scratch_robot,
     )
     from able.envs.friction.sites import make_site_domain
+    from able.envs.multi_site import SiteRoutineTaskDistribution
 
     # One push per episode keeps the rollouts short.
     domain = make_site_domain(
@@ -710,6 +711,10 @@ def test_make_friction_site_robots():
     ]
     rng = np.random.default_rng(0)
     scratch.sleep(Budget(max_iterations=2), rng)
+    data = scratch.gather_information(domain.real_env, one, rng)
+    routines = domain.task_distribution
+    assert isinstance(routines, SiteRoutineTaskDistribution)
+    assert len(data) == 1 and data[0].query.site == routines.site
     for robot in robots:
         robot.sleep(Budget(max_iterations=2), rng)
     for robot in robots[:3]:

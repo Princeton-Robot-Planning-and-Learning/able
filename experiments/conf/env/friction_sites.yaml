@@ -24,12 +24,17 @@ env:
     task_distances: [1.5, 3.5]
     num_floors: 9
     num_particles: 500
+    # The belief about each site starts from the prior, or knows the site's
+    # group levels (levels).
+    survey: prior
   renderer: null
 budgets:
   sleep:
     max_iterations: 8
+  # Probes at the day's site, each on the floor whose standard deviation, times
+  # how many of the site's routine tasks cross it, is largest.
   information_gathering:
-    max_iterations: 0
+    max_iterations: 2
   # As for one friction site: at most 15000 POMCPOW simulations per task.
   planning:
     max_wall_time: 600

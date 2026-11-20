@@ -6,6 +6,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+from able.envs.friction.layout import make_world
 from able.envs.friction.pomdp import GOAL as REACHED
 from able.envs.friction.pomdp import HOLE, ONGOING, PuckPushingModel
 from able.envs.friction.world import THREE_ROUTES, PuckWorld, Push
@@ -142,3 +143,14 @@ def test_path_distances_cover_the_pushable_cells():
     assert np.all(np.isinf(distances[~pushable]))
     assert model.distance_to_goal(np.array(GOAL), GOAL) == 0.0
     assert model.path_distances(GOAL) is distances  # cached per goal cell
+
+
+def test_path_floors():
+    """A path along one corridor of the corridors maze crosses only its floors, and
+    a path between corridors crosses floors of both."""
+    world = make_world(2, 0.2, 9, maze="corridors")
+    model = PuckPushingModel(world)
+    assert model.path_floors((1.0, 4.2), (4.0, 4.2)) <= {0, 1, 2}
+    assert model.path_floors((1.0, 4.2), (4.0, 4.2)) >= {0, 2}
+    across = model.path_floors((4.0, 4.2), (4.0, 1.0))
+    assert {0, 6, 8} <= across
