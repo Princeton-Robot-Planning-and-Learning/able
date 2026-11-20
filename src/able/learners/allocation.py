@@ -119,6 +119,18 @@ def get_saturating_gain(
     return gain
 
 
+def get_ramp_gain(
+    start: float, end: float
+) -> Callable[[NDArray[np.float64]], NDArray[np.float64]]:
+    """A gain of 0 up to start effective units that rises linearly to 1 at end."""
+    assert 0.0 <= start < end, "Need 0 <= start < end"
+
+    def gain(effective_units: NDArray[np.float64]) -> NDArray[np.float64]:
+        return np.clip((effective_units - start) / (end - start), 0.0, 1.0)
+
+    return gain
+
+
 def make_moment_transfer(
     length: float, narrowing_rate: float
 ) -> Callable[[NDArray[np.float64], NDArray[np.float64]], NDArray[np.float64]]:
