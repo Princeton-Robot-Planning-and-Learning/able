@@ -1,10 +1,10 @@
 """A robot that pushes pucks at several sites, each with its own floor frictions
 (see envs/multi_site.py).
 
-Every site has the same maze. Sites come in groups: the sites in a group share
-each floor's friction level and differ only in its jitter, as for buildings
-fitted out with the same materials. Each group runs a routine of pushing tasks,
-which every site in the group does.
+Every site has the same maze, by default three corridors (see layout.py). Sites
+come in groups: the sites in a group share each floor's friction level and
+differ only in its jitter, as for buildings fitted out with the same materials.
+Each group runs a routine of pushing tasks, which every site in the group does.
 """
 
 import dataclasses
@@ -26,17 +26,18 @@ FrictionSiteDomain = Domain[Any, Any, Any, Any, Any, Any]
 
 def make_site_domain(
     seed: int,
-    group_sizes: Sequence[int] = (1, 2, 3, 6),
+    group_sizes: Sequence[int] = (2, 4, 6),
     routine_size: int = 8,
     revision_rate: float = 0.0,
     sim: str = "2d",
-    num_holes: int = 4,
+    num_holes: int = 2,
     goal_radius: float = 0.2,
     horizon: int = 15,
     num_particles: int = 500,
     task_distances: tuple[float, float] = (1.5, 3.5),
-    num_floors: int = 8,
+    num_floors: int = 9,
     prior: FrictionPrior = DEFAULT_FRICTION_PRIOR,
+    maze: str = "corridors",
 ) -> FrictionSiteDomain:
     """A domain with group_sizes[g] sites in group g.
 
@@ -60,6 +61,7 @@ def make_site_domain(
         task_distances=(task_distances[0], task_distances[1]),
         num_floors=num_floors,
         prior=prior,
+        maze=maze,
     )
     prior = dataclasses.replace(prior, num_surfaces=num_floors)
     levels = np.asarray(prior.levels, dtype=np.float64)
