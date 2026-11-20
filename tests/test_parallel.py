@@ -10,12 +10,21 @@ from omegaconf import OmegaConf
 
 from able.approaches import get_cache_key_features
 from able.belief_updaters.joint_limits import JointLimitBeliefUpdater
+from able.beliefs.interval import IntervalBelief
+from able.beliefs.sites import SiteBelief
 from able.cycle import CycleBudgets, run_cycles
 from able.envs.base import FiniteTaskDistribution
-from able.envs.two_link_arm import TwoLinkArmModel, make_domain
+from able.envs.multi_site import MarkovSiteTaskDistribution
+from able.envs.two_link_arm import ArmTask, TwoLinkArmModel, make_domain
 from able.info_gatherers.base import NullInformationGatherer
-from able.learners.belief_sources import BeliefCoverageSource, ImaginedNextBeliefSource
+from able.learners.belief_sources import (
+    BeliefCoverageSource,
+    CurrentBeliefSource,
+    ImaginedNextBeliefSource,
+)
 from able.learners.model_learner import ModelLearner
+from able.learners.site_focus import SiteFocusSource, SiteModelLearner
+from able.models.base import Dataset
 from able.models.exact_match_cache import ExactMatchCache
 from able.parallel import (
     ProcessPool,
@@ -26,11 +35,17 @@ from able.parallel import (
     build_context,
 )
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
+from able.planners.sites import MultiSitePlanner
 from able.robot import Robot
 from able.structs import Budget
 from tests.experiments.test_run_single_experiment import SCRIPT
 
 NUM_CANDIDATES = 2
+_SITE_PLANNER = MultiSitePlanner(
+    RandomShootingPlanner(
+        TwoLinkArmModel(), RandomShootingParams(model=ExactMatchCache())
+    )
+)
 
 
 def _make_arm_robot() -> tuple:
@@ -166,6 +181,58 @@ def test_parallel_sleep_chooses_like_a_serial_sleep():
         pool,
     )
     assert len(learner.dataset) == 4 * 4
+
+
+def _make_site_learner(routines: MarkovSiteTaskDistribution) -> SiteModelLearner:
+    return SiteModelLearner(
+        _SITE_PLANNER,
+        routines,
+        SiteFocusSource(CurrentBeliefSource(), lambda: routines.schedule),
+        Budget(),
+        refit="per_sleep",
+        num_training_tasks=1,
+    )
+
+
+def test_parallel_sleep_follows_this_processs_day(monkeypatch):
+    """Tests that a parallel sleep draws the day's sites and training tasks in
+    this process, whose task distribution changes between days, while a
+    worker's copy does not."""
+
+    def make_routines() -> MarkovSiteTaskDistribution:
+        return MarkovSiteTaskDistribution(
+            [["a"], ["b"]],
+            lambda key, rng: [ArmTask(np.zeros(2), np.array([rng.uniform(), 0.0]))],
+            np.array([[0.0, 1.0], [1.0, 0.0]]),
+            np.random.default_rng(0),
+            revision_rate=1.0,
+            initial_site=0,
+        )
+
+    routines = make_routines()
+    learner = _make_site_learner(routines)
+    worker_learner = _make_site_learner(make_routines())
+    planned = []
+
+    def record(tasks, belief, params, rng):
+        del belief, params, rng
+        planned.extend(tasks)
+        return Dataset.empty()
+
+    monkeypatch.setattr(worker_learner, "plan_tasks", record)
+    pool = SerialPool(WorkerContext(domain=None, planner=None, learner=worker_learner))
+    routines.start_day(np.random.default_rng(1))
+    assert routines.schedule[0] == 1.0
+    limits = IntervalBelief(np.tile([[-2.0, 2.0]], (4, 1)))
+    learner.learn(
+        SiteBelief([limits, limits]),
+        _SITE_PLANNER.get_default_params(),
+        Budget(max_iterations=2),
+        np.random.default_rng(0),
+        pool,
+    )
+    assert [t.site for t in planned] == [0, 0]
+    assert all(t.inner is routines.get_routine(0)[0].inner for t in planned)
 
 
 def test_a_pool_cannot_be_used_with_a_recorder():

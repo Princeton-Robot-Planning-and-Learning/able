@@ -5,6 +5,7 @@ import numpy as np
 from able.beliefs.interval import IntervalBelief
 from able.beliefs.particles import ParticleBelief
 from able.beliefs.range_of_motion import RangeOfMotionBelief
+from able.beliefs.sites import SiteBelief
 from able.learners.belief_features import get_moments, make_moment_features
 
 
@@ -40,3 +41,12 @@ def test_moment_features_are_in_prior_units():
     assert np.allclose(features[2:], 1.0)
     shifted = ParticleBelief(prior.particles + 2.0, prior.low, prior.high)
     assert np.allclose(get_features(shifted)[:2] - features[:2], 1.0, atol=0.05)
+
+
+def test_site_belief_moments():
+    """Tests that a site belief's moments are each site's in turn."""
+    first = IntervalBelief(np.array([[0.0, 1.0]]))
+    second = IntervalBelief(np.array([[2.0, 4.0]]))
+    mean, std = get_moments(SiteBelief([first, second]))
+    np.testing.assert_allclose(mean, [0.5, 3.0])
+    np.testing.assert_allclose(std, np.array([1.0, 2.0]) / np.sqrt(12.0))

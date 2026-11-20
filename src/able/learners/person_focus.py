@@ -59,6 +59,11 @@ class PersonFocusSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         self._source = source
         self._schedule = np.asarray(schedule, dtype=np.float64) / np.sum(schedule)
 
+    @property
+    def draws_in_workers(self) -> bool:
+        """Whether the other source's draws may be made in workers."""
+        return self._source.draws_in_workers
+
     def get_training_belief(
         self,
         iteration: int,

@@ -1,7 +1,7 @@
 """A learner that trains a planner's model on plans for chosen beliefs."""
 
 import time
-from typing import Any, Generic
+from typing import Any, Generic, Sequence
 
 import numpy as np
 
@@ -139,19 +139,28 @@ class ModelLearner(
         rng: np.random.Generator,
         pool: WorkerPool,
     ) -> PlannerParamsType:
-        """One sleep of num_iterations iterations, with the draws and the training
-        plans made in the pool's workers."""
-        num_draws = self._belief_source.num_draws
-        draw_rngs = rng.spawn(num_iterations * num_draws)
-        draws = pool.map(
-            _draw_in_worker,
-            [(i + 1, belief, params, r) for i, r in enumerate(draw_rngs)],
-        )
-        training_beliefs = self._belief_source.choose_all(draws, num_iterations, belief)
+        """One sleep of num_iterations iterations, with the training plans, and
+        the draws if the belief source allows, made in the pool's workers. The
+        training tasks are drawn here, so they come from this process's task
+        distribution, which may change between days."""
+        source = self._belief_source
+        draw_rngs = rng.spawn(num_iterations * source.num_draws)
+        draw_jobs = [(i + 1, belief, params, r) for i, r in enumerate(draw_rngs)]
+        if source.draws_in_workers:
+            draws = pool.map(_draw_in_worker, draw_jobs)
+        else:
+            draws = [source.draw(*job) for job in draw_jobs]
+        training_beliefs = source.choose_all(draws, num_iterations, belief)
         plan_rngs = rng.spawn(num_iterations)
+        tasks = [
+            self.draw_training_tasks(b, r) for b, r in zip(training_beliefs, plan_rngs)
+        ]
         examples = pool.map(
-            _plan_training_tasks_in_worker,
-            [(b, params, r) for b, r in zip(training_beliefs, plan_rngs)],
+            _plan_tasks_in_worker,
+            [
+                (t, b, params, r)
+                for t, b, r in zip(tasks, training_beliefs, plan_rngs, strict=True)
+            ],
         )
         self._dataset = Dataset.concatenate([self._dataset, *examples])
         return self._fit(params)
@@ -190,9 +199,22 @@ class ModelLearner(
         """Plan for the training tasks under the belief (see
         draw_training_tasks()), with the planner's training parameters, and
         return the planner's rows."""
+        return self.plan_tasks(
+            self.draw_training_tasks(belief, rng), belief, params, rng
+        )
+
+    def plan_tasks(
+        self,
+        tasks: Sequence[Any],
+        belief: Belief[HiddenParamsType],
+        params: PlannerParamsType,
+        rng: np.random.Generator,
+    ) -> Dataset:
+        """Plan for the tasks under the belief, with the planner's training
+        parameters, and return the planner's rows."""
         params = self._planner.get_training_params(params)
         examples = []
-        for task in self.draw_training_tasks(belief, rng):
+        for task in tasks:
             try:
                 policy = self._planner.plan(
                     task, belief, params, self._planning_budget, rng
@@ -216,11 +238,15 @@ def _draw_in_worker(
     return learner.belief_source.draw(index, belief, params, rng)
 
 
-def _plan_training_tasks_in_worker(
-    context: WorkerContext, belief: Belief[Any], params: Any, rng: np.random.Generator
+def _plan_tasks_in_worker(
+    context: WorkerContext,
+    tasks: Sequence[Any],
+    belief: Belief[Any],
+    params: Any,
+    rng: np.random.Generator,
 ) -> Dataset:
-    """A worker's training plans under one training belief, with its own copy of
-    the learner."""
+    """A worker's training plans for the tasks under one training belief, with
+    its own copy of the learner."""
     learner = context.learner
     assert isinstance(learner, ModelLearner), "The worker's learner trains a model"
-    return learner.plan_training_tasks(belief, params, rng)
+    return learner.plan_tasks(tasks, belief, params, rng)

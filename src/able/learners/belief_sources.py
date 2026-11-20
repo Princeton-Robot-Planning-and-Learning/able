@@ -48,6 +48,14 @@ class BeliefSource(ABC, Generic[HiddenParamsType, PlannerParamsType]):
         """The draws each training belief is chosen from."""
         return 1
 
+    @property
+    def draws_in_workers(self) -> bool:
+        """Whether workers may make the draws, each with its own copy of the
+        source. A source whose draws depend on what changes in this process
+        between sleeps, such as a schedule that changes between days, makes
+        them here instead."""
+        return True
+
     def draw(
         self,
         index: int,
@@ -287,6 +295,11 @@ class BeliefCoverageSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     def num_draws(self) -> int:
         """The candidates each training belief is chosen from."""
         return self._num_candidates
+
+    @property
+    def draws_in_workers(self) -> bool:
+        """Whether the candidate source's draws may be made in workers."""
+        return self._candidate_source.draws_in_workers
 
     def draw(
         self,
