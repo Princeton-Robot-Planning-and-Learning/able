@@ -654,3 +654,63 @@ def test_make_multi_person_robots():
     assert not _has_cached_plans(robots[0].planner_params)
     for robot in robots[1:]:
         assert _has_cached_plans(robot.planner_params)
+
+
+def test_make_friction_site_robots():
+    """Tests that every friction-site robot sleeps, with a push cache or another
+    model."""
+    # pylint: disable=import-outside-toplevel
+    from able.approaches import (
+        make_friction_site_allocation_robot,
+        make_friction_site_belief_coverage_robot,
+        make_friction_site_cache,
+        make_friction_site_current_belief_robot,
+        make_friction_site_scratch_robot,
+    )
+    from able.envs.friction.sites import make_site_domain
+
+    # One push per episode keeps the rollouts short.
+    domain = make_site_domain(
+        seed=0, group_sizes=(1, 2), routine_size=2, horizon=1, num_particles=10
+    )
+    one = Budget(max_iterations=1)
+    options = {"num_sims": 10, "max_depth": 2, "num_training_tasks": 1}
+    scratch = make_friction_site_scratch_robot(domain, num_sims=10, max_depth=2)
+    robots = [
+        make_friction_site_current_belief_robot(
+            domain, Budget(), make_friction_site_cache(8), **options
+        ),
+        make_friction_site_belief_coverage_robot(
+            domain, one, one, Budget(), make_friction_site_cache(8), **options
+        ),
+        make_friction_site_allocation_robot(
+            domain,
+            one,
+            one,
+            Budget(),
+            make_friction_site_cache(8),
+            num_units=2,
+            rule="transfer_practice",
+            run_length=2,
+            dreams_per_unit=2,
+            **options,
+        ),
+        make_friction_site_allocation_robot(
+            domain,
+            one,
+            one,
+            Budget(),
+            MLPRegressor(num_steps=5),
+            num_units=2,
+            rule="deliberate_practice",
+            run_length=2,
+            dreams_per_unit=2,
+            **options,
+        ),
+    ]
+    rng = np.random.default_rng(0)
+    scratch.sleep(Budget(max_iterations=2), rng)
+    for robot in robots:
+        robot.sleep(Budget(max_iterations=2), rng)
+    for robot in robots[:3]:
+        assert isinstance(robot.planner_params.model, ExactMatchCache)

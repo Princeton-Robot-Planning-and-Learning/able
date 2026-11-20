@@ -63,3 +63,10 @@ def test_nearest_key_fallback():
     assert cache.get_nearest_key((5, 0, 0)) is None
     exact_only = ExactMatchCache().fit(_dataset(x.tolist(), [1.0, 1.0, 1.0]))
     assert len(exact_only.sample(np.array([0.0, 0.1, 0.0]), 4, rng)) == 0
+
+
+def test_per_entry_resolution():
+    """Tests that a resolution per input entry rounds each entry by its own."""
+    cache = ExactMatchCache(key_resolution=(0.1, 0.01))
+    assert cache.get_key(np.array([0.33, 0.033])) == (3, 3)
+    assert ExactMatchCache().get_key(np.array([0.33, 0.033])) == (3, 0)

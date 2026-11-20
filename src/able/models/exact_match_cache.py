@@ -18,7 +18,8 @@ CacheEntries = tuple[tuple[float, NDArray[np.float64]], ...]
 class ExactMatchCache(ConditionalModel):
     """Remembers the cheapest outputs for each input, rounded to a resolution.
 
-    Inputs that round to the same key share their outputs. By default inputs
+    Inputs that round to the same key share their outputs. The resolution is one
+    number for every input entry, or one per entry. By default inputs
     with any other key get no proposals, so the cache does not generalize and
     suits small finite sets of planning problems.
 
@@ -30,7 +31,7 @@ class ExactMatchCache(ConditionalModel):
     cached first.
     """
 
-    key_resolution: float = 0.1
+    key_resolution: float | tuple[float, ...] = 0.1
     max_per_key: int = 4
     entries: Mapping[tuple[int, ...], CacheEntries] = field(default_factory=dict)
     max_key_distance: int = 0
@@ -38,7 +39,8 @@ class ExactMatchCache(ConditionalModel):
 
     def get_key(self, x: NDArray[np.float64]) -> tuple[int, ...]:
         """The key that the input rounds to."""
-        return tuple(int(v) for v in np.round(x / self.key_resolution))
+        resolution = np.asarray(list(np.atleast_1d(self.key_resolution)), dtype=float)
+        return tuple(int(v) for v in np.round(x / resolution))
 
     def fit(self, dataset: Dataset) -> "ExactMatchCache":
         """Cache the cheapest max_per_key outputs of the rows for each key.
