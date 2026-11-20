@@ -273,7 +273,7 @@ def run_cycles(
     ],
     env: Environment[StateType, ActType, TaskType, QueryType, ResponseType],
     task_distribution: TaskDistribution[TaskType],
-    eval_tasks: Sequence[TaskType],
+    eval_tasks: Sequence[TaskType] | Callable[[], Sequence[TaskType]],
     num_cycles: int,
     budgets: CycleBudgets,
     rng: np.random.Generator,
@@ -314,9 +314,11 @@ def run_cycles(
     on_cycle_end, if given, gets each cycle's result as soon as the cycle ends,
     for example to report progress or save results before the run finishes.
 
-    Each cycle after the first is a new day: the environment may drift, drawing
-    from its own random stream, and if predict_belief is given, the robot's
-    belief is replaced by its prediction before the robot sleeps.
+    Each cycle after the first is a new day: the environment and the task
+    distribution may change, drawing from their own random stream, and if
+    predict_belief is given, the robot's belief is replaced by its prediction
+    before the robot sleeps. eval_tasks may be a function that gives the day's
+    evaluation tasks, for a task distribution that changes between days.
 
     Given a pool, the robot sleeps with its workers, and the workers evaluate the
     tasks at once. Each evaluation task then gets its own random generator, spawned
@@ -339,6 +341,7 @@ def run_cycles(
         cycle_start_time = time.perf_counter()
         if cycle > 0:
             env.start_day(day_rng)
+            task_distribution.start_day(day_rng)
             if predict_belief is not None:
                 robot.predict_belief(predict_belief)
         recorder.start_stage(cycle, Stage.SLEEP)
@@ -374,9 +377,10 @@ def run_cycles(
         recorder.start_stage(cycle, Stage.EVALUATION)
         evaluations: list[EpisodeResult[StateType, ActType, TaskType]] = []
         start_time = time.perf_counter()
+        day_tasks = eval_tasks() if callable(eval_tasks) else eval_tasks
         if pool is None:
-            for i, task in enumerate(eval_tasks):
-                label = f"Evaluation task {i + 1} of {len(eval_tasks)}"
+            for i, task in enumerate(day_tasks):
+                label = f"Evaluation task {i + 1} of {len(day_tasks)}"
                 evaluations.append(
                     evaluate(
                         robot, task, env, budgets.planning, eval_rng, recorder, label
@@ -384,12 +388,12 @@ def run_cycles(
                 )
         else:
             belief, params = robot.belief, robot.planner_params
-            task_rngs = eval_rng.spawn(len(eval_tasks))
+            task_rngs = eval_rng.spawn(len(day_tasks))
             evaluations = pool.map(
                 _evaluate_in_worker,
                 [
                     (task, belief, params, budgets.planning, task_rng)
-                    for task, task_rng in zip(eval_tasks, task_rngs)
+                    for task, task_rng in zip(day_tasks, task_rngs)
                 ],
             )
         evaluation_wall_time = time.perf_counter() - start_time

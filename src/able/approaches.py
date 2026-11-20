@@ -72,7 +72,10 @@ from able.learners.person_focus import (
     make_person_features,
     make_person_key_features,
     make_person_moment_transfer,
+    make_person_revision_features,
+    make_person_routine_features,
     make_routine_transfer,
+    make_same_person_transfer,
 )
 from able.learners.rollout_model_learner import RolloutModelLearner
 from able.models.base import ConditionalModel
@@ -894,9 +897,14 @@ def make_multi_person_belief_coverage_robot(
 ) -> ArmRobot:
     """A robot for several people that trains under the farthest of
     num_candidates dreamed (person, belief) pairs from those it has trained
-    under, by the person's index and limits' moments. The budgets should match
-    the cycle budgets."""
-    features = make_person_features(IntervalBelief(JOINT_LIMIT_PRIOR))
+    under, by the person's index and limits' moments, and by how many times
+    their routine has been revised if there are routines. The budgets should
+    match the cycle budgets."""
+    prior = IntervalBelief(JOINT_LIMIT_PRIOR)
+    features = make_person_features(prior)
+    routines = domain.task_distribution
+    if isinstance(routines, RoutineTaskDistribution):
+        features = make_person_revision_features(prior, routines.get_num_revisions)
     return _make_multi_person_robot(
         domain,
         model,
@@ -942,34 +950,45 @@ def make_multi_person_allocation_robot(
     The rule predicts a plateau: planning for a person gains nothing until the
     model has run_length effective units for them. Units for one person count
     toward another by the transfer between their beliefs, whoever they are:
-    from their moments (see make_moment_transfer), or, if max_key_distance is
-    set, fully when the people share a routine and their plan cache keys' belief
-    entries are within max_key_distance steps, as for a cache that lends plans
-    for the same goal that far.
-    deliberate_practice counts units only toward the person they trained for.
+    from their moments (see make_moment_transfer), and only between people on
+    the same routine if there are routines. If max_key_distance is set, the
+    transfer is instead full when the people are on the same routine and their
+    plan cache keys' belief entries are within max_key_distance steps, as for a
+    cache that lends plans for the same goal that far. deliberate_practice
+    counts units only toward the person they trained for, by the same transfer.
     The budgets should match the cycle budgets, and num_units should match the
     sleep budget's iterations.
     """
-    get_features = make_person_features(IntervalBelief(JOINT_LIMIT_PRIOR))
-    transfer = make_person_moment_transfer(
-        make_moment_transfer(transfer_length, narrowing_rate)
-    )
+    prior = IntervalBelief(JOINT_LIMIT_PRIOR)
+    moment_transfer = make_moment_transfer(transfer_length, narrowing_rate)
+    routines = domain.task_distribution
+    get_features = make_person_features(prior)
+    transfer = make_person_moment_transfer(moment_transfer)
+    independent_transfer: Callable[
+        [NDArray[np.float64], NDArray[np.float64]], NDArray[np.float64]
+    ] = get_same_person_transfer
+    if max_key_distance is None and isinstance(routines, RoutineTaskDistribution):
+        get_features = make_person_routine_features(prior, routines.get_routine_id)
+        transfer = make_routine_transfer(moment_transfer)
+        independent_transfer = make_same_person_transfer(transfer)
     if max_key_distance is not None:
         cache = model
-        routines = domain.task_distribution
         assert isinstance(cache, ExactMatchCache), "Key distances need a plan cache"
         assert isinstance(routines, RoutineTaskDistribution), "Need routines"
-        get_features = make_person_key_features(cache.key_resolution, routines.get_ward)
+        get_features = make_person_key_features(
+            cache.key_resolution, routines.get_routine_id
+        )
         transfer = make_routine_transfer(
             make_key_distance_transfer([1.0] * max_key_distance)
         )
+        independent_transfer = make_same_person_transfer(transfer)
     allocation_model = AllocationModel(
         get_features=get_features,
         transfer=transfer,
         gain=get_cliff_gain(run_length),
         combine="sum",
         run_length=run_length,
-        independent_transfer=get_same_person_transfer,
+        independent_transfer=independent_transfer,
         include_current_belief=False,
     )
     return _make_multi_person_robot(

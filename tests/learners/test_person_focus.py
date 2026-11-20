@@ -17,7 +17,10 @@ from able.learners.person_focus import (
     make_person_features,
     make_person_key_features,
     make_person_moment_transfer,
+    make_person_revision_features,
+    make_person_routine_features,
     make_routine_transfer,
+    make_same_person_transfer,
 )
 from able.planners.random_shooting import RandomShootingPlanner
 from able.structs import Budget
@@ -50,6 +53,11 @@ def test_features_and_transfer():
     features = make_person_features(IntervalBelief(JOINT_LIMIT_PRIOR))
     a, b = features(PersonBelief(intervals, 0)), features(PersonBelief(intervals, 1))
     assert a[0] == 0 and b[0] == 1
+    routine_features = make_person_routine_features(
+        IntervalBelief(JOINT_LIMIT_PRIOR), lambda person: 7
+    )(PersonBelief(intervals, 1))
+    np.testing.assert_array_equal(routine_features[[0, 1]], [1, 7])
+    np.testing.assert_array_equal(routine_features[2:], b[1:])
     keys = make_person_key_features(0.1, lambda person: 7)(PersonBelief(intervals, 1))
     assert keys[1] == 7
     np.testing.assert_allclose(keys[2:6], np.round(intervals[4:].mean(axis=1) / 0.1))
@@ -60,6 +68,25 @@ def test_features_and_transfer():
     np.testing.assert_array_equal(get_same_person_transfer(rows, rows), np.eye(2))
     anyone = make_person_moment_transfer(lambda x, y: np.ones((len(x), len(y))))
     np.testing.assert_array_equal(anyone(rows, rows), np.ones((2, 2)))
+    halves = make_same_person_transfer(lambda x, y: np.full((len(x), len(y)), 0.5))
+    np.testing.assert_array_equal(halves(rows, rows), 0.5 * np.eye(2))
+
+
+def test_revision_features():
+    """Tests that beliefs about a person before and after a revision of their
+    routine are farther apart than beliefs that differ only in their moments."""
+    prior = IntervalBelief(JOINT_LIMIT_PRIOR)
+    revisions = {0: 0}
+    get_features = make_person_revision_features(prior, lambda person: revisions[0])
+    intervals = _two_people().intervals
+    before = get_features(PersonBelief(intervals, 0))
+    np.testing.assert_array_equal(
+        before[:-1], make_person_features(prior)(PersonBelief(intervals, 0))
+    )
+    revisions[0] = 1
+    after = get_features(PersonBelief(intervals, 0))
+    other = get_features(PersonBelief(intervals * 0.1, 1))
+    assert np.max(np.abs(after - before)) > np.max(np.abs(after - other))
 
 
 def test_learner_trains_the_named_person_through_the_routine():

@@ -20,11 +20,17 @@ from able.structs import (
 
 
 class TaskDistribution(ABC, Generic[TaskType]):
-    """A distribution over tasks. The robot knows this distribution."""
+    """A distribution over tasks. The robot knows this distribution, including
+    any change to it between days."""
 
     @abstractmethod
     def sample(self, rng: np.random.Generator) -> TaskType:
         """Draw one task."""
+
+    def start_day(self, rng: np.random.Generator) -> None:
+        """Begin a new day. A distribution that changes between days changes
+        here; by default nothing changes."""
+        del rng  # unused because the distribution stays fixed
 
     @property
     def depends_on_hidden_params(self) -> bool:

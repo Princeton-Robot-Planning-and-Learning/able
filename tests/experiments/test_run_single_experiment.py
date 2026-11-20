@@ -54,12 +54,12 @@ def _load_script() -> ModuleType:
 
 
 def test_get_eval_tasks_finite() -> None:
-    """Tests that a finite distribution evaluates every task, in order."""
+    """Tests that a finite distribution evaluates every task of the day, in order."""
     tasks = [Task(initial_state=0.0, goal=float(goal)) for goal in range(3)]
     eval_tasks = _load_script().get_eval_tasks(
         FiniteTaskDistribution(tasks), num_eval_tasks=6, seed=0
     )
-    assert eval_tasks == tasks
+    assert callable(eval_tasks) and list(eval_tasks()) == tasks
 
 
 def test_get_eval_tasks_infinite() -> None:

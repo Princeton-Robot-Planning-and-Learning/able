@@ -8,7 +8,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import hydra
 import numpy as np
@@ -51,7 +51,8 @@ def _main(cfg: DictConfig) -> None:
     budgets = hydra.utils.instantiate(cfg.budgets)
     assert isinstance(budgets, CycleBudgets)
 
-    # The same evaluation tasks are used in every cycle.
+    # The same evaluation tasks are used in every cycle, unless the tasks change
+    # between days.
     writer = CycleResultsWriter(
         cfg.num_cycles,
         Path(cfg.eval_results_file),
@@ -178,15 +179,16 @@ def _write_csv(df: pd.DataFrame, path: Path) -> None:
 
 def get_eval_tasks(
     task_distribution: TaskDistribution, num_eval_tasks: int, seed: int
-) -> list[Any]:
-    """Every task of a finite distribution, or num_eval_tasks tasks sampled once
-    for the seed.
+) -> list[Any] | Callable[[], Sequence[Any]]:
+    """Every task of a finite distribution, as a function that gives the day's
+    tasks since they may change between days, or num_eval_tasks tasks sampled
+    once for the seed.
 
     The tasks are sampled from their own random stream, so sampling them does not
     change the random streams of the cycles.
     """
     if isinstance(task_distribution, FiniteTaskDistribution):
-        return list(task_distribution.get_tasks())
+        return task_distribution.get_tasks
     rng = np.random.default_rng([seed, _EVAL_TASK_STREAM])
     return [task_distribution.sample(rng) for _ in range(num_eval_tasks)]
 

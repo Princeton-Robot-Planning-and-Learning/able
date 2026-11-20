@@ -10,6 +10,7 @@ from able.belief_updaters.joint_limits import JointLimitBeliefUpdater
 from able.beliefs.base import Belief
 from able.beliefs.interval import IntervalBelief
 from able.cycle import CycleBudgets, evaluate, execute, run_cycles
+from able.envs.base import FiniteTaskDistribution
 from able.envs.simulated import SimulatedEnvironment
 from able.envs.two_link_arm import (
     JOINT_LIMIT_PRIOR,
@@ -62,6 +63,19 @@ class _CountingLearner(Learner[np.ndarray, RandomShootingParams]):
         """Count the sleep and return the parameters."""
         self.num_sleeps += 1
         return params
+
+
+class _DailyTasks(FiniteTaskDistribution):
+    """Tasks that are replaced by the next day's list at the start of each new day."""
+
+    def __init__(self, days) -> None:
+        super().__init__(days[0])
+        self._days = days
+        self.day = 0
+
+    def start_day(self, rng: np.random.Generator) -> None:
+        self.day += 1
+        FiniteTaskDistribution.__init__(self, self._days[self.day])
 
 
 def _make_robot(domain, learner=None):
@@ -342,3 +356,25 @@ def test_run_cycles_with_drift():
     assert not np.array_equal(seen[1], seen[0])
     assert np.all(np.abs(seen[2] - seen[1]) <= 0.1)
     assert learner.num_sleeps == 3
+
+
+def test_run_cycles_with_daily_tasks():
+    """Tests that each cycle after the first starts a new day for the task
+    distribution, and that the robot is evaluated on each day's tasks."""
+    domain = make_domain(seed=0, true_limits=TRUE_LIMITS)
+    rng = np.random.default_rng(0)
+    days = [[domain.task_distribution.sample(rng)] for _ in range(3)]
+    tasks = _DailyTasks(days)
+    results = run_cycles(
+        _make_robot(domain),
+        domain.real_env,
+        tasks,
+        tasks.get_tasks,
+        num_cycles=3,
+        budgets=_budgets(num_executions=1),
+        rng=np.random.default_rng(0),
+    )
+    assert tasks.day == 2
+    for result, day in zip(results, days):
+        assert [e.task for e in result.evaluations] == day
+        assert [e.task for e in result.executions] == day

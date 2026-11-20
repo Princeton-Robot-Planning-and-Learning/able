@@ -9,9 +9,11 @@ from able.envs.multi_person_arm import (
     MultiPersonLimitUpdater,
     RoutineTaskDistribution,
     ScheduleTaskDistribution,
+    drift_people_limits,
     get_block,
     get_person_plan_features,
     make_multi_person_domain,
+    widen_people_belief,
 )
 from able.envs.two_link_arm import JointQuery
 from able.structs import Task
@@ -96,3 +98,60 @@ def test_routines_and_domain():
     assert routines.schedule.sum() == pytest.approx(1.0)
     task = routines.sample(np.random.default_rng(0))
     assert any(task is t for t in routines.get_routine(int(task.initial_state[2])))
+
+
+def test_routine_revisions():
+    """Tests that a new day revises routines at the revision rate, giving each
+    revised routine new goals and a new index, and that the tasks follow."""
+    # pylint does not narrow a domain's fields with isinstance.
+    # pylint: disable=no-member
+    fixed = make_multi_person_domain(
+        seed=0, num_wards=2, people_per_ward=2, routine_size=3
+    ).task_distribution
+    assert isinstance(fixed, RoutineTaskDistribution)
+    tasks = fixed.get_tasks()
+    fixed.start_day(np.random.default_rng(0))
+    assert fixed.get_tasks() == tasks
+    domain = make_multi_person_domain(
+        seed=0, num_wards=2, people_per_ward=2, routine_size=3, revision_rate=1.0
+    )
+    routines = domain.task_distribution
+    assert isinstance(routines, RoutineTaskDistribution)
+    old_goals = [t.goal for t in routines.get_tasks()]
+    np.testing.assert_array_equal(old_goals, [t.goal for t in tasks])
+    assert [routines.get_routine_id(p) for p in range(4)] == [0, 0, 1, 1]
+    routines.start_day(np.random.default_rng(0))
+    assert [routines.get_routine_id(p) for p in range(4)] == [2, 2, 3, 3]
+    assert [routines.get_num_revisions(p) for p in range(4)] == [1] * 4
+    new_goals = [t.goal for t in routines.get_tasks()]
+    assert len(new_goals) == len(old_goals)
+    assert not any(np.allclose(a, b) for a, b in zip(old_goals, new_goals))
+    np.testing.assert_array_equal(
+        [t.goal for t in routines.get_routine(1)], new_goals[3:6]
+    )
+    assert [int(t.initial_state[2]) for t in routines.get_tasks()] == sorted(
+        [0, 1, 2, 3] * 3
+    )
+
+
+def test_drift():
+    """Tests that drift moves each person's limits by at most the drift, within
+    the prior, and that the predicted belief widens to keep the truth."""
+    # pylint does not narrow a domain's fields with isinstance.
+    # pylint: disable=no-member
+    domain = make_multi_person_domain(seed=0, num_wards=2, people_per_ward=2, drift=0.1)
+    assert domain.predict_belief is not None
+    truth = domain.real_env.hidden_params.copy()  # type: ignore[attr-defined]
+    domain.real_env.start_day(np.random.default_rng(0))
+    moved = domain.real_env.hidden_params  # type: ignore[attr-defined]
+    assert not np.array_equal(moved, truth)
+    assert np.all(np.abs(moved - truth) <= 0.1)
+    belief = domain.predict_belief(domain.initial_belief)
+    assert isinstance(belief, IntervalBelief) and belief.contains(moved)
+    edge = np.tile([-np.pi, 0.5, -np.pi, 0.5], 2)
+    drifted = drift_people_limits(edge, np.random.default_rng(0), 1.0)
+    prior = np.tile([[-np.pi, -0.5], [0.5, np.pi]] * 2, (2, 1))
+    assert np.all((drifted >= prior[:, 0]) & (drifted <= prior[:, 1]))
+    widened = widen_people_belief(IntervalBelief(prior), 0.5)
+    np.testing.assert_allclose(widened.intervals, prior)
+    assert make_multi_person_domain(seed=0).predict_belief is None
