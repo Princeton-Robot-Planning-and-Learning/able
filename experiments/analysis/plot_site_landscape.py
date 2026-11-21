@@ -141,7 +141,7 @@ def get_corridor_table(df: pd.DataFrame, depth: int) -> pd.DataFrame:
 def format_corridor_table(table: pd.DataFrame) -> str:
     """A markdown table with trained corridors as rows."""
     corridors = sorted(set(table.index.get_level_values(1)))
-    names = [COLOR_NAMES[c] for c in corridors]
+    names = [f"corridor {c}" for c in corridors]
     lines = [
         "| Trained \\ evaluated | " + " | ".join(names) + " |",
         "|---|" + "---|" * len(names),
@@ -154,7 +154,7 @@ def format_corridor_table(table: pd.DataFrame) -> str:
                 continue
             row = table.loc[(train, corridor)]
             cells.append(f"{row['saved']:.0f} ± {row['se']:.0f} ({row['share']:.2f})")
-        lines.append(f"| {COLOR_NAMES[train]} | " + " | ".join(cells) + " |")
+        lines.append(f"| corridor {train} | " + " | ".join(cells) + " |")
     return "\n".join(lines)
 
 
@@ -204,18 +204,21 @@ def _row_position(units: NDArray[np.float64], depths: list[int]) -> NDArray:
 
 
 def _corridor_strip(ax: plt.Axes, corridors: list[int], y: float) -> None:
-    """A strip of corridor colors from y to y + 0.3 under the columns."""
+    """A row of boxes from y to y + 0.3 under the columns, each with its
+    column's corridor number, labeled "corridor" on the left."""
     for col, corridor in enumerate(corridors):
         ax.add_patch(
             Rectangle(
                 (col - 0.5, y),
                 1.0,
                 0.3,
-                facecolor=COLOR_RGB[corridor],
-                edgecolor="white",
-                linewidth=1.0,
+                facecolor="white",
+                edgecolor="0.6",
+                linewidth=0.8,
             )
         )
+        ax.text(col, y + 0.15, str(corridor), ha="center", va="center", fontsize=8)
+    ax.text(-0.6, y + 0.15, "corridor", ha="right", va="center", fontsize=8)
 
 
 def _draw_grid(
@@ -358,7 +361,7 @@ def plot_landscape(
         ax.set_xlabel("Evaluated site and group")
         ax.set_title(
             f"Trained for site {train_site} "
-            f"({COLOR_NAMES[get_corridor(groups[train_site])]})",
+            f"(corridor {get_corridor(groups[train_site])})",
             color=INK,
             fontsize=10,
         )
@@ -446,7 +449,7 @@ def plot_transfer(df: pd.DataFrame, depths: list[int], path: Path) -> None:
         )
     axes[0, 0].set_yticks(
         range(len(trained)),
-        [f"site {t} ({COLOR_NAMES[get_corridor(groups[t])]})" for t in trained],
+        [f"site {t} (corridor {get_corridor(groups[t])})" for t in trained],
         fontsize=8,
     )
     axes[0, 0].set_ylabel("Trained site")

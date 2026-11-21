@@ -101,7 +101,7 @@ def test_corridor_table(script: ModuleType, tmp_path: Path) -> None:
     assert table.loc[(1, 0), "share"] == pytest.approx(0.25)
     assert table.loc[(2, 1), "saved"] == pytest.approx(25.0)
     text = script.format_corridor_table(table)
-    assert "| blue | 100 ± 0 (1.00) | 25 ± 0 (0.25) | 25 ± 0 (0.25) |" in text
+    assert "| corridor 0 | 100 ± 0 (1.00) | 25 ± 0 (0.25) | 25 ± 0 (0.25) |" in text
 
 
 def test_count_units(script: ModuleType) -> None:
