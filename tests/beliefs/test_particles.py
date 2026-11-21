@@ -1,6 +1,7 @@
 """Tests for beliefs/particles.py."""
 
 import numpy as np
+import pytest
 
 from able.beliefs.particles import ParticleBelief
 
@@ -101,3 +102,15 @@ def test_resample_without_finite_weights_keeps_the_belief():
     """If nothing explains the data, the belief is unchanged."""
     belief = _belief()
     assert belief.resample(np.full(500, -np.inf)) is belief
+
+
+def test_correlated_parameters_resample_together():
+    """A belief whose parameters are not independent resamples them all on
+    evidence about one, keeping each particle's parameters together."""
+    particles = np.repeat(np.array([[0.1], [0.5], [0.9]]), 2, axis=1)
+    particles = np.repeat(particles, 50, axis=0)
+    log_weights = -(((particles[:, 0] - 0.9) / 0.01) ** 2)
+    joint = ParticleBelief(particles, [0.0, 0.0], [1.0, 1.0], independent=False)
+    separate = ParticleBelief(particles, [0.0, 0.0], [1.0, 1.0])
+    assert joint.resample(log_weights, dims=[0]).mean[1] == pytest.approx(0.9, abs=0.02)
+    assert separate.resample(log_weights, dims=[0]).mean[1] == pytest.approx(0.5)

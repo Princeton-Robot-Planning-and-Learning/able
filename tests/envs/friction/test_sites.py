@@ -26,6 +26,7 @@ def test_make_site_domain():
         num_particles=20,
         revision_rate=1.0,
         survey="levels",
+        group_friction="per_floor",
     )
     assert isinstance(domain.env_model, MultiSiteModel)
     truths = domain.real_env.hidden_params  # type: ignore[attr-defined]
@@ -114,7 +115,11 @@ def test_crossed_friction_groups():
     # pylint: disable=no-member
     levels = np.array(DEFAULT_FRICTION_PRIOR.levels)
     domain = make_site_domain(
-        seed=0, group_sizes=(2, 3), num_particles=10, friction_groups="crossed"
+        seed=0,
+        group_sizes=(2, 3),
+        num_particles=10,
+        friction_groups="crossed",
+        group_friction="per_floor",
     )
     truths = domain.real_env.hidden_params  # type: ignore[attr-defined]
     ratios = truths[..., None] / levels
@@ -125,3 +130,32 @@ def test_crossed_friction_groups():
     routines = domain.task_distribution
     assert isinstance(routines, SiteRoutineTaskDistribution)
     assert routines.get_group(0) == routines.get_group(1)
+
+
+def test_base_frictions():
+    """Tests that each friction group has its own base friction on every floor,
+    that beliefs draw floors from a shared base, and that a probe of one floor
+    informs the others."""
+    # pylint: disable=no-member
+    base_levels = (0.03, 0.08, 0.15, 0.2)
+    domain = make_site_domain(seed=0, group_sizes=(2, 2, 2), num_particles=200)
+    truths = domain.real_env.hidden_params  # type: ignore[attr-defined]
+    bases = [
+        min(base_levels, key=lambda b, t=t: abs(np.log(np.median(t) / b)))
+        for t in truths
+    ]
+    assert bases[0] == bases[1] and bases[2] == bases[3] and bases[4] == bases[5]
+    assert len({bases[0], bases[2], bases[4]}) == 3
+    for t, b in zip(truths, bases):
+        assert np.all(np.abs(t / b - 1.0) <= 1.1 * 1.05 - 1.0 + 1e-9)
+    belief = domain.initial_belief
+    assert isinstance(belief, SiteBelief)
+    survey = belief.beliefs[0]
+    assert isinstance(survey, ParticleBelief)
+    ratios = survey.particles / survey.particles[:, :1]
+    assert np.all((ratios > 0.75) & (ratios < 1.35))
+    target = bases[0]
+    narrowed = survey.resample(
+        -(((survey.particles[:, 0] - target) / 0.005) ** 2), dims=[0]
+    )
+    assert np.all(np.abs(np.median(narrowed.particles, axis=0) / target - 1) < 0.2)
