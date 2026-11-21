@@ -53,11 +53,15 @@ def make_site_domain(
     maze: str = "corridors",
     region_overlap: float = 0.0,
     survey: str = "prior",
+    friction_groups: str = "same",
 ) -> FrictionSiteDomain:
     """A domain with group_sizes[g] sites in group g.
 
     Each group draws each floor's friction level from the prior's levels, and
-    each site scales its group's levels by its own draw from the prior's jitter.
+    each site scales its friction group's levels by its own draw from the prior's
+    jitter. With friction_groups "same", a site's friction group is its group;
+    with "crossed", the sites of each group take the friction groups in turn
+    (0, 1, 2, 0, ...), so sites on one routine can differ in friction.
     The robot's belief about each site starts from the survey: "prior", particles
     from the prior, or "levels", which knows the site's levels but not the
     jitter, so its particles have those levels and jitter drawn from the prior.
@@ -89,8 +93,14 @@ def make_site_domain(
         rng.integers(len(levels), size=(len(group_sizes), num_floors))
     ]
     group_of = [g for g, size in enumerate(group_sizes) for _ in range(size)]
+    assert friction_groups in ("same", "crossed"), f"Unknown {friction_groups!r}"
+    friction_of = (
+        group_of
+        if friction_groups == "same"
+        else [i % len(group_sizes) for size in group_sizes for i in range(size)]
+    )
     truths = np.stack(
-        [group_levels[g] * rng.uniform(*jitter, num_floors) for g in group_of]
+        [group_levels[g] * rng.uniform(*jitter, num_floors) for g in friction_of]
     )
     assert survey in ("prior", "levels"), f"Unknown survey {survey!r}"
     surveys = [
@@ -104,7 +114,7 @@ def make_site_domain(
                 seed=int(rng.integers(2**31)),
             )
         )
-        for g in group_of
+        for g in friction_of
     ]
 
     assert 0.0 <= region_overlap <= 1.0, "Need a region overlap in [0, 1]"

@@ -27,6 +27,10 @@ env:
     # The belief about each site starts from the prior, or knows the site's
     # group levels (levels).
     survey: prior
+    # Sites share friction levels with their group (same), or the sites of each
+    # group take the friction groups in turn (crossed), so a routine does not
+    # tell its sites' frictions.
+    friction_groups: same
   renderer: null
 budgets:
   sleep:
