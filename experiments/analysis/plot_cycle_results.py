@@ -43,15 +43,16 @@ APPROACH_TO_COLOR = {
     "prior_only": "#eda100",
     "belief_coverage": "#e87ba4",
     "transfer_practice": "#6250d6",
-    "deliberate_practice": "#e34948",
-    "one_step_greedy": "#008300",
+    "deliberate_practice": "#008300",
+    "one_step_greedy": "#eda100",
 }
 EXTRA_COLORS = ["#e87ba4", "#008300", "#6250d6", "#e34948"]
 
 # The prior-only line often overlaps the scratch line, and their colors are close,
-# so it is also dashed.
+# so it is also dashed. One-step greedy shares prior only's color, so it is dotted.
 APPROACH_TO_LINESTYLE = {
     "prior_only": "--",
+    "one_step_greedy": ":",
 }
 
 ENV_TO_DISPLAY_NAME = {
