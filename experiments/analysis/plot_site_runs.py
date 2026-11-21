@@ -77,12 +77,13 @@ APPROACH_TO_STYLE = {
     "one_step_greedy": ("#e34948", "X"),
 }
 # Each routine group's corridor color, for groups 0, 1, 2, ...
-GROUP_COLORS = ("#2a78d6", "#c08a3e", "#1f7a3a")
+GROUP_COLORS = ("#2a78d6", "#c08a3e", "#1f7a3a", "#c94040")
 # Each corridor's floors, light to dark by friction level.
 CORRIDOR_SHADES = (
     ("#c9dcf5", "#5f97e0", "#1c4f9c"),
     ("#f1dfc2", "#c99a5b", "#7d5523"),
     ("#cde6cf", "#5aa463", "#1f5c2b"),
+    ("#f5cfcd", "#dc6b67", "#8f2420"),
 )
 OTHER_FLOOR = "#e4e3df"
 WALL = "#3b3b3b"
