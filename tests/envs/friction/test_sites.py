@@ -106,3 +106,22 @@ def test_prior_survey_and_route_floors():
         assert np.all(counts[colors != site] == 0)
         usage = make_route_usage(world, routines)(site)
         np.testing.assert_allclose(usage, counts / counts.sum())
+
+
+def test_crossed_friction_groups():
+    """Tests that crossed friction groups give the sites of each group the
+    friction groups in turn, independent of their routine."""
+    # pylint: disable=no-member
+    levels = np.array(DEFAULT_FRICTION_PRIOR.levels)
+    domain = make_site_domain(
+        seed=0, group_sizes=(2, 3), num_particles=10, friction_groups="crossed"
+    )
+    truths = domain.real_env.hidden_params  # type: ignore[attr-defined]
+    ratios = truths[..., None] / levels
+    site_levels = np.argmin(np.abs(np.log(ratios)), axis=-1)
+    for a, b in ((0, 2), (1, 3), (0, 4)):
+        np.testing.assert_array_equal(site_levels[a], site_levels[b])
+    assert not np.array_equal(site_levels[0], site_levels[1])
+    routines = domain.task_distribution
+    assert isinstance(routines, SiteRoutineTaskDistribution)
+    assert routines.get_group(0) == routines.get_group(1)
