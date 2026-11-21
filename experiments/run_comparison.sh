@@ -2,8 +2,10 @@
 # Compare approaches in one environment and plot offline evaluation per cycle.
 #
 # Usage: ./experiments/run_comparison.sh env=<env> [hydra overrides...]
-# The environment is two_link_arm, limb, friction, or human_reach (default
-# two_link_arm). For example: ./experiments/run_comparison.sh env=limb num_cycles=5
+# The environment is two_link_arm, limb, friction, human_reach, or friction_sites
+# (default two_link_arm). For example:
+#   ./experiments/run_comparison.sh env=limb num_cycles=5
+# friction_sites runs its own approaches by default (env_approach/friction_sites).
 # Set SEEDS or APPROACHES to change the seeds or approaches, for example:
 #   SEEDS=0,1 APPROACHES=scratch,dreaming ./experiments/run_comparison.sh env=friction
 # Set WORKERS to give each run that many worker processes (num_workers), which
@@ -14,7 +16,6 @@
 set -e
 cd "$(dirname "$0")/.."
 SEEDS="${SEEDS:-0,1,2,3,4,5,6,7,8,9}"
-APPROACHES="${APPROACHES:-scratch,prior_only,current_belief,dreaming,belief_coverage}"
 WORKERS="${WORKERS:-1}"
 ENV=two_link_arm
 VIDEOS=false
@@ -24,6 +25,11 @@ for arg in "$@"; do
         record_videos=true) VIDEOS=true ;;
     esac
 done
+case "$ENV" in
+    friction_sites) DEFAULT_APPROACHES=scratch,current_belief,dreaming,belief_coverage,transfer_practice,deliberate_practice,one_step_greedy ;;
+    *) DEFAULT_APPROACHES=scratch,prior_only,current_belief,dreaming,belief_coverage ;;
+esac
+APPROACHES="${APPROACHES:-$DEFAULT_APPROACHES}"
 SWEEP_DIR="logs/comparison/$ENV/$(date +%Y-%m-%d_%H-%M-%S)"
 # Hydra varies the last override fastest, so the approaches run back to back for
 # each seed and see similar machine load.

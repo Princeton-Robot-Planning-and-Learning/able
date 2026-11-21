@@ -2,6 +2,7 @@
 
 import dataclasses
 import importlib.util
+import re
 import subprocess
 import sys
 import time
@@ -21,8 +22,10 @@ from able.approaches import make_scratch_robot
 from able.cycle import CycleBudgets, CycleResult, run_cycles
 from able.envs.base import Domain, FiniteTaskDistribution, TaskDistribution
 from able.envs.friction.model import FrictionModel
+from able.envs.friction.sites import make_site_domain
 from able.envs.human_reach.model import ReachModel
 from able.envs.limb.model import LimbModel
+from able.envs.multi_site import SiteRoutineTaskDistribution, make_site_task
 from able.envs.two_link_arm import make_domain
 from able.robot import Robot
 from able.structs import Budget, Task
@@ -110,6 +113,28 @@ def test_every_approach_config_builds_its_robot(env: str) -> None:
     model = domain.env_model
     assert isinstance(model, (LimbModel, FrictionModel, ReachModel))
     model.close()
+
+
+def test_friction_sites_comparison_approaches_build() -> None:
+    """Tests that every approach run_comparison.sh runs for friction_sites by
+    default has a config that builds its robot."""
+    script = (SCRIPT.parent / "run_comparison.sh").read_text()
+    match = re.search(r"friction_sites\) DEFAULT_APPROACHES=([\w,]+)", script)
+    assert match is not None
+    approaches = match.group(1).split(",")
+    assert "transfer_practice" in approaches and "prior_only" not in approaches
+    overrides = ["env=friction_sites", "env.domain.group_sizes=[1,1]"]
+    with initialize_config_dir(
+        config_dir=str(SCRIPT.parent / "conf"), version_base=None
+    ):
+        configs = [
+            compose(config_name="config", overrides=[*overrides, f"approach={a}"])
+            for a in approaches
+        ]
+    domain = hydra.utils.instantiate(configs[0].env.domain, seed=0, num_particles=20)
+    for cfg in configs:
+        make_robot = hydra.utils.instantiate(cfg.approach, _partial_=True)
+        assert isinstance(make_robot(domain=domain, recorder=None), Robot)
 
 
 def test_della_launcher() -> None:
@@ -241,6 +266,49 @@ def test_writer_keeps_finished_cycles(tmp_path: Path) -> None:
         "cycle_results.csv",
         "eval_results.csv",
     ]
+
+
+class _ChangingSchedule:
+    """A stand-in task distribution whose schedule over two sites changes."""
+
+    def __init__(self) -> None:
+        self.schedule = np.array([0.25, 0.75])
+
+
+def test_eval_rows_record_sites(tmp_path: Path) -> None:
+    """Tests that evaluation tasks at sites record their site and its share of the
+    schedule as it was when each cycle was evaluated, and that tasks without a
+    site or a schedule record neither."""
+    results = []
+    for result in _run_arm_cycles(2):
+        evaluations = [
+            dataclasses.replace(e, task=make_site_task(site, e.task))
+            for e, site in zip(result.evaluations, (1, 0), strict=True)
+        ]
+        results.append(dataclasses.replace(result, evaluations=evaluations))
+    distribution = _ChangingSchedule()
+    script = _load_script()
+    writer = script.CycleResultsWriter(
+        2,
+        tmp_path / "eval_results.csv",
+        tmp_path / "cycle_results.csv",
+        time.perf_counter(),
+        distribution,
+    )
+    writer(results[0])
+    distribution.schedule[:] = [0.5, 0.5]
+    writer(results[1])
+    eval_df = pd.read_csv(tmp_path / "eval_results.csv")
+    assert list(eval_df.columns[:4]) == ["cycle", "task_id", "site", "schedule_share"]
+    assert list(eval_df.site) == [1, 0, 1, 0]
+    assert list(eval_df.schedule_share) == [0.75, 0.25, 0.5, 0.5]
+    for rows in (
+        script._get_eval_rows(results),  # pylint: disable=protected-access
+        script._get_eval_rows(  # pylint: disable=protected-access
+            _run_arm_cycles(1), [np.array([1.0])]
+        ),
+    ):
+        assert "site" not in rows[0] and "schedule_share" not in rows[0]
 
 
 def test_format_progress() -> None:
@@ -394,6 +462,39 @@ def test_friction(tmp_path: Path) -> None:
         "cycle_000_3_execution.mp4",
         "cycle_000_4_evaluation.mp4",
     ]
+
+
+def test_friction_sites(tmp_path: Path) -> None:
+    """Tests two short cycles at three friction sites, whose evaluation rows record
+    each task's site and the site's share of the schedule."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "env=friction_sites",
+            "approach=transfer_practice",
+            "num_cycles=2",
+            "env.domain.group_sizes=[1,1,1]",
+            "env.domain.routine_size=1",
+            "env.domain.horizon=3",
+            "budgets.sleep.max_iterations=2",
+            "approach.num_sims=10",
+            "approach.model.num_steps=20",
+            "approach.training_num_sims=10",
+            f"hydra.run.dir={tmp_path}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    eval_df = pd.read_csv(tmp_path / "eval_results.csv")
+    assert list(eval_df.site) == [0, 1, 2, 0, 1, 2]
+    domain = make_site_domain(seed=0, group_sizes=(1, 1, 1), routine_size=1, horizon=3)
+    routines = domain.task_distribution
+    assert isinstance(routines, SiteRoutineTaskDistribution)
+    schedule = routines.schedule  # pylint: disable=no-member
+    assert np.allclose(eval_df.schedule_share, np.tile(schedule, 2))
 
 
 def test_worker_processes(tmp_path: Path) -> None:
