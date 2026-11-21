@@ -1,12 +1,12 @@
 """Probe how training for one friction site changes planning at every site.
 
-A robot built from env=friction_sites and an approach trains only for site 0
-(group 0), one unit per sleep, and after each depth in --depths plans every
-site's routine under its belief. Sites 0 and 1 share group 0; sites 2, 3, and 4
-are groups 1, 2, and 3, where group 3 shares group 0's corridor with a routine
-of its own. Each evaluation task gets the same planning and environment
-seeds at every depth, so depths differ only by the model. One CSV row per
-evaluation task.
+A robot built from env=friction_sites and an approach trains only for one site
+(--train_site, default 0), one unit per sleep, and after each depth in --depths
+plans every site's routine under its belief. Sites 0 and 1 share group 0; sites
+2, 3, and 4 are groups 1, 2, and 3, where group 3 shares group 0's corridor with
+a routine of its own. Each evaluation task gets the same planning and
+environment seeds at every depth, so depths differ only by the model. One CSV
+row per evaluation task.
 
     python experiments/probe_site_transfer.py --seed 0 --overlap 0 --out probe.csv
 """
@@ -30,13 +30,14 @@ _CONF = str(Path(__file__).parent / "conf")
 
 
 def main() -> None:
-    """Train for site 0 and evaluate every site at each depth."""
+    """Train for one site and evaluate every site at each depth."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--overlap", type=float, default=0.0)
     parser.add_argument("--depths", type=int, nargs="+", default=[1, 2, 4, 8])
     parser.add_argument("--approach", default="current_belief")
     parser.add_argument("--repeats", type=int, default=1)
+    parser.add_argument("--train_site", type=int, default=0)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("overrides", nargs="*")
     args = parser.parse_args()
@@ -57,13 +58,7 @@ def main() -> None:
     assert isinstance(routines, SiteRoutineTaskDistribution)
     num_sites = len(routines.schedule)
     group_of = [routines.get_group(site) for site in range(num_sites)]
-    group_routines = [
-        [task.inner for task in routines.get_routine(group_of.index(group))]
-        for group in range(max(group_of) + 1)
-    ]
-    focused = SiteRoutineTaskDistribution(
-        group_routines, group_of, np.eye(num_sites)[0]
-    )
+    focused = focus_routines(routines, args.train_site)
     make_robot = hydra.utils.instantiate(cfg.approach, _partial_=True)
     robot = make_robot(
         domain=dataclasses.replace(domain, task_distribution=focused), recorder=None
@@ -95,6 +90,21 @@ def main() -> None:
         print(f"depth {depth} done after {time.perf_counter() - start:.0f}s")
 
 
+def focus_routines(
+    routines: SiteRoutineTaskDistribution, site: int
+) -> SiteRoutineTaskDistribution:
+    """The same routines with the whole schedule on one site."""
+    num_sites = len(routines.schedule)
+    group_of = [routines.get_group(s) for s in range(num_sites)]
+    group_routines = [
+        [task.inner for task in routines.get_routine(group_of.index(group))]
+        for group in range(max(group_of) + 1)
+    ]
+    return SiteRoutineTaskDistribution(
+        group_routines, group_of, np.eye(num_sites)[site]
+    )
+
+
 def _row(
     args: argparse.Namespace,
     depth: int,
@@ -107,6 +117,7 @@ def _row(
     return {
         "seed": args.seed,
         "overlap": args.overlap,
+        "train_site": args.train_site,
         "depth": depth,
         "site": site,
         "group": group,
