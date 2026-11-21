@@ -7,12 +7,13 @@ from able.envs.friction.layout import (
     CORRIDOR_BOTTOMS,
     CORRIDOR_HOLES,
     CORRIDOR_LEFT,
+    CORRIDOR_MAZES,
     FLOOR_SPLITS,
     HOLES,
     make_sim,
     make_world,
 )
-from able.envs.friction.world import COLOR_NAMES, CORRIDORS, MAPS, THREE_ROUTES
+from able.envs.friction.world import CORRIDORS, MAPS, THREE_ROUTES
 
 
 def test_make_world_adds_holes_in_order():
@@ -70,7 +71,7 @@ def test_make_world_corridors():
     puck_map = world.puck_map
     assert puck_map.rows == CORRIDORS.rows and puck_map.num_surfaces == 9
     assert puck_map.surface_colors == (0, 0, 0, 1, 1, 1, 2, 2, 2)
-    assert len(world.holes) == len(CORRIDOR_HOLES) * len(COLOR_NAMES)
+    assert len(world.holes) == len(CORRIDOR_HOLES) * len(CORRIDOR_BOTTOMS)
     for color, bottom in enumerate(CORRIDOR_BOTTOMS):
         for dx, dy in CORRIDOR_HOLES:
             hole = np.array([CORRIDOR_LEFT + dx, bottom + dy])
@@ -86,3 +87,23 @@ def test_make_world_corridors():
     env = make_sim("2d", world)
     env.reset(seed=0)
     assert len(env.frictions) == 9
+
+
+def test_make_world_four_corridors():
+    """The four-corridor maze has the same holes in each corridor, a floor color
+    per corridor, and three floors in each."""
+    world = make_world(2, 0.2, 12, maze="corridors4")
+    puck_map = world.puck_map
+    assert puck_map.num_surfaces == 12
+    assert puck_map.surface_colors == (0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3)
+    _, bottoms = CORRIDOR_MAZES["corridors4"]
+    for color, bottom in enumerate(bottoms):
+        for dx, dy in CORRIDOR_HOLES:
+            hole = np.array([CORRIDOR_LEFT + dx, bottom + dy])
+            assert puck_map.surface_colors[world.surface_at(hole)] == color
+    assert make_world(maze="corridors4", num_floors=4).puck_map.num_surfaces == 4
+    with pytest.raises(ValueError):
+        make_world(maze="corridors4", num_floors=9)
+    env = make_sim("2d", world)
+    env.reset(seed=0)
+    assert len(env.frictions) == 12

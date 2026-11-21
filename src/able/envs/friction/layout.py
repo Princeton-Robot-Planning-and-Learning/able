@@ -8,8 +8,9 @@ of the blue and green corridors.
 With more than 3 floors, each color is cut into stretches along x, each with its
 own friction, so a task crosses only some of the floors.
 
-The corridors maze, for several sites, has three walled corridors (blue, tan, and
-green) joined at their left ends, each with the same holes.
+The corridors mazes, for several sites, have three (corridors: blue, tan, green)
+or four (corridors4: and red) walled corridors joined at their left ends, each with
+the same holes.
 """
 
 import dataclasses
@@ -17,6 +18,7 @@ from typing import Any
 
 from able.envs.friction.world import (
     CORRIDORS,
+    CORRIDORS4,
     DEFAULT_FRICTION_PRIOR,
     MAPS,
     THREE_ROUTES,
@@ -47,6 +49,11 @@ CORRIDOR_HOLES = ((2.2, 0.5), (4.4, 0.8))
 CORRIDOR_BOTTOMS = (3.6, 2.0, 0.4)
 CORRIDOR_LEFT = 0.4
 CORRIDOR_FLOOR_SPLITS: dict[int, tuple[float, ...]] = {3: (), 9: (2.0, 3.6)}
+# Each corridors maze and its corridors' bottoms (y, m), from the top.
+CORRIDOR_MAZES: dict[str, tuple[PuckMap, tuple[float, ...]]] = {
+    "corridors": (CORRIDORS, CORRIDOR_BOTTOMS),
+    "corridors4": (CORRIDORS4, (5.2, 3.6, 2.0, 0.4)),
+}
 
 
 def make_world(
@@ -55,24 +62,27 @@ def make_world(
     num_floors: int = 3,
     maze: str = "threeroutes",
 ) -> PuckWorld:
-    """The maze ("threeroutes" or "corridors") with num_holes holes, the goal
-    radius, and num_floors floors (a key of FLOOR_SPLITS or
-    CORRIDOR_FLOOR_SPLITS). On threeroutes the holes are the first num_holes of
-    HOLES; on corridors, every corridor gets the first num_holes of
-    CORRIDOR_HOLES."""
+    """The maze ("threeroutes", "corridors", or "corridors4") with num_holes
+    holes, the goal radius, and num_floors floors: a key of FLOOR_SPLITS on
+    threeroutes, and on a corridors maze one or three per corridor. On
+    threeroutes the holes are the first num_holes of HOLES; on a corridors maze,
+    every corridor gets the first num_holes of CORRIDOR_HOLES."""
     base: PuckMap
     if maze == "threeroutes":
         base, all_holes, splits = THREE_ROUTES, HOLES, FLOOR_SPLITS
         holes = all_holes[:num_holes]
-    elif maze == "corridors":
-        base, all_holes, splits = CORRIDORS, CORRIDOR_HOLES, CORRIDOR_FLOOR_SPLITS
+    elif maze in CORRIDOR_MAZES:
+        base, bottoms = CORRIDOR_MAZES[maze]
+        all_holes = CORRIDOR_HOLES
+        splits = {len(bottoms): (), 3 * len(bottoms): CORRIDOR_FLOOR_SPLITS[9]}
         holes = tuple(
             (CORRIDOR_LEFT + dx, bottom + dy)
-            for bottom in CORRIDOR_BOTTOMS
+            for bottom in bottoms
             for dx, dy in CORRIDOR_HOLES[:num_holes]
         )
     else:
-        raise ValueError(f"Unknown maze {maze!r}; expected threeroutes or corridors")
+        names = ["threeroutes", *CORRIDOR_MAZES]
+        raise ValueError(f"Unknown maze {maze!r}; expected one of {names}")
     if not 0 <= num_holes <= len(all_holes):
         raise ValueError(f"num_holes must be in [0, {len(all_holes)}], got {num_holes}")
     if num_floors not in splits:

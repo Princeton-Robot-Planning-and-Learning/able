@@ -1,12 +1,12 @@
 """A robot that pushes pucks at several sites, each with its own floor frictions
 (see envs/multi_site.py).
 
-Every site has the same maze, by default three corridors (see layout.py). Sites
+Every site has the same maze, by default four corridors (see layout.py). Sites
 come in groups: the sites in a group share each floor's friction level and
 differ only in its jitter, as for buildings fitted out with the same materials.
 Each group runs a routine of pushing tasks, which every site in the group does,
-in its own region of the maze: on the corridors maze, group g's tasks stay in
-corridor g mod 3.
+in its own region of the maze: on a corridors maze, group g's tasks stay in
+corridor g mod the number of corridors.
 """
 
 import dataclasses
@@ -39,7 +39,7 @@ FrictionSiteDomain = Domain[Any, Any, Any, Any, Any, Any]
 
 def make_site_domain(
     seed: int,
-    group_sizes: Sequence[int] = (2, 4, 6),
+    group_sizes: Sequence[int] = (2, 3, 3, 4),
     routine_size: int = 8,
     revision_rate: float = 0.0,
     sim: str = "2d",
@@ -48,14 +48,14 @@ def make_site_domain(
     horizon: int = 15,
     num_particles: int = 500,
     task_distances: tuple[float, float] = (1.5, 3.5),
-    num_floors: int = 9,
+    num_floors: int = 12,
     prior: FrictionPrior = DEFAULT_FRICTION_PRIOR,
-    maze: str = "corridors",
+    maze: str = "corridors4",
     region_overlap: float = 0.0,
     survey: str = "prior",
     friction_groups: str = "same",
     group_friction: str = "base",
-    base_levels: Sequence[float] = (0.03, 0.08, 0.15, 0.2),
+    base_levels: Sequence[float] = (0.025, 0.05, 0.1, 0.2),
     floor_noise: float = 0.1,
     site_jitter: float = 0.05,
 ) -> FrictionSiteDomain:
@@ -79,9 +79,9 @@ def make_site_domain(
     Each group's routine has routine_size tasks drawn as for the
     single-site friction domain, each from anywhere in the maze with probability
     region_overlap and otherwise from the group's region: the floors of one
-    color, group g's being color g mod 3. Each new day revises each group's
-    routine with probability revision_rate. The robot works at one site each
-    day, drawn with its share of a random schedule.
+    color, group g's being color g mod the number of colors. Each new day
+    revises each group's routine with probability revision_rate. The robot works
+    at one site each day, drawn with its share of a random schedule.
     """
     rng = np.random.default_rng(seed)
     base = make_domain(
