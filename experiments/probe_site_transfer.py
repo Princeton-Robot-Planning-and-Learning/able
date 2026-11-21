@@ -15,6 +15,7 @@ import argparse
 import dataclasses
 import time
 from pathlib import Path
+from typing import Any
 
 import hydra
 import numpy as np
@@ -58,6 +59,8 @@ def main() -> None:
     assert isinstance(routines, SiteRoutineTaskDistribution)
     num_sites = len(routines.schedule)
     group_of = [routines.get_group(site) for site in range(num_sites)]
+    world: Any = getattr(domain.env_model, "inner").world
+    num_corridors = max(world.puck_map.surface_colors) + 1
     focused = focus_routines(routines, args.train_site)
     make_robot = hydra.utils.instantiate(cfg.approach, _partial_=True)
     robot = make_robot(
@@ -75,9 +78,8 @@ def main() -> None:
                     env_rng, plan_rng = stream.spawn(2)
                     env = SimulatedEnvironment(domain.env_model, truths, env_rng)
                     result = evaluate(robot, task, env, planning, plan_rng)
-                    rows.append(
-                        _row(args, depth, site, group_of[site], i, repeat, result)
-                    )
+                    row = _row(args, depth, site, group_of[site], i, repeat, result)
+                    rows.append({**row, "corridor": group_of[site] % num_corridors})
         pd.DataFrame(rows).to_csv(args.out, index=False)
 
     start = time.perf_counter()

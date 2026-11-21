@@ -50,7 +50,7 @@ from numpy.typing import NDArray  # noqa: E402
 from omegaconf import OmegaConf  # noqa: E402
 
 # pylint: disable-next=wrong-import-position
-from able.envs.friction.world import COLOR_NAMES, COLOR_RGB  # noqa: E402
+from able.envs.friction.world import COLOR_RGB  # noqa: E402
 
 # Darker is slower.
 SIMS_CMAP = LinearSegmentedColormap.from_list(
@@ -64,9 +64,14 @@ INK = "#3a3a38"
 MUTED = "#73726c"
 
 
+# Each group's corridor, from the probes once loaded.
+_CORRIDOR_OF: dict[int, int] = {}
+
+
 def get_corridor(group: int) -> int:
-    """The corridor of a group's routine on the corridors maze."""
-    return group % len(COLOR_NAMES)
+    """The corridor of a group's routine: as the probes recorded it, or for
+    probes from before that column, on the three-corridor maze."""
+    return _CORRIDOR_OF.get(group, group % 3)
 
 
 def load_probes(probe_dir: Path) -> pd.DataFrame:
@@ -76,7 +81,9 @@ def load_probes(probe_dir: Path) -> pd.DataFrame:
     df = pd.concat([pd.read_csv(path) for path in paths], ignore_index=True)
     if "train_site" not in df:
         df["train_site"] = 0
-    df["corridor"] = df["group"].map(get_corridor)
+    if "corridor" not in df:
+        df["corridor"] = df["group"] % 3
+    _CORRIDOR_OF.update(zip(df["group"].astype(int), df["corridor"].astype(int)))
     return df
 
 
