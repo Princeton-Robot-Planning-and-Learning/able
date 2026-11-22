@@ -8,8 +8,12 @@ from types import ModuleType
 
 import numpy as np
 import pandas as pd
+import pytest
 from matplotlib import pyplot as plt
 from omegaconf import OmegaConf
+
+from able.envs.friction.sites import make_site_domain
+from able.envs.multi_site import SiteRoutineTaskDistribution
 
 ANALYSIS_DIR = Path(__file__).resolve().parents[3] / "experiments" / "analysis"
 
@@ -17,6 +21,18 @@ ANALYSIS_DIR = Path(__file__).resolve().parents[3] / "experiments" / "analysis"
 def _load_analysis_utils() -> ModuleType:
     spec = importlib.util.spec_from_file_location(
         "analysis_utils", ANALYSIS_DIR / "analysis_utils.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_plot_cycle_results(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    # The script imports analysis_utils from its own directory.
+    monkeypatch.syspath_prepend(str(ANALYSIS_DIR))
+    spec = importlib.util.spec_from_file_location(
+        "plot_cycle_results", ANALYSIS_DIR / "plot_cycle_results.py"
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -288,3 +304,122 @@ def test_success_against_the_simulation_budget(tmp_path: Path) -> None:
     assert "| Dreaming | 0.25 ± 0.00 | 0.75 ± 0.00 | 316 |" in table
     assert "| Prior only (first sleep) | 0.25 ± 0.00 | 0.25 ± 0.00 | > 1000 |" in table
     assert "| Plan from scratch | 0.25 ± 0.00 | 0.50 ± 0.00 | reference |" in table
+
+
+def test_weigh_sites(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests that each metric is averaged per site and then weighted by the sites'
+    shares, and that a slow day's site has a failure or a task above the planner
+    work threshold, with shares normalized over the sites evaluated."""
+    plot = _load_plot_cycle_results(monkeypatch)
+    # Cycle 0 evaluates sites 0 and 1 with two tasks each; cycle 1 only site 1,
+    # whose second task failed before any planner work.
+    df = pd.DataFrame(
+        {
+            "env": "friction_sites",
+            "approach": "scratch",
+            "seed": 0,
+            "cycle": [0, 0, 0, 0, 1, 1],
+            "site": [0, 0, 1, 1, 1, 1],
+            "schedule_share": [0.2, 0.2, 0.8, 0.8, 0.8, 0.8],
+            "success": [True, False, True, True, True, False],
+            "planner_work": [100.0, 300.0, 50.0, 150.0, 80.0, np.nan],
+        }
+    )
+    assert plot.has_sites(df) and not plot.has_sites(df.drop(columns="site"))
+    for threshold, slow_day in ((None, 0.2), (120.0, 1.0), (200.0, 0.2)):
+        weighted = plot.weigh_sites(df, ["success", "planner_work"], threshold)
+        assert list(weighted.cycle) == [0, 1]
+        assert np.allclose(weighted.success, [0.2 * 0.5 + 0.8 * 1.0, 0.5])
+        assert np.allclose(weighted.planner_work, [0.2 * 200 + 0.8 * 100, 80.0])
+        assert np.allclose(weighted.slow_day, [slow_day, 1.0])
+
+
+def test_get_slow_work(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests that a given threshold wins, then scratch's median, then none."""
+    plot = _load_plot_cycle_results(monkeypatch)
+    df = pd.DataFrame(
+        {
+            "approach": ["scratch", "scratch", "scratch", "dreaming"],
+            "planner_work": [100.0, 400.0, 200.0, 1000.0],
+        }
+    )
+    assert plot.get_slow_work(df, 50.0) == (50.0, "given")
+    assert plot.get_slow_work(df, None) == (200.0, "scratch's median")
+    assert plot.get_slow_work(df[df.approach == "dreaming"], None)[0] is None
+
+
+def test_add_missing_sites(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests that friction site runs from before the eval results recorded sites
+    get them from the run's domain, and that other runs are left alone."""
+    plot = _load_plot_cycle_results(monkeypatch)
+    domain_cfg = {
+        "_target_": "able.envs.friction.sites.make_site_domain",
+        "group_sizes": [1, 2],
+        "routine_size": 2,
+        "num_particles": 10,
+    }
+    cfg = OmegaConf.create(
+        {"env_name": "friction_sites", "seed": 3, "env": {"domain": domain_cfg}}
+    )
+    df = pd.DataFrame({"cycle": 0, "task_id": range(6)})
+    added = plot.add_missing_sites(df, cfg)
+    assert list(added.site) == [0, 0, 1, 1, 2, 2]
+    domain = make_site_domain(
+        seed=3, group_sizes=(1, 2), routine_size=2, num_particles=10
+    )
+    routines = domain.task_distribution
+    assert isinstance(routines, SiteRoutineTaskDistribution)
+    schedule = routines.schedule  # pylint: disable=no-member
+    assert np.allclose(added.schedule_share, schedule[[0, 0, 1, 1, 2, 2]])
+    assert plot.add_missing_sites(added.assign(site=5), cfg).site.eq(5).all()
+    cfg.env_name = "friction"
+    assert "site" not in plot.add_missing_sites(df, cfg).columns
+
+
+def test_friction_sites_metrics(tmp_path: Path) -> None:
+    """Tests that friction site runs are plotted and tabulated weighted by the
+    schedule, with the chance of a slow day at scratch's median simulations."""
+    sites: dict[str, list[float]] = {
+        "site": [0, 1, 0, 1],
+        "schedule_share": [0.2, 0.8, 0.2, 0.8],
+    }
+    runs: list[tuple[str, list[float]]] = [
+        ("scratch", [100, 200, 100, 300]),
+        ("transfer_practice", [100, 100, 50, 120]),
+    ]
+    for i, (approach, num_sims) in enumerate(runs):
+        _write_run(
+            tmp_path / str(i),
+            approach,
+            0,
+            [1.0, 2.0, 1.0, 2.0],
+            "friction_sites",
+            timed_out=[False] * 4,
+            extra={**sites, "num_sims": num_sims},
+        )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ANALYSIS_DIR / "plot_cycle_results.py"),
+            "--results_dir",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "above 150 simulations per task (scratch's median)" in result.stdout
+    assert "slow-day chance 0.00 (schedule-weighted)" in result.stdout
+    table = (tmp_path / "summary_table.md").read_text(encoding="utf-8")
+    # Columns: Plan from scratch, Transfer practice.
+    for row in (
+        "### Friction sites (schedule-weighted)",
+        "| Planning time (s), cycle 0 | 1.80 ± 0.00 | 1.80 ± 0.00 |",
+        "| Success rate, all cycles | 0.60 ± 0.00 | 0.60 ± 0.00 |",
+        "| Simulations per task, cycle 0 | 180.00 ± 0.00 | 100.00 ± 0.00 |",
+        "| Simulations per task, last 5 cycles | 220.00 ± 0.00 | 103.00 ± 0.00 |",
+        "| Chance of a slow day, cycle 0 | 0.80 ± 0.00 | 0.80 ± 0.00 |",
+        "| Chance of a slow day, all cycles | 0.80 ± 0.00 | 0.40 ± 0.00 |",
+    ):
+        assert row in table
