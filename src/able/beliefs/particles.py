@@ -21,6 +21,9 @@ class ParticleBelief(Belief[NDArray[np.float64]]):
     sqrt(1 + bandwidth**2) per resampling, so evidence fades over about
     1 / bandwidth**2 resamplings. This keeps the belief from growing more confident
     than an imperfect likelihood warrants.
+
+    With independent false, the parameters are correlated across particles, so
+    evidence about some of them resamples them all.
     """
 
     def __init__(
@@ -31,6 +34,7 @@ class ParticleBelief(Belief[NDArray[np.float64]]):
         bandwidth: float = 0.1,
         min_jitter: float = 0.001,
         seed: int = 0,
+        independent: bool = True,
     ) -> None:
         particles = np.array(particles, dtype=np.float64)
         assert particles.ndim == 2 and len(particles) > 0, "Need shape (N, D)"
@@ -41,6 +45,7 @@ class ParticleBelief(Belief[NDArray[np.float64]]):
         self._bandwidth = bandwidth
         self._min_jitter = min_jitter
         self._seed = seed
+        self._independent = independent
 
     @property
     def particles(self) -> NDArray[np.float64]:
@@ -78,7 +83,8 @@ class ParticleBelief(Belief[NDArray[np.float64]]):
 
         If dims is given, the weights depend on those parameters alone, and only they
         are resampled. The others keep their particles, as if independent of them, so
-        that resampling for unrelated evidence does not narrow them.
+        that resampling for unrelated evidence does not narrow them. A belief whose
+        parameters are not independent resamples them all.
 
         Returns this belief if no particle has a finite weight.
         """
@@ -92,7 +98,7 @@ class ParticleBelief(Belief[NDArray[np.float64]]):
         n = len(self._particles)
         positions = (rng.random() + np.arange(n)) / n
         index = np.searchsorted(np.cumsum(weights), positions).clip(max=n - 1)
-        cols = slice(None) if dims is None else list(dims)
+        cols = slice(None) if dims is None or not self._independent else list(dims)
         old = self._particles[:, cols]
         low, high = self._low[cols], self._high[cols]
         mean = weights @ old
@@ -108,6 +114,7 @@ class ParticleBelief(Belief[NDArray[np.float64]]):
             self._bandwidth,
             self._min_jitter,
             self._seed + 1,
+            self._independent,
         )
 
     def reweight(

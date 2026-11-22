@@ -31,6 +31,14 @@ env:
     # group take the friction groups in turn (crossed), so a routine does not
     # tell its sites' frictions.
     friction_groups: same
+    # Each friction group draws one base friction from base_levels, without
+    # replacement; its floors are the base within floor_noise, and each site's
+    # within site_jitter of its group's (base). Or each floor draws its own level
+    # from the friction prior (per_floor).
+    group_friction: base
+    base_levels: [0.03, 0.08, 0.15, 0.2]
+    floor_noise: 0.1
+    site_jitter: 0.05
   renderer: null
 budgets:
   sleep:

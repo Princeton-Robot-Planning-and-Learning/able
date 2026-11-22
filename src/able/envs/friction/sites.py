@@ -54,17 +54,28 @@ def make_site_domain(
     region_overlap: float = 0.0,
     survey: str = "prior",
     friction_groups: str = "same",
+    group_friction: str = "base",
+    base_levels: Sequence[float] = (0.03, 0.08, 0.15, 0.2),
+    floor_noise: float = 0.1,
+    site_jitter: float = 0.05,
 ) -> FrictionSiteDomain:
     """A domain with group_sizes[g] sites in group g.
 
-    Each group draws each floor's friction level from the prior's levels, and
-    each site scales its friction group's levels by its own draw from the prior's
-    jitter. With friction_groups "same", a site's friction group is its group;
+    With group_friction "base", each friction group draws its own base friction
+    from base_levels, without replacement, and each of its floors is the base
+    times a draw from [1 - floor_noise, 1 + floor_noise]; each site scales its
+    group's floors by its own draw from [1 - site_jitter, 1 + site_jitter]. Every
+    belief's particles are drawn the same way from a base, so its floors are
+    correlated and a probe of one floor informs them all. With "per_floor", each
+    group draws each floor's level from the prior's levels, and each site scales
+    them by its own draw from the prior's jitter.
+
+    With friction_groups "same", a site's friction group is its group;
     with "crossed", the sites of each group take the friction groups in turn
     (0, 1, 2, 0, ...), so sites on one routine can differ in friction.
     The robot's belief about each site starts from the survey: "prior", particles
-    from the prior, or "levels", which knows the site's levels but not the
-    jitter, so its particles have those levels and jitter drawn from the prior.
+    from the prior, or "levels", which knows the site's group's base (or levels)
+    but not the noise and jitter.
     Each group's routine has routine_size tasks drawn as for the
     single-site friction domain, each from anywhere in the maze with probability
     region_overlap and otherwise from the group's region: the floors of one
@@ -85,13 +96,6 @@ def make_site_domain(
         prior=prior,
         maze=maze,
     )
-    prior = dataclasses.replace(prior, num_surfaces=num_floors)
-    levels = np.asarray(prior.levels, dtype=np.float64)
-    low, high = prior.bounds
-    jitter = (1.0 - prior.jitter, 1.0 + prior.jitter)
-    group_levels = levels[
-        rng.integers(len(levels), size=(len(group_sizes), num_floors))
-    ]
     group_of = [g for g, size in enumerate(group_sizes) for _ in range(size)]
     assert friction_groups in ("same", "crossed"), f"Unknown {friction_groups!r}"
     friction_of = (
@@ -99,23 +103,28 @@ def make_site_domain(
         if friction_groups == "same"
         else [i % len(group_sizes) for size in group_sizes for i in range(size)]
     )
-    truths = np.stack(
-        [group_levels[g] * rng.uniform(*jitter, num_floors) for g in friction_of]
-    )
     assert survey in ("prior", "levels"), f"Unknown survey {survey!r}"
-    surveys = [
-        (
-            make_prior_belief(prior, num_particles, rng)
-            if survey == "prior"
-            else ParticleBelief(
-                group_levels[g] * rng.uniform(*jitter, (num_particles, num_floors)),
-                low,
-                high,
-                seed=int(rng.integers(2**31)),
-            )
+    if group_friction == "base":
+        truths, surveys = _draw_base_frictions(
+            rng,
+            len(group_sizes),
+            friction_of,
+            num_floors,
+            num_particles,
+            np.asarray(base_levels, dtype=np.float64),
+            (floor_noise, site_jitter),
+            survey,
         )
-        for g in friction_of
-    ]
+    else:
+        assert group_friction == "per_floor", f"Unknown {group_friction!r}"
+        truths, surveys = _draw_floor_frictions(
+            rng,
+            len(group_sizes),
+            friction_of,
+            dataclasses.replace(prior, num_surfaces=num_floors),
+            num_particles,
+            survey,
+        )
 
     assert 0.0 <= region_overlap <= 1.0, "Need a region overlap in [0, 1]"
     friction_model = base.env_model
@@ -185,3 +194,90 @@ def make_route_usage(
         return shares[routine]
 
     return get_usage
+
+
+def _draw_base_frictions(
+    rng: np.random.Generator,
+    num_groups: int,
+    friction_of: Sequence[int],
+    num_floors: int,
+    num_particles: int,
+    base_levels: NDArray[np.float64],
+    noise: tuple[float, float],
+    survey: str,
+) -> tuple[NDArray[np.float64], list[ParticleBelief]]:
+    """Each site's true frictions and initial belief, from one base per friction
+    group (see make_site_domain)."""
+    assert num_groups <= len(base_levels), "Need a base level per friction group"
+    floor_noise, site_jitter = noise
+    bases = rng.choice(base_levels, size=num_groups, replace=False)
+    group_floors = bases[:, None] * rng.uniform(
+        1.0 - floor_noise, 1.0 + floor_noise, (num_groups, num_floors)
+    )
+    truths = np.stack(
+        [
+            group_floors[g] * rng.uniform(1 - site_jitter, 1 + site_jitter, num_floors)
+            for g in friction_of
+        ]
+    )
+    spread = (1.0 - floor_noise) * (1.0 - site_jitter), (1 + floor_noise) * (
+        1 + site_jitter
+    )
+    low = np.full(num_floors, base_levels.min() * spread[0])
+    high = np.full(num_floors, base_levels.max() * spread[1])
+    surveys = []
+    for g in friction_of:
+        particle_bases = (
+            rng.choice(base_levels, size=num_particles)
+            if survey == "prior"
+            else np.full(num_particles, bases[g])
+        )
+        particles = (
+            particle_bases[:, None]
+            * rng.uniform(1 - floor_noise, 1 + floor_noise, (num_particles, num_floors))
+            * rng.uniform(1 - site_jitter, 1 + site_jitter, (num_particles, num_floors))
+        )
+        surveys.append(
+            ParticleBelief(
+                particles,
+                low,
+                high,
+                seed=int(rng.integers(2**31)),
+                independent=False,
+            )
+        )
+    return truths, surveys
+
+
+def _draw_floor_frictions(
+    rng: np.random.Generator,
+    num_groups: int,
+    friction_of: Sequence[int],
+    prior: FrictionPrior,
+    num_particles: int,
+    survey: str,
+) -> tuple[NDArray[np.float64], list[ParticleBelief]]:
+    """Each site's true frictions and initial belief, from a level per floor and
+    friction group (see make_site_domain)."""
+    num_floors = prior.num_surfaces
+    levels = np.asarray(prior.levels, dtype=np.float64)
+    low, high = prior.bounds
+    jitter = (1.0 - prior.jitter, 1.0 + prior.jitter)
+    group_levels = levels[rng.integers(len(levels), size=(num_groups, num_floors))]
+    truths = np.stack(
+        [group_levels[g] * rng.uniform(*jitter, num_floors) for g in friction_of]
+    )
+    surveys = [
+        (
+            make_prior_belief(prior, num_particles, rng)
+            if survey == "prior"
+            else ParticleBelief(
+                group_levels[g] * rng.uniform(*jitter, (num_particles, num_floors)),
+                low,
+                high,
+                seed=int(rng.integers(2**31)),
+            )
+        )
+        for g in friction_of
+    ]
+    return truths, surveys
