@@ -8,8 +8,8 @@ relative to the goal, the share that land in the goal when executed at theta, an
 psi*(theta): the speeds that land the puck when aimed straight at the goal. The
 untrained psi (depth 0) proposes nothing, so its row is the POMDP's random pushes.
 
-`plot` draws one panel per trained site, and one for training every site, for one
-seed: speed on the y axis, with arrows for direction (up is at the goal).
+`plot` draws the robot that trained every site, for one seed: speed on the y axis,
+with arrows for direction (up is at the goal).
 
     python experiments/analysis/plot_theta_psi.py measure s0_t1.pkl --out s0_t1.csv
     python experiments/analysis/plot_theta_psi.py plot s0_*.csv --out theta_psi.png
@@ -50,7 +50,7 @@ THETAS = np.geomspace(0.015, 0.3, 25)
 LEVELS = np.array([0.025, 0.05, 0.1, 0.2])
 SPEEDS = np.linspace(0.05, 1.2, 116)
 BLUE, ORANGE, RED, GRAY = "#a9c8ec", "#f3bfa8", "#a8322d", "#8c8c8c"
-GLYPH = 16.0  # arrow length in points for draws that all share one direction
+GLYPH = 20.0  # arrow length in points for draws that all share one direction
 
 
 class NearGoal(NamedTuple):
@@ -308,40 +308,23 @@ def _draw_panel(
 
 
 def plot(rows: pd.DataFrame, seed: int, out: Path) -> None:
-    """One panel per trained site, then one for every site, for one seed."""
-    rows = rows[rows.seed == seed]
-    panels = []
-    for _, group in rows.groupby("train_site"):
-        depth = int(group.depth.max())
-        if int(group.train_site.iloc[0]) >= 0:
-            level = nearest_level(float(group.train_theta.iloc[0]))
-            panels.append(
-                (level, group, depth, [level], f"{depth} units at θ = {level:g}")
-            )
-        else:
-            title = f"{depth // len(LEVELS)} units at each θ"
-            panels.append((math.inf, group, depth, list(LEVELS), title))
-    panels.sort(key=lambda p: p[0])
-    plt.rcParams.update({"font.size": 8, "axes.titlesize": 8.5, "axes.labelsize": 8.5})
-    fig, axes = plt.subplots(
-        1,
-        len(panels),
-        figsize=(1.9 * len(panels) + 0.6, 2.4),
-        sharey=True,
-        squeeze=False,
-        gridspec_kw={"wspace": 0.1},
-    )
-    for ax, (_, group, depth, trained, title) in zip(axes[0], panels):
-        ax.set_ylim(0, 1.3)
-        ax.set_xscale("log")
-        ax.set_xlim(0.015, 0.3)
-        _draw_panel(ax, group, depth, trained, title)
-        ax.set_xticks(LEVELS)
-        ax.set_xticklabels([f"{v:g}" for v in LEVELS])
-        ax.minorticks_off()
-        ax.spines[["top", "right"]].set_visible(False)
-        ax.set_xlabel("θ (friction)")
-    axes[0, 0].set_ylabel("ψ: push speed (m/s)")
+    """The robot that trained every site, for one seed."""
+    rows = rows[(rows.seed == seed) & (rows.train_site < 0)]
+    assert len(rows), f"No rows for seed {seed} that trained every site"
+    depth = int(rows.depth.max())
+    plt.rcParams.update({"font.size": 9, "axes.titlesize": 10, "axes.labelsize": 10})
+    fig, ax = plt.subplots(figsize=(4.6, 3.4))
+    ax.set_ylim(0, 1.3)
+    ax.set_xscale("log")
+    ax.set_xlim(0.015, 0.3)
+    title = f"{depth // len(LEVELS)} units at each θ"
+    _draw_panel(ax, rows, depth, list(LEVELS), title)
+    ax.set_xticks(LEVELS)
+    ax.set_xticklabels([f"{v:g}" for v in LEVELS])
+    ax.minorticks_off()
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.set_xlabel("θ (friction)")
+    ax.set_ylabel("ψ: push speed (m/s)")
     handles = [
         Patch(
             color=GRAY, alpha=0.35, label="ψ*(θ): speeds that land the puck (aimed ↑)"
@@ -368,9 +351,9 @@ def plot(rows: pd.DataFrame, seed: int, out: Path) -> None:
     fig.legend(
         handles=handles,
         loc="upper center",
-        ncol=3,
+        ncol=2,
         frameon=False,
-        bbox_to_anchor=(0.5, -0.02),
+        bbox_to_anchor=(0.5, 0.0),
         fontsize=7.5,
     )
     fig.savefig(out, dpi=220, bbox_inches="tight")
