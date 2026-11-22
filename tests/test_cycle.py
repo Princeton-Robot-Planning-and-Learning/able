@@ -2,6 +2,7 @@
 
 import dataclasses
 import functools
+from typing import Any
 
 import numpy as np
 import pytest
@@ -63,6 +64,9 @@ class _CountingLearner(Learner[np.ndarray, RandomShootingParams]):
         """Count the sleep and return the parameters."""
         self.num_sleeps += 1
         return params
+
+    def get_sleep_log(self) -> dict[str, Any]:
+        return {"num_sleeps": self.num_sleeps}
 
 
 class _DailyTasks(FiniteTaskDistribution):
@@ -199,6 +203,7 @@ def test_run_cycles():
     previous_width = IntervalBelief(JOINT_LIMIT_PRIOR).get_total_width()
     for result in results:
         assert not result.gathered_data
+        assert not result.sleep_log
         assert len(result.executions) == 2
         assert all(e.failure is None for e in result.executions)
         assert [e.task for e in result.evaluations] == eval_tasks
@@ -224,8 +229,8 @@ def test_run_cycles():
 
 
 def test_run_cycles_reports_each_cycle():
-    """Tests that each cycle's result, with its stage times, is reported as soon as
-    the cycle ends."""
+    """Tests that each cycle's result, with its stage times and its sleep's log,
+    is reported as soon as the cycle ends."""
     domain = make_domain(seed=0, true_limits=TRUE_LIMITS)
     learner = _CountingLearner()
     robot = _make_robot(domain, learner)
@@ -259,6 +264,7 @@ def test_run_cycles_reports_each_cycle():
         assert result.execution_wall_time > 0
         assert result.evaluation_wall_time > 0
         assert result.cycle_wall_time >= sum(stage_times)
+        assert result.sleep_log == {"num_sleeps": result.cycle + 1}
 
 
 def test_executed_tasks_do_not_depend_on_planning():
