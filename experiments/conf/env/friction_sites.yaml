@@ -25,7 +25,7 @@ env:
     num_floors: 12
     num_particles: 500
     # The belief about each site starts from the prior, or knows the site's
-    # group levels (levels).
+    # group base (or, with per_floor, its levels) but not the noise (levels).
     survey: prior
     # Sites share friction levels with their group (same), or the sites of each
     # group take the friction groups in turn (crossed), so a routine does not

@@ -14,7 +14,8 @@ dreams_per_unit: 4
 # 0.5, 0.9, and 1.0 of its saving after 1, 2, 4, and 8 units of an 8-task
 # routine, and other corridors 0.18 effective units per unit.
 # shared_floor_transfer is from the three-corridor probe, which had a site in
-# the trained site's corridor. run_length is the cliff for a push cache.
+# the trained site's corridor; with region_overlap 0, no two routines share a
+# floor, so it has no effect. run_length is the cliff for a push cache.
 run_length: 4
 ramp_passes: [0.2, 0.8]
 shared_floor_transfer: 0.55

@@ -59,6 +59,7 @@ def _write_probes(probe_dir: Path, legacy: bool = False) -> None:
                                 "depth": depth,
                                 "site": site,
                                 "group": group,
+                                "corridor": group % 3,
                                 "task": task,
                                 "repeat": 0,
                                 "success": True,
@@ -158,9 +159,16 @@ def test_load_overlay(
     assert overlay.schedule.tolist() == pytest.approx([0.5, 0.3, 0.2])
 
 
-def test_main_with_legacy_probes(tmp_path: Path) -> None:
-    """Tests the script on probe CSVs from before the train_site column."""
+def test_legacy_probes_are_refused(script: ModuleType, tmp_path: Path) -> None:
+    """Tests that probe CSVs from before the train_site column are refused."""
     _write_probes(tmp_path / "probes", legacy=True)
+    with pytest.raises(AssertionError, match="train_site"):
+        script.load_probes(tmp_path / "probes")
+
+
+def test_main(tmp_path: Path) -> None:
+    """Tests the script end to end on probe CSVs."""
+    _write_probes(tmp_path / "probes")
     result = subprocess.run(
         [
             sys.executable,

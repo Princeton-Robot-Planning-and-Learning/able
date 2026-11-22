@@ -48,7 +48,7 @@ FLOOR_SPLITS: dict[int, tuple[float, ...]] = {3: (), 6: (2.8,), 8: (2.0, 3.2)}
 CORRIDOR_HOLES = ((2.2, 0.5), (4.4, 0.8))
 CORRIDOR_BOTTOMS = (3.6, 2.0, 0.4)
 CORRIDOR_LEFT = 0.4
-CORRIDOR_FLOOR_SPLITS: dict[int, tuple[float, ...]] = {3: (), 9: (2.0, 3.6)}
+CORRIDOR_THIRDS = (2.0, 3.6)
 # Each corridors maze and its corridors' bottoms (y, m), from the top.
 CORRIDOR_MAZES: dict[str, tuple[PuckMap, tuple[float, ...]]] = {
     "corridors": (CORRIDORS, CORRIDOR_BOTTOMS),
@@ -74,7 +74,7 @@ def make_world(
     elif maze in CORRIDOR_MAZES:
         base, bottoms = CORRIDOR_MAZES[maze]
         all_holes = CORRIDOR_HOLES
-        splits = {len(bottoms): (), 3 * len(bottoms): CORRIDOR_FLOOR_SPLITS[9]}
+        splits = {len(bottoms): (), 3 * len(bottoms): CORRIDOR_THIRDS}
         holes = tuple(
             (CORRIDOR_LEFT + dx, bottom + dy)
             for bottom in bottoms

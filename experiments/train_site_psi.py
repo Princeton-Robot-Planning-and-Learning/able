@@ -21,25 +21,10 @@ import hydra
 import numpy as np
 from hydra import compose, initialize_config_dir
 
-from able.envs.multi_site import SiteRoutineTaskDistribution
+from able.envs.multi_site import SiteRoutineTaskDistribution, focus_routines
 from able.structs import Budget
 
 _CONF = str(Path(__file__).parent / "conf")
-
-
-def focus_routines(
-    routines: SiteRoutineTaskDistribution, site: int
-) -> SiteRoutineTaskDistribution:
-    """The same routines with the whole schedule on one site, or spread evenly
-    over every site if site is -1."""
-    num_sites = len(routines.schedule)
-    group_of = [routines.get_group(s) for s in range(num_sites)]
-    group_routines = [
-        [task.inner for task in routines.get_routine(group_of.index(group))]
-        for group in range(max(group_of) + 1)
-    ]
-    schedule = np.ones(num_sites) if site < 0 else np.eye(num_sites)[site]
-    return SiteRoutineTaskDistribution(group_routines, group_of, schedule)
 
 
 def main() -> None:

@@ -26,6 +26,7 @@ Example:
 """
 
 import argparse
+import inspect
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,7 +48,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from able.envs.base import Environment, TaskDistribution
 from able.envs.friction.model import FrictionModel
-from able.envs.friction.sites import make_route_usage
+from able.envs.friction.sites import make_route_usage, make_site_domain
 from able.envs.friction.world import DEFAULT_FRICTION_PRIOR, PuckWorld
 from able.envs.multi_site import MultiSiteModel, SiteRoutineTaskDistribution
 from able.learners.belief_features import get_moments
@@ -80,10 +81,10 @@ APPROACH_TO_STYLE = {
 GROUP_COLORS = ("#2a78d6", "#c08a3e", "#1f7a3a", "#c94040")
 # Each corridor's floors, light to dark by friction level.
 CORRIDOR_SHADES = (
-    ("#c9dcf5", "#5f97e0", "#1c4f9c"),
-    ("#f1dfc2", "#c99a5b", "#7d5523"),
-    ("#cde6cf", "#5aa463", "#1f5c2b"),
-    ("#f5cfcd", "#dc6b67", "#8f2420"),
+    ("#d6e5f8", "#8fb8ec", "#4d86d6", "#1c4f9c"),
+    ("#f4e7d2", "#ddbb8b", "#b88446", "#7d5523"),
+    ("#d6ecd7", "#92c898", "#4f9a59", "#1f5c2b"),
+    ("#f8dad8", "#e7a29f", "#cf5d58", "#8f2420"),
 )
 OTHER_FLOOR = "#e4e3df"
 WALL = "#3b3b3b"
@@ -97,8 +98,8 @@ class SiteDomain:
     """What the figures need of a run's domain: each site's routine group,
     share of the schedule, and true friction, prior mean and prior standard
     deviation per floor; each cycle's share of each site's routine paths that
-    cross each floor (cycles x sites x floors); the routine size, the prior's
-    friction levels, and the maze."""
+    cross each floor (cycles x sites x floors); the routine size, the friction
+    levels its sites are drawn from, and the maze."""
 
     group_of: NDArray[np.int64]
     schedule: NDArray[np.float64]
@@ -172,9 +173,23 @@ def describe_domain(cfg: DictConfig, num_cycles: int) -> SiteDomain:
         prior_std=np.asarray(std).reshape(truths.shape),
         usage=np.asarray(usage, dtype=np.float64),
         routine_size=len(routines.get_routine(0)),
-        levels=np.asarray(DEFAULT_FRICTION_PRIOR.levels, dtype=np.float64),
+        levels=get_level_set(cfg.env.domain),
         world=world,
     )
+
+
+def get_level_set(domain_cfg: DictConfig) -> NDArray[np.float64]:
+    """The friction levels a domain draws its sites from: the groups' base
+    levels, or the prior's levels when each floor draws its own."""
+    defaults = inspect.signature(make_site_domain).parameters
+    group_friction = domain_cfg.get(
+        "group_friction", defaults["group_friction"].default
+    )
+    if group_friction == "base":
+        levels = domain_cfg.get("base_levels", defaults["base_levels"].default)
+    else:
+        levels = DEFAULT_FRICTION_PRIOR.levels
+    return np.sort(np.asarray(levels, dtype=np.float64))
 
 
 def load_runs(results_dir: Path) -> list[SiteRun]:

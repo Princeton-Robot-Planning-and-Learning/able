@@ -231,6 +231,21 @@ class SiteRoutineTaskDistribution(FiniteTaskDistribution[SiteTask]):
         super().__init__(self._set_routines(routines))
 
 
+def focus_routines(
+    routines: SiteRoutineTaskDistribution, site: int
+) -> SiteRoutineTaskDistribution:
+    """The same routines, never revised, with the whole schedule on one site, or
+    spread evenly over every site if site is -1."""
+    num_sites = len(routines.schedule)
+    group_of = [routines.get_group(s) for s in range(num_sites)]
+    group_routines = [
+        [task.inner for task in routines.get_routine(group_of.index(group))]
+        for group in range(max(group_of) + 1)
+    ]
+    schedule = np.ones(num_sites) if site < 0 else np.eye(num_sites)[site]
+    return SiteRoutineTaskDistribution(group_routines, group_of, schedule)
+
+
 class ImaginedDay(TaskDistribution[SiteTask]):
     """A day the robot imagines with routines: its site is drawn with the
     schedule by draw_site(), never the real day's, and its tasks are that site's

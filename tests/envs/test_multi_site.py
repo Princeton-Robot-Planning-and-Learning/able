@@ -10,10 +10,12 @@ from able.envs.multi_site import (
     SiteQuery,
     SiteRoutineTaskDistribution,
     SiteState,
+    focus_routines,
     make_site_task,
 )
 from able.envs.simulated import SimulatedEnvironment
 from able.envs.two_link_arm import ArmTask, JointQuery, TwoLinkArmModel
+from able.structs import Task
 
 WIDE = np.array([-2.0, 2.0, -2.0, 2.0])
 NARROW = np.array([-0.2, 0.2, -0.2, 0.2])
@@ -158,3 +160,22 @@ def test_markov_sites():
     assert revised.get_routine(1)[0].inner is revised.get_routine(0)[0].inner
     assert revised.get_block_ids(1) == (1,)
     assert [revised.get_num_revisions(s) for s in range(2)] == [1, 1]
+
+
+def test_focus_routines() -> None:
+    """Tests that focusing keeps every site's routine and puts the whole schedule
+    on the chosen site, or spreads it evenly for site -1."""
+    routines = [
+        [Task(initial_state=(g, i), goal=None) for i in range(2)] for g in range(4)
+    ]
+    original = SiteRoutineTaskDistribution(routines, [0, 0, 1, 2, 3], np.full(5, 0.2))
+    focused = focus_routines(original, 3)
+    assert focused.schedule.tolist() == [0.0, 0.0, 0.0, 1.0, 0.0]
+    for site in range(5):
+        assert focused.get_group(site) == original.get_group(site)
+        assert [t.inner for t in focused.get_routine(site)] == [
+            t.inner for t in original.get_routine(site)
+        ]
+    rng = np.random.default_rng(0)
+    assert {focused.sample(rng).site for _ in range(20)} == {3}
+    assert focus_routines(original, -1).schedule.tolist() == [0.2] * 5
