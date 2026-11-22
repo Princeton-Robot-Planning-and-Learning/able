@@ -13,6 +13,7 @@ from typing import Any, Callable, Sequence
 import hydra
 import numpy as np
 import pandas as pd
+from numpy.typing import NDArray
 from omegaconf import DictConfig, OmegaConf
 
 from able.beliefs.base import Belief
@@ -58,6 +59,7 @@ def _main(cfg: DictConfig) -> None:
         Path(cfg.eval_results_file),
         Path(cfg.cycle_results_file),
         start_time,
+        task_distribution,
     )
     pool = _make_pool(cfg, resolved_cfg)
     try:
@@ -90,7 +92,8 @@ class CycleResultsWriter:
     A run that dies therefore keeps its finished cycles, and a sweep can be
     plotted while it runs. Each file is written to a temporary file first and then
     renamed, so a run killed while writing never leaves a partial file. The start
-    time is the run's, from time.perf_counter().
+    time is the run's, from time.perf_counter(). A task distribution with a
+    schedule over sites has it recorded with each cycle, as it was at evaluation.
     """
 
     def __init__(
@@ -99,16 +102,24 @@ class CycleResultsWriter:
         eval_results_file: Path,
         cycle_results_file: Path,
         start_time: float,
+        task_distribution: TaskDistribution | None = None,
     ) -> None:
         self._num_cycles = num_cycles
         self._eval_results_file = eval_results_file
         self._cycle_results_file = cycle_results_file
         self._start_time = start_time
+        self._task_distribution = task_distribution
         self._results: list[CycleResult] = []
+        self._schedules: list[NDArray[np.float64] | None] = []
 
     def __call__(self, result: CycleResult) -> None:
         self._results.append(result)
-        _write_csv(pd.DataFrame(_get_eval_rows(self._results)), self._eval_results_file)
+        schedule = getattr(self._task_distribution, "schedule", None)
+        self._schedules.append(None if schedule is None else np.array(schedule))
+        _write_csv(
+            pd.DataFrame(_get_eval_rows(self._results, self._schedules)),
+            self._eval_results_file,
+        )
         _write_csv(
             pd.DataFrame(_get_cycle_rows(self._results)), self._cycle_results_file
         )
@@ -224,16 +235,29 @@ def _make_video_recorder(cfg: DictConfig, domain: Domain) -> VideoRecorder:
     )
 
 
-def _get_eval_rows(results: list[CycleResult]) -> list[dict[str, Any]]:
+def _get_eval_rows(
+    results: list[CycleResult],
+    schedules: Sequence[NDArray[np.float64] | None] | None = None,
+) -> list[dict[str, Any]]:
     """One row per evaluation task per cycle, including why planning failed, whether
-    a time limit caused it, and planner statistics."""
+    a time limit caused it, and planner statistics. A task at a site, with the
+    cycle's schedule given, also gets its site and the site's share of the
+    schedule."""
     rows: list[dict[str, Any]] = []
-    for result in results:
+    for i, result in enumerate(results):
+        schedule = None if schedules is None else schedules[i]
         for task_id, evaluation in enumerate(result.evaluations):
+            site = getattr(evaluation.task, "site", None)
+            site_columns = (
+                {}
+                if site is None or schedule is None
+                else {"site": site, "schedule_share": float(schedule[site])}
+            )
             rows.append(
                 {
                     "cycle": result.cycle,
                     "task_id": task_id,
+                    **site_columns,
                     "success": evaluation.success,
                     "planning_wall_time": evaluation.planning_wall_time,
                     "total_cost": evaluation.total_cost,
