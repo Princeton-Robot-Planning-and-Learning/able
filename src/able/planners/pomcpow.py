@@ -361,10 +361,24 @@ class POMCPOW(Generic[S, A, O]):
 Y_DIM = 4
 
 
-def get_feature_dims(world: PuckWorld) -> tuple[int, int]:
+@dataclass(frozen=True)
+class ValueFeatures:
+    """What the value model sees besides the distance and heading to the goal and
+    the pushes left. With position, the puck's and the goal's (x, y), so data
+    from one place counts little elsewhere. With log_friction, the route's
+    friction as the log of its mean and its standard deviation over its mean, so
+    frictions twice apart are equally far apart at any level."""
+
+    position: bool = False
+    log_friction: bool = False
+
+
+def get_feature_dims(
+    world: PuckWorld, value_features: ValueFeatures = ValueFeatures()
+) -> tuple[int, int]:
     """The input sizes of get_push_features(), which grows with the map's floors,
     and get_value_features()."""
-    return 4 + 3 * world.puck_map.num_surfaces, 6
+    return 4 + 3 * world.puck_map.num_surfaces, 6 + 4 * value_features.position
 
 
 @dataclass(frozen=True)
@@ -406,6 +420,7 @@ class POMCPOWParams:
     training_num_sims: int | None = None
     value_model: KernelRegressor | None = None
     min_target_weight: float = 0.5
+    value_features: ValueFeatures = ValueFeatures()
 
 
 @dataclass(frozen=True, eq=False)
@@ -468,19 +483,24 @@ def get_value_features(
     pushes_left: int,
     world: PuckWorld,
     belief: ParticleBelief,
+    features: ValueFeatures = ValueFeatures(),
 ) -> NDArray[np.float64]:
     """The value model's input for a state: the distance and heading from the puck
     to the goal, pushes left, and the belief's mean and standard deviation of the
     friction along the straight route, weighting each floor by its share of the
-    route."""
+    route, then the puck's and goal's positions if features asks (see
+    ValueFeatures)."""
     start, end = np.asarray(puck, dtype=np.float64), np.asarray(goal, np.float64)
     offset = end - start
     distance = float(np.hypot(offset[0], offset[1]))
     heading = offset / max(distance, 1e-9)
     shares = get_route_shares(world, start, end)
-    return np.array(
-        [distance, *heading, pushes_left, shares @ belief.mean, shares @ belief.std]
-    )
+    mean, std = float(shares @ belief.mean), float(shares @ belief.std)
+    friction = [mean, std]
+    if features.log_friction:
+        friction = [math.log(max(mean, 1e-6)), std / max(mean, 1e-6)]
+    position = [*start, *end] if features.position else []
+    return np.array([distance, *heading, pushes_left, *friction, *position])
 
 
 def get_route_shares(
@@ -586,10 +606,12 @@ class LearnedLeafValue:
         pomdp: PuckPushingModel,
         value_model: KernelRegressor,
         belief: ParticleBelief,
+        features: ValueFeatures = ValueFeatures(),
     ) -> None:
         self._pomdp = pomdp
         self._value_model = value_model
         self._belief = belief
+        self._features = features
         self.num_leaves = 0
         self.data_weight = 0.0
 
@@ -609,7 +631,12 @@ class LearnedLeafValue:
             return value, 0.0
         pushes_left = pomdp.max_pushes - state.pushes
         x = get_value_features(
-            state.puck, state.goal, pushes_left, pomdp.world, self._belief
+            state.puck,
+            state.goal,
+            pushes_left,
+            pomdp.world,
+            self._belief,
+            self._features,
         )
         correction, weight = self._value_model.predict(x)
         return value + float(correction[0]), weight
@@ -852,7 +879,7 @@ class FrictionPOMCPOWPlanner(
         return replace(params, config=config)
 
     def get_model(self, params: POMCPOWParams) -> PushValueModel:
-        x_dim = get_feature_dims(self.pomdp.world)[0]
+        x_dim = get_feature_dims(self.pomdp.world, params.value_features)[0]
         return PushValueModel(params.model, x_dim, params.value_model)
 
     def set_model(
@@ -869,7 +896,7 @@ class FrictionPOMCPOWPlanner(
         value_model = params.value_model
         if value_model is None or value_model.x is None:
             return None
-        return LearnedLeafValue(self.pomdp, value_model, belief)
+        return LearnedLeafValue(self.pomdp, value_model, belief, params.value_features)
 
     def get_plan_examples(
         self,
@@ -930,6 +957,7 @@ class FrictionPOMCPOWPlanner(
                             pushes_left,
                             pomdp.world,
                             search.belief,
+                            self._default_params.value_features,
                         ),
                     ]
                 )
@@ -945,7 +973,10 @@ class FrictionPOMCPOWPlanner(
             values = [v for p, _, v in search.root_values if p == search.push]
             costs.append(-values[0] if values else 0.0)
         if not x:
-            return Dataset.empty(sum(get_feature_dims(pomdp.world)), Y_DIM + 1)
+            features = self._default_params.value_features
+            return Dataset.empty(
+                sum(get_feature_dims(pomdp.world, features)), Y_DIM + 1
+            )
         return Dataset(
             x=np.array(x),
             y=np.array(y),

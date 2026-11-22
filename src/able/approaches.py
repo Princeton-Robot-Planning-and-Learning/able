@@ -111,6 +111,7 @@ from able.planners.pomcpow import (
     POMCPOWConfig,
     POMCPOWParams,
     ProposalConfig,
+    ValueFeatures,
 )
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
 from able.planners.sites import MultiSitePlanner
@@ -1339,10 +1340,12 @@ def _make_friction_parts_for_model(
     proposal: ProposalConfig | None = None,
     training_num_sims: int | None = None,
     value_model: KernelRegressor | None = None,
+    value_features: ValueFeatures | None = None,
 ) -> tuple[
     FrictionModel, FrictionPOMCPOWPlanner, FrictionBeliefUpdater, ProbeFloorGatherer
 ]:
-    """_make_friction_parts() for the friction model of a domain."""
+    """_make_friction_parts() for the friction model of a domain, with the value
+    model's inputs as value_features says, if given."""
     config = POMCPOWConfig(
         num_sims=num_sims, max_depth=max_depth, early_stop=early_stop
     )
@@ -1353,6 +1356,8 @@ def _make_friction_parts_for_model(
         params = dataclasses.replace(params, model=model)
     if proposal is not None:
         params = dataclasses.replace(params, proposal=proposal)
+    if value_features is not None:
+        params = dataclasses.replace(params, value_features=value_features)
     belief_updater = FrictionBeliefUpdater(env_model.world)
     return (
         env_model,
@@ -1903,6 +1908,7 @@ def _make_friction_site_robot(
     keep_only_last_sleep: bool,
     dream_budgets: tuple[Budget, Budget] | None = None,
     recorder: CycleRecorder[Any, Any, Any] | None = None,
+    value_features: ValueFeatures | None = None,
 ) -> FrictionSiteRobot:
     """A robot for several friction sites that plans each site's task with
     POMCPOW under the site's belief, and probes the day's site's floors, weighted
@@ -1927,6 +1933,7 @@ def _make_friction_site_robot(
         proposal,
         training_num_sims,
         value_model,
+        value_features,
     )
     planner = MultiSitePlanner(inner_planner)
     updater = MultiSiteUpdater(inner_updater)
@@ -2016,6 +2023,7 @@ def make_friction_site_current_belief_robot(
     proposal: ProposalConfig | None = None,
     training_num_sims: int | None = None,
     value_model: KernelRegressor | None = None,
+    value_features: ValueFeatures | None = None,
     keep_only_last_sleep: bool = False,
     recorder: CycleRecorder[Any, Any, Any] | None = None,
 ) -> FrictionSiteRobot:
@@ -2035,6 +2043,7 @@ def make_friction_site_current_belief_robot(
         value_model,
         num_training_tasks,
         keep_only_last_sleep,
+        value_features=value_features,
     )
 
 
@@ -2051,6 +2060,7 @@ def make_friction_site_dreaming_robot(
     proposal: ProposalConfig | None = None,
     training_num_sims: int | None = None,
     value_model: KernelRegressor | None = None,
+    value_features: ValueFeatures | None = None,
     keep_only_last_sleep: bool = False,
     recorder: CycleRecorder[Any, Any, Any] | None = None,
 ) -> FrictionSiteRobot:
@@ -2073,6 +2083,7 @@ def make_friction_site_dreaming_robot(
         keep_only_last_sleep,
         (gathering_budget, execution_budget),
         recorder,
+        value_features=value_features,
     )
 
 
@@ -2090,6 +2101,7 @@ def make_friction_site_belief_coverage_robot(
     proposal: ProposalConfig | None = None,
     training_num_sims: int | None = None,
     value_model: KernelRegressor | None = None,
+    value_features: ValueFeatures | None = None,
     keep_only_last_sleep: bool = False,
     recorder: CycleRecorder[Any, Any, Any] | None = None,
 ) -> FrictionSiteRobot:
@@ -2130,6 +2142,7 @@ def make_friction_site_belief_coverage_robot(
         keep_only_last_sleep,
         (gathering_budget, execution_budget),
         recorder,
+        value_features=value_features,
     )
 
 
@@ -2171,6 +2184,7 @@ def make_friction_site_allocation_robot(
     proposal: ProposalConfig | None = None,
     training_num_sims: int | None = None,
     value_model: KernelRegressor | None = None,
+    value_features: ValueFeatures | None = None,
     keep_only_last_sleep: bool = False,
     recorder: CycleRecorder[Any, Any, Any] | None = None,
 ) -> FrictionSiteRobot:
@@ -2268,4 +2282,5 @@ def make_friction_site_allocation_robot(
         keep_only_last_sleep,
         (gathering_budget, execution_budget),
         recorder,
+        value_features=value_features,
     )
