@@ -188,6 +188,27 @@ def make_site_block_features(
     return get_features
 
 
+def make_site_usage_features(
+    prior: Belief[Any],
+    get_routine: Callable[[int], int],
+    get_usage: Callable[[int], NDArray[np.float64]],
+) -> Callable[[Belief[Any]], NDArray[np.float64]]:
+    """A function from a focused SiteBelief to its site's index, the index of the
+    site's routine, how much the routine uses each parameter (get_usage), and
+    then the mean and standard deviation of each of the site's parameters in
+    units of the prior's standard deviation."""
+    _, prior_std = get_moments(prior)
+
+    def get_features(belief: Belief[Any]) -> NDArray[np.float64]:
+        assert isinstance(belief, SiteBelief) and belief.focus is not None
+        mean, std = get_moments(belief.beliefs[belief.focus])
+        head = [belief.focus, get_routine(belief.focus)]
+        usage = get_usage(belief.focus)
+        return np.concatenate([head, usage, mean / prior_std, std / prior_std])
+
+    return get_features
+
+
 Transfer = Callable[[NDArray[np.float64], NDArray[np.float64]], NDArray[np.float64]]
 
 
@@ -221,3 +242,25 @@ def make_same_routine_transfer(num_blocks: int, transfer: Transfer) -> Transfer:
         return transfer(a[:, 1 + num_blocks :], b[:, 1 + num_blocks :]) * same
 
     return same_routine_transfer
+
+
+def make_usage_transfer(
+    num_params: int, transfer: Transfer, shared: float, other: float
+) -> Transfer:
+    """Transfer from the moment features, times 1 between sites on the same
+    routine and otherwise other + (shared - other) times the cosine similarity of
+    the routines' usage of the parameters, for features from
+    make_site_usage_features() with num_params parameters."""
+
+    def usage_transfer(
+        a: NDArray[np.float64], b: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        usage = slice(2, 2 + num_params)
+        norm_a = np.linalg.norm(a[:, usage], axis=1)[:, None]
+        norm_b = np.linalg.norm(b[:, usage], axis=1)[None, :]
+        cosine = (a[:, usage] @ b[:, usage].T) / np.maximum(norm_a * norm_b, 1e-12)
+        same = a[:, None, 1] == b[None, :, 1]
+        factor = np.where(same, 1.0, other + (shared - other) * cosine)
+        return transfer(a[:, 2 + num_params :], b[:, 2 + num_params :]) * factor
+
+    return usage_transfer

@@ -5,7 +5,11 @@ import numpy as np
 from able.beliefs.particles import ParticleBelief
 from able.beliefs.sites import SiteBelief
 from able.envs.friction.pomdp import PuckPushingModel
-from able.envs.friction.sites import count_route_floors, make_site_domain
+from able.envs.friction.sites import (
+    count_route_floors,
+    make_route_usage,
+    make_site_domain,
+)
 from able.envs.friction.world import DEFAULT_FRICTION_PRIOR
 from able.envs.multi_site import MultiSiteModel, SiteRoutineTaskDistribution
 
@@ -100,3 +104,5 @@ def test_prior_survey_and_route_floors():
         counts = count_route_floors(paths, routine, 9)
         assert counts.sum() >= len(routine)
         assert np.all(counts[colors != site] == 0)
+        usage = make_route_usage(world, routines)(site)
+        np.testing.assert_allclose(usage, counts / counts.sum())

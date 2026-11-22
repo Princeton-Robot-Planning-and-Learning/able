@@ -22,7 +22,11 @@ from able.envs.base import FiniteTaskDistribution
 from able.envs.friction.model import FrictionModel, FrictionState, FrictionTask
 from able.envs.friction.pomdp import PuckPushingModel
 from able.envs.friction.query import FrictionQuery, PushRecord
-from able.envs.friction.sites import FrictionSiteDomain, count_route_floors
+from able.envs.friction.sites import (
+    FrictionSiteDomain,
+    count_route_floors,
+    make_route_usage,
+)
 from able.envs.friction.tasks import FrictionDomain, make_prior_belief
 from able.envs.friction.world import DEFAULT_FRICTION_PRIOR, Push
 from able.envs.human_reach.model import ReachAction, ReachModel, ReachState, ReachTask
@@ -62,6 +66,7 @@ from able.learners.allocation import (
     AllocationSource,
     get_cliff_gain,
     get_diminishing_gain,
+    get_ramp_gain,
     get_saturating_gain,
     make_moment_transfer,
 )
@@ -91,8 +96,9 @@ from able.learners.site_focus import (
     SiteFocusSource,
     SiteRolloutModelLearner,
     make_site_key_features,
-    make_site_moment_features,
     make_site_revision_features,
+    make_site_usage_features,
+    make_usage_transfer,
 )
 from able.models.base import ConditionalModel
 from able.models.exact_match_cache import ExactMatchCache
@@ -2132,6 +2138,9 @@ def make_friction_site_allocation_robot(
     dreams_per_unit: int = 4,
     transfer_length: float = 2.2,
     narrowing_rate: float = 0.2,
+    ramp_start: float = 1.0,
+    shared_floor_transfer: float = 0.55,
+    other_transfer: float = 0.28,
     num_training_tasks: int = 2,
     num_sims: int = 100,
     max_depth: int = 8,
@@ -2146,11 +2155,14 @@ def make_friction_site_allocation_robot(
     units among (site, belief) pairs, drawn by the schedule, by an allocation
     rule.
 
-    The rule predicts a plateau: planning for a site gains nothing until the
-    model has run_length effective units for it. Units for one site count toward
-    another only if the sites are on the same routine. With a cache from
-    make_friction_site_cache(), they then count fully if the sites' beliefs are
-    within the cache's lending distance; with another model, by the transfer
+    With a cache from make_friction_site_cache(), the rule predicts a plateau:
+    a site gains nothing until it has run_length effective units, and units
+    count fully toward sites on the same routine whose beliefs are within the
+    cache's lending distance. With another model, a site's gain rises linearly
+    from ramp_start effective units to run_length. A unit counts fully toward
+    sites on the same routine, shared_floor_transfer toward routines whose paths
+    cross the same floors, and other_transfer toward the rest, scaled by the
+    cosine similarity of the routines' floor shares and times the transfer
     between the beliefs' moments (see make_moment_transfer).
     deliberate_practice counts units only toward the site they trained for, by
     the same transfer. num_units should match the sleep budget's iterations.
@@ -2177,16 +2189,28 @@ def make_friction_site_allocation_robot(
             500,
             np.random.default_rng(0),
         )
-        get_features = make_site_moment_features(prior, routines.get_routine_id)
-        transfer = make_routine_transfer(
-            make_moment_transfer(transfer_length, narrowing_rate)
+        get_features = make_site_usage_features(
+            prior,
+            routines.get_routine_id,
+            make_route_usage(site_model.inner.world, routines),
         )
+        transfer = make_usage_transfer(
+            num_floors,
+            make_moment_transfer(transfer_length, narrowing_rate),
+            shared_floor_transfer,
+            other_transfer,
+        )
+    cliff = isinstance(model, ExactMatchCache)
     allocation_model = AllocationModel(
         get_features=get_features,
         transfer=transfer,
-        gain=get_cliff_gain(run_length),
+        gain=(
+            get_cliff_gain(run_length)
+            if cliff
+            else get_ramp_gain(ramp_start, run_length)
+        ),
         combine="sum",
-        run_length=run_length,
+        run_length=run_length if cliff else None,
         independent_transfer=make_same_person_transfer(transfer),
         include_current_belief=False,
     )

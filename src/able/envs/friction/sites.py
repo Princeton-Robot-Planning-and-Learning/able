@@ -10,7 +10,7 @@ corridor g mod 3.
 """
 
 import dataclasses
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
@@ -26,7 +26,11 @@ from able.envs.friction.tasks import (
     make_domain,
     make_prior_belief,
 )
-from able.envs.friction.world import DEFAULT_FRICTION_PRIOR, FrictionPrior
+from able.envs.friction.world import (
+    DEFAULT_FRICTION_PRIOR,
+    FrictionPrior,
+    PuckWorld,
+)
 from able.envs.multi_site import MultiSiteModel, SiteRoutineTaskDistribution
 from able.envs.simulated import SimulatedEnvironment
 
@@ -151,3 +155,23 @@ def count_route_floors(
         for floor in paths.path_floors(task.initial_state.puck, task.goal):
             counts[floor] += 1
     return counts
+
+
+def make_route_usage(
+    world: PuckWorld, routines: SiteRoutineTaskDistribution
+) -> Callable[[int], NDArray[np.float64]]:
+    """A function from a site to the share of its routine's shortest paths that
+    cross each floor, computed once per routine."""
+    paths = PuckPushingModel(world)
+    num_floors = world.puck_map.num_surfaces
+    shares: dict[int, NDArray[np.float64]] = {}
+
+    def get_usage(site: int) -> NDArray[np.float64]:
+        routine = routines.get_routine_id(site)
+        if routine not in shares:
+            tasks = [task.inner for task in routines.get_routine(site)]
+            counts = count_route_floors(paths, tasks, num_floors)
+            shares[routine] = counts / max(counts.sum(), 1.0)
+        return shares[routine]
+
+    return get_usage

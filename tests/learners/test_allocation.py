@@ -15,6 +15,7 @@ from able.learners.allocation import (
     get_cliff_gain,
     get_diminishing_gain,
     get_equal_features_transfer,
+    get_ramp_gain,
     get_saturating_gain,
     make_moment_transfer,
 )
@@ -200,6 +201,8 @@ def test_gains_and_moment_transfer():
     np.testing.assert_allclose(get_diminishing_gain(0.9, 0.5)(units), [0.0, 0.9, 0.95])
     saturating = get_saturating_gain(1.0, 1.0)(units)
     np.testing.assert_allclose(saturating, [0.0, 0.5, 2.0 / 3.0])
+    ramp = get_ramp_gain(1.0, 4.0)(np.array([0.0, 1.0, 2.5, 4.0, 8.0]))
+    np.testing.assert_allclose(ramp, [0.0, 0.0, 0.5, 1.0, 1.0])
     transfer = make_moment_transfer(length=1.0, narrowing_rate=1.0)
     narrow, wide = np.array([[0.0, 1.0]]), np.array([[0.0, 2.0]])
     assert transfer(narrow, wide)[0, 0] == pytest.approx(1.0)
