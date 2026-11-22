@@ -17,11 +17,13 @@ from able.envs.multi_site import (
     MarkovSiteTaskDistribution,
     SiteRoutineTaskDistribution,
 )
+from able.learners.base import NullLearner
 from able.learners.belief_features import get_moments
 from able.learners.belief_sources import BeliefSource
 from able.learners.model_learner import ModelLearner
 from able.learners.rollout_model_learner import RolloutModelLearner
-from able.structs import HiddenParamsType, PlannerParamsType
+from able.parallel import WorkerPool
+from able.structs import Budget, HiddenParamsType, PlannerParamsType
 
 # Larger than any difference between the other features of two beliefs.
 _REVISION_SEPARATION = 1e6
@@ -77,13 +79,29 @@ class SiteModelLearner(ModelLearner[HiddenParamsType, PlannerParamsType]):
     Each unit plans num_training_tasks tasks of the site's routine, those it has
     planned the fewest times first, in the routine's order among ties. Sites
     that share tasks, as sites in a group share their routine, count each
-    other's plans, so units for them cover the shared tasks in turn."""
+    other's plans, so units for them cover the shared tasks in turn. The sleep
+    log names the site of each unit of the last sleep, in order."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         # Each task planned, by id(), and how many times; holding the task keeps
         # its id from going to another.
         self._num_plans: dict[int, tuple[Any, int]] = {}
+        self._training_sites: list[int] = []
+
+    def learn(
+        self,
+        belief: Belief[HiddenParamsType],
+        params: PlannerParamsType,
+        budget: Budget,
+        rng: np.random.Generator,
+        pool: WorkerPool | None = None,
+    ) -> PlannerParamsType:
+        self._training_sites = []
+        return super().learn(belief, params, budget, rng, pool)
+
+    def get_sleep_log(self) -> dict[str, Any]:
+        return {"training_sites": format_training_sites(self._training_sites)}
 
     def draw_training_tasks(
         self, belief: Belief[HiddenParamsType], rng: np.random.Generator
@@ -91,6 +109,7 @@ class SiteModelLearner(ModelLearner[HiddenParamsType, PlannerParamsType]):
         routines = self._task_distribution
         if not isinstance(belief, SiteBelief) or belief.focus is None:
             return super().draw_training_tasks(belief, rng)
+        self._training_sites.append(belief.focus)
         assert isinstance(
             routines, (SiteRoutineTaskDistribution, MarkovSiteTaskDistribution)
         ), "Need routines"
@@ -112,6 +131,28 @@ class SiteRolloutModelLearner(
     """A rollout model learner whose training tasks under a focused SiteBelief
     are that site's routine, as for SiteModelLearner, each paired with hidden
     parameters for its rollout."""
+
+
+class SiteNullLearner(NullLearner[HiddenParamsType, PlannerParamsType]):
+    """Never learns, so no unit of sleep trains for any site."""
+
+    def get_sleep_log(self) -> dict[str, Any]:
+        return {"training_sites": format_training_sites([])}
+
+
+def format_training_sites(sites: Sequence[int]) -> str:
+    """The sites of a sleep's units, in order, as the cycle results hold them."""
+    return ";".join(str(site) for site in sites)
+
+
+def parse_training_sites(value: Any) -> list[int]:
+    """The sites of a sleep's units from a cycle results entry, which pandas may
+    have read as a number, or as NaN when empty."""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return []
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return [int(value)]
+    return [int(site) for site in str(value).split(";") if site.strip()]
 
 
 def make_site_key_features(

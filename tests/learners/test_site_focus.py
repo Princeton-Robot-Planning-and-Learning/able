@@ -17,6 +17,7 @@ from able.learners.belief_sources import BeliefSource, CurrentBeliefSource
 from able.learners.site_focus import (
     SiteFocusSource,
     SiteModelLearner,
+    SiteNullLearner,
     SiteRolloutModelLearner,
     make_block_overlap_transfer,
     make_same_routine_transfer,
@@ -26,8 +27,10 @@ from able.learners.site_focus import (
     make_site_revision_features,
     make_site_usage_features,
     make_usage_transfer,
+    parse_training_sites,
 )
 from able.models.exact_match_cache import ExactMatchCache
+from able.parallel import SerialPool, WorkerContext
 from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
 from able.planners.sites import MultiSitePlanner
 from able.structs import Budget
@@ -103,6 +106,54 @@ def test_learner_trains_the_focused_sites_routine_in_turn():
         belief.focused(1), planner.get_default_params(), rng
     )
     assert len(rows) == 3
+
+
+class _SitesInTurn(BeliefSource[Any, Any]):
+    """Focuses the current belief on each of the sites in turn."""
+
+    def __init__(self, sites: list[int]) -> None:
+        self._sites = sites
+
+    def get_training_belief(
+        self, iteration: int, belief: Any, params: Any, rng: np.random.Generator
+    ) -> Any:
+        return belief.focused(self._sites[(iteration - 1) % len(self._sites)])
+
+
+def test_learner_logs_the_site_of_each_unit():
+    """Tests that the sleep log names the site of each unit of the last sleep in
+    order, in a sleep in this process or with workers, and that a robot that
+    never learns logs no sites."""
+    routines = SiteRoutineTaskDistribution(
+        [[_task(1.0)], [_task(1.2)]], [0, 1, 1], [1.0, 1.0, 1.0]
+    )
+    planner = MultiSitePlanner(
+        RandomShootingPlanner(
+            TwoLinkArmModel(), RandomShootingParams(model=ExactMatchCache())
+        )
+    )
+    learner: SiteModelLearner[Any, Any] = SiteModelLearner(
+        planner,
+        routines,
+        _SitesInTurn([2, 0, 1]),
+        Budget(),
+        refit="per_sleep",
+        num_training_tasks=1,
+    )
+    limits = IntervalBelief(np.tile([[-2.0, 2.0]], (4, 1)))
+    belief = SiteBelief([limits, limits, limits])
+    params = planner.get_default_params()
+    rng = np.random.default_rng(0)
+    assert learner.get_sleep_log() == {"training_sites": ""}
+    learner.learn(belief, params, Budget(max_iterations=3), rng)
+    assert learner.get_sleep_log() == {"training_sites": "2;0;1"}
+    pool = SerialPool(WorkerContext(None, planner, learner))
+    learner.learn(belief, params, Budget(max_iterations=2), rng, pool)
+    assert learner.get_sleep_log() == {"training_sites": "2;0"}
+    assert SiteNullLearner().get_sleep_log() == {"training_sites": ""}
+    assert parse_training_sites("2;0;1") == [2, 0, 1]
+    assert parse_training_sites(3) == [3]
+    assert parse_training_sites(float("nan")) == parse_training_sites("") == []
 
 
 def test_learner_counts_tasks_that_sites_share():
