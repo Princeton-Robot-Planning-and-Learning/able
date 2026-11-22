@@ -25,6 +25,7 @@ from able.planners.pomcpow import (
     ProposalConfig,
     PushValueModel,
     SearchStats,
+    ValueFeatures,
     _ActionNode,
     _ObservationNode,
     encode_push,
@@ -432,6 +433,11 @@ def test_value_features_follow_the_route_to_the_goal():
     assert set(np.nonzero(shares)[0]) == {1, 2, 4}
     x = get_value_features(puck, (3.9, 2.2), 5, world, belief)
     assert np.allclose(x[4:], [shares @ belief.mean, shares @ belief.std])
+    features = ValueFeatures(position=True, log_friction=True)
+    x = get_value_features(puck, (3.9, 2.2), 5, world, belief, features)
+    mean = shares @ belief.mean
+    expected = [np.log(mean), (shares @ belief.std) / mean, 2.6, 2.2, 3.9, 2.2]
+    assert np.allclose(x[4:], expected)
     model.close()
 
 

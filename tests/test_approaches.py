@@ -743,3 +743,33 @@ def test_ramp_units_scale_with_routine_size():
     assert get_ramp_units((1.0, 4.0), None, 16, 2) == (1.0, 4.0)
     assert get_ramp_units((1.0, 4.0), (0.25, 1.0), 8, 2) == (1.0, 4.0)
     assert get_ramp_units((1.0, 4.0), (0.25, 1.0), 16, 2) == (2.0, 8.0)
+
+
+def test_friction_site_robot_with_a_local_value_model():
+    """Tests that a friction-site robot sleeps with a value model that sees
+    positions and log friction and falls back to zero."""
+    # pylint: disable=import-outside-toplevel
+    from able.approaches import make_friction_site_current_belief_robot
+    from able.envs.friction.sites import make_site_domain
+    from able.models.kernel_regression import KernelRegressor
+    from able.planners.pomcpow import ValueFeatures
+
+    domain = make_site_domain(
+        seed=0, group_sizes=(1, 1), routine_size=2, horizon=1, num_particles=10
+    )
+    value_model = KernelRegressor(
+        (0.75, 1.0, 1.0, 3.0, 0.35, 0.1, 0.5, 0.5, 0.5, 0.5), fallback="zero"
+    )
+    robot = make_friction_site_current_belief_robot(
+        domain,
+        Budget(),
+        MLPRegressor(num_steps=5),
+        num_training_tasks=1,
+        num_sims=10,
+        max_depth=2,
+        value_model=value_model,
+        value_features=ValueFeatures(position=True, log_friction=True),
+    )
+    robot.sleep(Budget(max_iterations=2), np.random.default_rng(0))
+    trained = robot.planner_params.value_model
+    assert trained.x is not None and trained.x.shape[1] == 10

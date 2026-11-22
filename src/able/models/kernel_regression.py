@@ -16,13 +16,14 @@ class KernelRegressor(ConditionalModel):
 
     Each training row weighs exp(-d^2 / 2), where d is its distance to the input
     with every column scaled by its bandwidth. The prior weight acts as that many
-    extra rows at the input whose outputs are the mean of all training outputs.
-    Far from the data the prediction is that mean, and with plenty of close rows it
-    is their mean.
+    extra rows at the input whose outputs are the fallback: the mean of all
+    training outputs, or zero with fallback "zero". Far from the data the
+    prediction is the fallback, and with plenty of close rows it is their mean.
     """
 
     bandwidths: tuple[float, ...] = ()
     prior_weight: float = 1.0
+    fallback: str = "mean"
     x: NDArray[np.float64] | None = None
     y: NDArray[np.float64] | None = None
 
@@ -44,7 +45,9 @@ class KernelRegressor(ConditionalModel):
         scaled = (self.x - x) / np.asarray(self.bandwidths)
         weights = np.exp(-0.5 * np.einsum("ij,ij->i", scaled, scaled))
         total = float(weights.sum())
-        prior = self.prior_weight * self.y.mean(axis=0)
+        assert self.fallback in ("mean", "zero"), f"Unknown fallback {self.fallback!r}"
+        fallback = self.y.mean(axis=0) if self.fallback == "mean" else 0.0
+        prior = self.prior_weight * fallback
         outputs = (weights @ self.y + prior) / (total + self.prior_weight)
         return outputs, total / (total + self.prior_weight)
 

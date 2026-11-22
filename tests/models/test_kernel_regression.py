@@ -48,3 +48,16 @@ def test_untrained_and_sampled_predictions():
     assert model.x is None and trained.bandwidths == (1.0,)
     draws = trained.sample(np.zeros(1), 3, rng)
     assert draws.shape == (1, 2) and np.allclose(draws, [[2.0, -1.0]])
+
+
+def test_zero_fallback():
+    """With fallback "zero", the prediction far from all rows is zero, not the
+    mean of every output."""
+    x = [[0.0, 0.0]] * 10
+    y = [[3.0]] * 10
+    model = KernelRegressor(bandwidths=(1.0, 1.0), prior_weight=1.0, fallback="zero")
+    model = model.fit(_rows(x, y))
+    far, _ = model.predict(np.array([20.0, 20.0]))
+    near, _ = model.predict(np.zeros(2))
+    assert far[0] == pytest.approx(0.0)
+    assert near[0] == pytest.approx(30.0 / 11)
