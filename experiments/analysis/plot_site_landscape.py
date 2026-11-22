@@ -69,20 +69,17 @@ _CORRIDOR_OF: dict[int, int] = {}
 
 
 def get_corridor(group: int) -> int:
-    """The corridor of a group's routine: as the probes recorded it, or for
-    probes from before that column, on the three-corridor maze."""
-    return _CORRIDOR_OF.get(group, group % 3)
+    """The corridor of a group's routine, as the probes recorded it."""
+    return _CORRIDOR_OF[group]
 
 
 def load_probes(probe_dir: Path) -> pd.DataFrame:
-    """Every probe row; runs from before --train_site trained site 0."""
+    """Every probe row."""
     paths = sorted(probe_dir.glob("*.csv"))
     assert paths, f"No probe CSVs in {probe_dir}"
     df = pd.concat([pd.read_csv(path) for path in paths], ignore_index=True)
-    if "train_site" not in df:
-        df["train_site"] = 0
-    if "corridor" not in df:
-        df["corridor"] = df["group"] % 3
+    missing = {"train_site", "corridor"} - set(df.columns)
+    assert not missing, f"Probes lack {sorted(missing)}; rerun probe_site_transfer.py"
     _CORRIDOR_OF.update(zip(df["group"].astype(int), df["corridor"].astype(int)))
     return df
 

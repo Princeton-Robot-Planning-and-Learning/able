@@ -3,8 +3,8 @@
 A robot built from env=friction_sites and an approach trains only for one site
 (--train_site, default 0), one unit per sleep, and after each depth in --depths
 plans every site's routine under its belief. Sites 0 and 1 share group 0; sites
-2, 3, and 4 are groups 1, 2, and 3, where group 3 shares group 0's corridor with
-a routine of its own. Each evaluation task gets the same planning and
+2, 3, and 4 are groups 1, 2, and 3, each with its own corridor on the default
+corridors4 maze. Each evaluation task gets the same planning and
 environment seeds at every depth, so depths differ only by the model. One CSV
 row per evaluation task.
 
@@ -23,7 +23,7 @@ import pandas as pd
 from hydra import compose, initialize_config_dir
 
 from able.cycle import EpisodeResult, evaluate
-from able.envs.multi_site import SiteRoutineTaskDistribution
+from able.envs.multi_site import SiteRoutineTaskDistribution, focus_routines
 from able.envs.simulated import SimulatedEnvironment
 from able.structs import Budget
 
@@ -90,21 +90,6 @@ def main() -> None:
         if depth in args.depths:
             evaluate_sites(depth)
         print(f"depth {depth} done after {time.perf_counter() - start:.0f}s")
-
-
-def focus_routines(
-    routines: SiteRoutineTaskDistribution, site: int
-) -> SiteRoutineTaskDistribution:
-    """The same routines with the whole schedule on one site."""
-    num_sites = len(routines.schedule)
-    group_of = [routines.get_group(s) for s in range(num_sites)]
-    group_routines = [
-        [task.inner for task in routines.get_routine(group_of.index(group))]
-        for group in range(max(group_of) + 1)
-    ]
-    return SiteRoutineTaskDistribution(
-        group_routines, group_of, np.eye(num_sites)[site]
-    )
 
 
 def _row(

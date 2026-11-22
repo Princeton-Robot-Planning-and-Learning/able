@@ -7,11 +7,13 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from omegaconf import OmegaConf
 
 from able.approaches import make_scratch_robot
 from able.cycle import CycleBudgets, run_cycles
 from able.envs.base import FiniteTaskDistribution
 from able.envs.friction.layout import make_world
+from able.envs.friction.world import DEFAULT_FRICTION_PRIOR
 from able.envs.two_link_arm import ArmTask, make_domain
 from able.structs import Budget
 
@@ -183,3 +185,21 @@ def test_plots(tmp_path: Path) -> None:
     module.plot_group_map({0: domain, 1: domain}, tmp_path / "map.png")
     for name in ("allocation", "staircase", "map"):
         assert (tmp_path / f"{name}.png").stat().st_size > 0
+
+
+def test_level_set() -> None:
+    """Tests that the site map's levels are the groups' base levels, or the
+    prior's levels when each floor draws its own."""
+    module = _load()
+    based = OmegaConf.create({"group_friction": "base", "base_levels": [0.2, 0.05]})
+    assert module.get_level_set(based).tolist() == [0.05, 0.2]
+    assert module.get_level_set(OmegaConf.create({})).tolist() == [
+        0.025,
+        0.05,
+        0.1,
+        0.2,
+    ]
+    per_floor = OmegaConf.create({"group_friction": "per_floor"})
+    assert module.get_level_set(per_floor).tolist() == list(
+        DEFAULT_FRICTION_PRIOR.levels
+    )
