@@ -30,7 +30,7 @@ def test_make_site_domain():
     )
     assert isinstance(domain.env_model, MultiSiteModel)
     truths = domain.real_env.hidden_params  # type: ignore[attr-defined]
-    assert truths.shape == (3, 9)
+    assert truths.shape == (3, 12)
     levels = np.array(DEFAULT_FRICTION_PRIOR.levels)
     jitter = DEFAULT_FRICTION_PRIOR.jitter
 
@@ -102,7 +102,7 @@ def test_prior_survey_and_route_floors():
     colors = np.array(world.puck_map.surface_colors)
     for site in range(3):
         routine = [task.inner for task in routines.get_routine(site)]
-        counts = count_route_floors(paths, routine, 9)
+        counts = count_route_floors(paths, routine, world.puck_map.num_surfaces)
         assert counts.sum() >= len(routine)
         assert np.all(counts[colors != site] == 0)
         usage = make_route_usage(world, routines)(site)
@@ -137,7 +137,7 @@ def test_base_frictions():
     that beliefs draw floors from a shared base, and that a probe of one floor
     informs the others."""
     # pylint: disable=no-member
-    base_levels = (0.03, 0.08, 0.15, 0.2)
+    base_levels = (0.025, 0.05, 0.1, 0.2)
     domain = make_site_domain(seed=0, group_sizes=(2, 2, 2), num_particles=200)
     truths = domain.real_env.hidden_params  # type: ignore[attr-defined]
     bases = [

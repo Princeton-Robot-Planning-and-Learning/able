@@ -94,7 +94,6 @@ from able.learners.person_focus import (
 from able.learners.rollout_model_learner import RolloutModelLearner
 from able.learners.site_focus import (
     SiteFocusSource,
-    SiteNullLearner,
     SiteRolloutModelLearner,
     make_site_key_features,
     make_site_revision_features,
@@ -1953,7 +1952,7 @@ def _make_friction_site_robot(
             planning_budget=planning_budget,
             recorder=recorder,
         )
-    learner: Any = SiteNullLearner()
+    learner: Any = NullLearner()
     if make_source is not None:
         learner = SiteRolloutModelLearner(
             planner,

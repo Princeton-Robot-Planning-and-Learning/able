@@ -1,5 +1,5 @@
 # @package _global_
-# Puck pushing at several sites with the same maze of three corridors. Sites in a
+# Puck pushing at several sites with the same maze of four corridors. Sites in a
 # group share each floor's friction level and run the same routine of pushing
 # tasks, so what the robot learns at one site can serve the others in its group.
 # Its approaches are in env_approach/friction_sites.
@@ -7,7 +7,7 @@ env:
   domain:
     _target_: able.envs.friction.sites.make_site_domain
     # Sites per group.
-    group_sizes: [2, 4, 6]
+    group_sizes: [2, 3, 3, 4]
     # Tasks in each group's routine.
     routine_size: 8
     # Chance that each routine task is drawn from the whole maze instead of the
@@ -17,12 +17,12 @@ env:
     revision_rate: 0.0
     sim: 2d
     # The corridors maze, with num_holes holes in each corridor.
-    maze: corridors
+    maze: corridors4
     num_holes: 2
     goal_radius: 0.2
     horizon: 15
     task_distances: [1.5, 3.5]
-    num_floors: 9
+    num_floors: 12
     num_particles: 500
     # The belief about each site starts from the prior, or knows the site's
     # group levels (levels).
@@ -36,7 +36,7 @@ env:
     # within site_jitter of its group's (base). Or each floor draws its own level
     # from the friction prior (per_floor).
     group_friction: base
-    base_levels: [0.03, 0.08, 0.15, 0.2]
+    base_levels: [0.025, 0.05, 0.1, 0.2]
     floor_noise: 0.1
     site_jitter: 0.05
   renderer: null

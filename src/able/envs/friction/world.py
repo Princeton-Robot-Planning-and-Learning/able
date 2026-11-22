@@ -19,8 +19,8 @@ from scipy.sparse.csgraph import dijkstra
 
 # Floor colors and their map chars. A map may split a color into several floors
 # (PuckMap.floor_splits).
-COLOR_NAMES: tuple[str, ...] = ("blue", "tan", "green")
-COLOR_CHARS: tuple[str, ...] = ("b", "t", "g")
+COLOR_NAMES: tuple[str, ...] = ("blue", "tan", "green", "red")
+COLOR_CHARS: tuple[str, ...] = ("b", "t", "g", "r")
 WALL_CHAR = "#"
 
 
@@ -66,6 +66,7 @@ COLOR_RGB: tuple[tuple[float, float, float], ...] = (
     (0.80, 0.86, 0.92),  # blue
     (0.76, 0.60, 0.42),  # tan
     (0.30, 0.50, 0.32),  # green
+    (0.80, 0.42, 0.40),  # red
 )
 # How much darker a color's rightmost floor is than its leftmost.
 _SHADE = 0.3
@@ -283,7 +284,36 @@ CORRIDORS = PuckMap(
     goal=(4.0, 4.2),
 )
 
-MAPS: dict[str, PuckMap] = {m.name: m for m in (THREE_ROUTES, CORRIDORS)}
+# Four walled corridors (blue, tan, green, red), joined at their left ends; each
+# gap is floor of the corridor above it.
+CORRIDORS4 = PuckMap(
+    name="corridors4",
+    rows=(
+        "##############",
+        "#bbbbbbbbbbbb#",
+        "#bbbbbbbbbbbb#",
+        "#bbbbbbbbbbbb#",
+        "#bbb##########",
+        "#tttttttttttt#",
+        "#tttttttttttt#",
+        "#tttttttttttt#",
+        "#ttt##########",
+        "#gggggggggggg#",
+        "#gggggggggggg#",
+        "#gggggggggggg#",
+        "#ggg##########",
+        "#rrrrrrrrrrrr#",
+        "#rrrrrrrrrrrr#",
+        "#rrrrrrrrrrrr#",
+        "##############",
+    ),
+    cell_size=0.4,
+    puck_start=(1.6, 5.8),
+    robot_start=(0.8, 5.8),
+    goal=(4.0, 5.8),
+)
+
+MAPS: dict[str, PuckMap] = {m.name: m for m in (THREE_ROUTES, CORRIDORS, CORRIDORS4)}
 
 
 @dataclass(frozen=True)

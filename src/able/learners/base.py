@@ -1,7 +1,7 @@
 """Base class for learners, and a learner that does nothing."""
 
 from abc import ABC, abstractmethod
-from typing import Any, Generic
+from typing import Generic
 
 import numpy as np
 
@@ -28,11 +28,6 @@ class Learner(ABC, Generic[HiddenParamsType, PlannerParamsType]):
         pool: WorkerPool | None = None,
     ) -> PlannerParamsType:
         """Return new planner parameters given the current belief and parameters."""
-
-    def get_sleep_log(self) -> dict[str, Any]:
-        """What the last sleep did, as columns of the cycle results; nothing by
-        default."""
-        return {}
 
 
 class NullLearner(Learner[HiddenParamsType, PlannerParamsType]):

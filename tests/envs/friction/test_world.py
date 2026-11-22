@@ -55,8 +55,8 @@ def test_floor_splits_cut_each_color_into_floors():
     assert floors == [0, 1, 2, 3, 1, 4, 5, 6, 7]
     rgb = np.array(puck_map.surface_rgb)
     assert np.allclose(rgb[0], COLOR_RGB[0]) and np.all(rgb[:2] > rgb[1:3])
-    assert THREE_ROUTES.surface_names == COLOR_NAMES
-    assert THREE_ROUTES.surface_rgb == COLOR_RGB
+    assert THREE_ROUTES.surface_names == COLOR_NAMES[:3]
+    assert THREE_ROUTES.surface_rgb == COLOR_RGB[:3]
 
 
 def test_slide_on_one_surface_stops_at_the_coulomb_distance():

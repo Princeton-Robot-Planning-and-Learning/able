@@ -4,34 +4,24 @@ An environment whose runs use several simulation budgets (friction's
 approach.num_sims) is plotted against cycles at its largest budget, and its success
 rate is also plotted against the budget, in budget_results.png.
 
-An environment whose evaluation covers several sites (friction_sites) plots each
-metric weighted by the sites' shares of the schedule, and the chance of a slow day.
-
 Example:
     python experiments/analysis/plot_cycle_results.py --results_dir logs/comparison
 """
 
 import argparse
-import functools
 from pathlib import Path
-from typing import Any, Sequence
 
-import hydra
 import numpy as np
 import pandas as pd
 from analysis_utils import combine_results_csvs, summarize_over_seeds
 from matplotlib import pyplot as plt
-from omegaconf import DictConfig, OmegaConf
 
 APPROACH_TO_DISPLAY_NAME = {
     "belief_coverage": "Belief coverage",
     "current_belief": "Current belief only",
-    "deliberate_practice": "Deliberate practice",
     "dreaming": "Dreaming",
-    "one_step_greedy": "One-step greedy",
     "prior_only": "Prior only (first sleep)",
     "scratch": "Plan from scratch",
-    "transfer_practice": "Transfer practice",
 }
 
 # Each approach keeps its color in every plot. Approaches without an entry take
@@ -41,25 +31,19 @@ APPROACH_TO_COLOR = {
     "scratch": "#eb6834",
     "current_belief": "#1baf7a",
     "prior_only": "#eda100",
-    "belief_coverage": "#e87ba4",
-    "transfer_practice": "#6250d6",
-    "deliberate_practice": "#008300",
-    "one_step_greedy": "#eda100",
 }
 EXTRA_COLORS = ["#e87ba4", "#008300", "#6250d6", "#e34948"]
 
 # The prior-only line often overlaps the scratch line, and their colors are close,
-# so it is also dashed. One-step greedy shares prior only's color, so it is dotted.
+# so it is also dashed.
 APPROACH_TO_LINESTYLE = {
     "prior_only": "--",
-    "one_step_greedy": ":",
 }
 
 ENV_TO_DISPLAY_NAME = {
     "two_link_arm": "Two-link arm",
     "limb": "Limb repositioning",
     "friction": "Friction",
-    "friction_sites": "Friction sites",
     "human_reach": "Human reach",
 }
 
@@ -75,7 +59,7 @@ TIMEOUT_METRIC = ("timed_out", "Timeout rate")
 # Environments whose rows also plot the planner's work per task, which does not
 # depend on the machine: limb's MPC rollouts.
 WORK_PANEL_ENVS = ("limb",)
-RATE_METRICS = ("success", "timed_out", "slow_day")
+RATE_METRICS = ("success", "timed_out")
 
 CAPTION = "Lines show the mean over seeds; shaded bands show one standard error."
 TIMEOUT_CAPTION = (
@@ -89,16 +73,8 @@ ENV_TO_PLANNER_WORK = {
     "two_link_arm": ("Samples per task", "num_samples", None),
     "limb": ("MPC rollouts per task", "num_rollouts", None),
     "friction": ("Simulations per push", "num_sims", "num_searches"),
-    "friction_sites": ("Simulations per task", "num_sims", None),
     "human_reach": ("Stream calls per task", "stream_calls", None),
 }
-
-# Rows with a site and its share of the schedule are averaged per site and then
-# weighted by the shares. A slow day is one whose site has a failed task or a task
-# whose planner work is above a threshold. Runs of these environments from before
-# the rows recorded sites get them from the run's domain.
-SITE_DOMAIN_ENVS = ("friction_sites",)
-SLOW_DAY_METRIC = ("slow_day", "Chance of a slow day")
 
 # Success against the simulation budget is taken over the last cycles, after the
 # robots have learned.
@@ -133,14 +109,7 @@ def _get_env_panels(
     env: str, env_df: pd.DataFrame, metrics: list[tuple[str, str]]
 ) -> tuple[pd.DataFrame, list[tuple[str, str]]]:
     """One environment's rows and panels: the shared metrics, plus the planner's
-    work per task in WORK_PANEL_ENVS when the runs record it. Schedule-weighted
-    rows also plot their planner work and the chance of a slow day."""
-    if _is_weighted(env_df):
-        panels = [metric for metric in metrics if metric != TIMEOUT_METRIC]
-        if _has_values(env_df, "planner_work"):
-            panels.append(("planner_work", ENV_TO_PLANNER_WORK[env][0]))
-        panels.append(SLOW_DAY_METRIC)
-        return env_df, panels + [m for m in metrics if m == TIMEOUT_METRIC]
+    work per task in WORK_PANEL_ENVS when the runs record it."""
     work = _get_planner_work(env, env_df) if env in WORK_PANEL_ENVS else None
     if work is None:
         return env_df, list(metrics)
@@ -148,126 +117,8 @@ def _get_env_panels(
     return env_df.assign(planner_work=values), [*metrics, ("planner_work", label)]
 
 
-def add_missing_sites(df: pd.DataFrame, cfg: DictConfig) -> pd.DataFrame:
-    """For a run in SITE_DOMAIN_ENVS whose rows lack them, each task's site and
-    its share of the schedule, from the run's domain, whose evaluation tasks go
-    site by site, a routine each."""
-    if cfg.env_name not in SITE_DOMAIN_ENVS or "site" in df.columns:
-        return df
-    routines = _get_task_distribution(OmegaConf.to_yaml(cfg.env.domain), int(cfg.seed))
-    sites = df["task_id"].to_numpy() // len(routines.get_routine(0))
-    return df.assign(site=sites, schedule_share=routines.schedule[sites])
-
-
-@functools.cache
-def _get_task_distribution(domain_yaml: str, seed: int) -> Any:
-    domain = hydra.utils.instantiate(OmegaConf.create(domain_yaml), seed=seed)
-    return domain.task_distribution
-
-
-def has_sites(df: pd.DataFrame) -> bool:
-    """Whether every row has a site and the site's share of the schedule."""
-    columns = ["site", "schedule_share"]
-    return set(columns) <= set(df.columns) and bool(df[columns].notna().all().all())
-
-
-def get_slow_work(
-    df: pd.DataFrame, slow_work: float | None
-) -> tuple[float | None, str]:
-    """The planner work per task above which a task makes its day slow, and where
-    it comes from: slow_work if given, else the median of scratch's tasks, else
-    None, so only failures do."""
-    if slow_work is not None:
-        return slow_work, "given"
-    scratch = pd.Series(dtype=np.float64)
-    if "planner_work" in df.columns:
-        scratch = df.loc[df["approach"] == "scratch", "planner_work"].dropna()
-    if scratch.empty:
-        return None, "no scratch runs"
-    return float(scratch.median()), "scratch's median"
-
-
-def weigh_sites(
-    df: pd.DataFrame, metrics: Sequence[str], slow_work: float | None
-) -> pd.DataFrame:
-    """One row per run and cycle: each metric averaged over each site's tasks and
-    then over sites by their shares of the schedule, and slow_day, the share at
-    sites with a failed task or a task whose planner_work is above slow_work.
-    Shares are normalized over the sites evaluated, and a site without a value
-    of a metric is left out of its average."""
-    keys = [
-        key
-        for key in ("env", "approach", "seed", "cycle", "simulation_budget")
-        if key in df.columns
-    ]
-    slow = ~df["success"].astype(bool)
-    if slow_work is not None:
-        slow |= df["planner_work"] > slow_work
-    per_site = (
-        df.assign(slow_day=slow)
-        .astype({metric: np.float64 for metric in [*metrics, "slow_day"]})
-        .groupby([*keys, "site"], dropna=False)
-        .agg(
-            {
-                **{metric: "mean" for metric in metrics},
-                "slow_day": "max",
-                "schedule_share": "first",
-            }
-        )
-    )
-    values = per_site[[*metrics, "slow_day"]]
-    shares = per_site["schedule_share"]
-    totals = values.mul(shares, axis=0).groupby(level=keys, dropna=False).sum()
-    weights = values.notna().mul(shares, axis=0).groupby(level=keys, dropna=False)
-    return (totals / weights.sum()).reset_index()
-
-
-def _weigh_site_envs(
-    df: pd.DataFrame, metrics: Sequence[str], slow_work: float | None
-) -> tuple[pd.DataFrame, list[str]]:
-    """The rows, with each environment's that have sites replaced by their
-    schedule-weighted rows per run and cycle, and a caption line for each such
-    environment."""
-    frames, captions = [], []
-    for env, env_df in df.groupby("env"):
-        if not has_sites(env_df):
-            frames.append(env_df)
-            continue
-        columns = list(metrics)
-        threshold = None
-        caption = (
-            f"{ENV_TO_DISPLAY_NAME.get(str(env), env)}: each site's mean is weighted"
-            " by its share of the schedule. A slow day's site has a failed task"
-        )
-        work = _get_planner_work(str(env), env_df)
-        if work is not None:
-            env_df = env_df.assign(planner_work=work[1])
-            columns.append("planner_work")
-            threshold, source = get_slow_work(env_df, slow_work)
-            caption += (
-                f" ({source} to set a threshold on {work[0].lower()})"
-                if threshold is None
-                else f" or a task above {threshold:g} {work[0].lower()} ({source})"
-            )
-        frames.append(weigh_sites(env_df, columns, threshold))
-        captions.append(caption + ".")
-    if not captions:
-        return df, captions
-    # Weighted rates are fractions, so every environment's become floats.
-    combined = pd.concat(frames, ignore_index=True)
-    return combined.astype({metric: np.float64 for metric in metrics}), captions
-
-
-def _is_weighted(df: pd.DataFrame) -> bool:
-    return _has_values(df, "slow_day")
-
-
-def _has_values(df: pd.DataFrame, column: str) -> bool:
-    return column in df.columns and bool(df[column].notna().any())
-
-
-def _main(results_dir: Path, outfile: Path, slow_work: float | None = None) -> None:
-    all_df = combine_results_csvs(results_dir, "eval_results.csv", add_missing_sites)
+def _main(results_dir: Path, outfile: Path) -> None:
+    all_df = combine_results_csvs(results_dir, "eval_results.csv")
     budget_envs = _get_budget_envs(all_df)
     # Against cycles, an environment with several budgets shows its largest.
     df = _at_full_budget(all_df)
@@ -277,7 +128,6 @@ def _main(results_dir: Path, outfile: Path, slow_work: float | None = None) -> N
         # recorded.
         df["timed_out"] = df["timed_out"].fillna(False).astype(bool)
         metrics.append(TIMEOUT_METRIC)
-    df, site_captions = _weigh_site_envs(df, [m for m, _ in metrics], slow_work)
     envs = sorted(df["env"].unique())
     approaches = sorted(df["approach"].unique())
     colors = _get_colors(approaches)
@@ -332,8 +182,6 @@ def _main(results_dir: Path, outfile: Path, slow_work: float | None = None) -> N
             if env in budget_envs:
                 budget = int(env_df["simulation_budget"].max())
                 title += f", {budget} simulations per push"
-            if _is_weighted(env_df):
-                title += ", schedule-weighted"
             ax.set_title(title + ")", fontsize=11)
             if metric in RATE_METRICS:
                 ax.set_ylim(0.0, 1.05)
@@ -353,7 +201,7 @@ def _main(results_dir: Path, outfile: Path, slow_work: float | None = None) -> N
         frameon=False,
         bbox_to_anchor=(0.5, 1.0),
     )
-    caption = "\n".join([CAPTION, *site_captions])
+    caption = CAPTION
     if _has_timeouts(df):
         caption += "\n" + TIMEOUT_CAPTION
     fig.text(
@@ -370,8 +218,6 @@ def _main(results_dir: Path, outfile: Path, slow_work: float | None = None) -> N
     fig.savefig(outfile, dpi=200, bbox_inches="tight")
     plt.close(fig)
     _print_final_cycle(df)
-    for line in site_captions:
-        print(line)
     print(f"Wrote plot to {outfile}")
     cycle_df = _at_full_budget(combine_results_csvs(results_dir, "cycle_results.csv"))
     table = _make_table(df, cycle_df)
@@ -603,10 +449,8 @@ def _make_table(eval_df: pd.DataFrame, cycle_df: pd.DataFrame) -> str:
         scale, unit = _get_time_scale(env_df["planning_wall_time"])
         env_df = env_df.assign(planning_time=env_df["planning_wall_time"] * scale)
         names = [APPROACH_TO_DISPLAY_NAME.get(a, a) for a in approaches]
-        weighted = _is_weighted(env_df)
         lines = [
-            f"### {ENV_TO_DISPLAY_NAME.get(env, env)}"
-            + (" (schedule-weighted)" if weighted else ""),
+            f"### {ENV_TO_DISPLAY_NAME.get(env, env)}",
             "",
             "| | " + " | ".join(names) + " |",
             "| --- |" + " --- |" * len(names),
@@ -618,11 +462,7 @@ def _make_table(eval_df: pd.DataFrame, cycle_df: pd.DataFrame) -> str:
         rows.append(("Success rate, all cycles", "success", 0, None))
         if _has_timeouts(env_df):
             rows.append(("Timeout rate, all cycles", "timed_out", 0, None))
-        work = (
-            (ENV_TO_PLANNER_WORK[env][0], env_df["planner_work"])
-            if weighted and _has_values(env_df, "planner_work")
-            else _get_planner_work(env, env_df)
-        )
+        work = _get_planner_work(env, env_df)
         if work is not None:
             work_label, work_values = work
             env_df = env_df.assign(planner_work=work_values)
@@ -630,12 +470,6 @@ def _make_table(eval_df: pd.DataFrame, cycle_df: pd.DataFrame) -> str:
                 (f"{work_label}, {name}", "planner_work", first, last)
                 for name, first, last in TABLE_WINDOWS
                 if name in ("cycle 0", "last 5 cycles")
-            ]
-        if weighted:
-            rows += [
-                (f"{SLOW_DAY_METRIC[1]}, {name}", "slow_day", first, last)
-                for name, first, last in TABLE_WINDOWS
-                if name != "cycles 1–4"
             ]
         for label, metric, first, last in rows:
             cells = [
@@ -690,11 +524,6 @@ def _print_final_cycle(df: pd.DataFrame) -> None:
             f"{env}, {approach}, cycle {group['cycle'].iloc[0]}: "
             f"planning time {time:.2f} {unit}, success rate {success:.2f}"
         )
-        if _is_weighted(group):
-            line += f", slow-day chance {np.mean(group['slow_day']):.2f}"
-            line += " (schedule-weighted)"
-            print(line)
-            continue
         num_timed_out = int(group["timed_out"].sum()) if _has_timeouts(group) else 0
         if num_timed_out:
             line += f", {num_timed_out} timed out"
@@ -710,17 +539,5 @@ if __name__ == "__main__":
         default=None,
         help="Defaults to cycle_results.png in the results directory.",
     )
-    parser.add_argument(
-        "--slow_work",
-        type=float,
-        default=None,
-        help="Planner work per task (friction_sites: simulations) above which a "
-        "task makes its site's day slow. Defaults to the median of scratch's "
-        "tasks, or to none, so only failures do, without scratch runs.",
-    )
     args = parser.parse_args()
-    _main(
-        args.results_dir,
-        args.outfile or args.results_dir / "cycle_results.png",
-        args.slow_work,
-    )
+    _main(args.results_dir, args.outfile or args.results_dir / "cycle_results.png")

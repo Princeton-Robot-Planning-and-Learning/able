@@ -1,24 +1,18 @@
 """Utilities for loading and summarizing experiment results."""
 
 from pathlib import Path
-from typing import Callable
 
 import pandas as pd
 from omegaconf import DictConfig, OmegaConf
 
 
-def combine_results_csvs(
-    directory: Path,
-    results_filename: str,
-    add_columns: Callable[[pd.DataFrame, DictConfig], pd.DataFrame] | None = None,
-) -> pd.DataFrame:
+def combine_results_csvs(directory: Path, results_filename: str) -> pd.DataFrame:
     """Combine one results file from every run under the directory.
 
     A run is a directory that contains the results file and the resolved config.yaml
     written by run_single_experiment.py. Each row gets the run's environment, approach,
     and seed, and, for planners with a simulation budget (friction's POMCPOW), its
-    simulations per push as simulation_budget. add_columns, if given, may add
-    columns to each run's rows from its config.
+    simulations per push as simulation_budget.
     """
     frames = []
     for config_path in sorted(directory.rglob("config.yaml")):
@@ -34,8 +28,6 @@ def combine_results_csvs(
         budget = OmegaConf.select(cfg, "approach.num_sims")
         if budget is not None:
             df["simulation_budget"] = int(budget)
-        if add_columns is not None:
-            df = add_columns(df, cfg)
         frames.append(df)
     assert frames, f"No {results_filename} files found under {directory}"
     return pd.concat(frames, ignore_index=True)
