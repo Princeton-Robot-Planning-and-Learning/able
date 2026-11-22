@@ -1,6 +1,6 @@
 _target_: able.approaches.make_friction_site_belief_coverage_robot
-# Candidate (site, belief) pairs per unit.
-num_candidates: 16
+# Candidate (site, belief) pairs dreamed per unit, as for the allocation rules.
+num_candidates: 4
 # Most POMCPOW simulations per push, and the search depth in pushes.
 num_sims: 100
 max_depth: 8

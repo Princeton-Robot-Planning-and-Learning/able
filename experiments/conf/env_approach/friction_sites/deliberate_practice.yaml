@@ -1,8 +1,10 @@
 _target_: able.approaches.make_friction_site_allocation_robot
 num_units: ${budgets.sleep.max_iterations}
 rule: deliberate_practice
-# Candidate (site, belief) pairs drawn per unit, by the schedule.
-dreams_per_unit: 16
+# Candidate (site, belief) pairs dreamed per unit: each the belief after an
+# imagined day (a probe and a task) at a site drawn by the schedule, focused on
+# a site drawn the same way. A dream runs a whole POMCPOW episode, so few.
+dreams_per_unit: 4
 # A site's predicted gain rises linearly from ramp_passes[0] to ramp_passes[1]
 # passes over its routine (a pass is routine_size / num_training_tasks units),
 # and a unit counts fully toward sites on the same routine,

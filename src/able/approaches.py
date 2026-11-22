@@ -1973,6 +1973,13 @@ def _make_friction_site_robot(
     )
 
 
+def _focus_dreams(dreamer: Any, schedule: NDArray[np.float64]) -> SiteFocusSource:
+    """Dreams focused on sites drawn with the schedule. The schedule is given as
+    a function so that the dreams are made in this process, where revised
+    routines stay current."""
+    return SiteFocusSource(dreamer, lambda: schedule)
+
+
 def make_friction_site_scratch_robot(
     domain: FrictionSiteDomain,
     num_sims: int = 100,
@@ -2055,8 +2062,7 @@ def make_friction_site_dreaming_robot(
         domain,
         model,
         planning_budget,
-        # A changing schedule keeps the dreams here, where routines stay current.
-        lambda schedule, dreamer: SiteFocusSource(dreamer, lambda: schedule),
+        lambda schedule, dreamer: _focus_dreams(dreamer, schedule),
         num_sims,
         max_depth,
         early_stop,
@@ -2088,12 +2094,11 @@ def make_friction_site_belief_coverage_robot(
     recorder: CycleRecorder[Any, Any, Any] | None = None,
 ) -> FrictionSiteRobot:
     """A robot for several friction sites whose units each train for the
-    farthest of num_candidates (site, belief) pairs, drawn by the schedule, from
-    those it has trained for, by the site's index, the moments of its belief,
-    and how many times its routine has been revised. The candidates are the
-    current belief, so the gathering and execution budgets, which dreams would
-    imagine, are unused."""
-    del recorder, gathering_budget, execution_budget  # unused without dreams
+    farthest of num_candidates (site, belief) pairs from those it has trained
+    for, by the site's index, the moments of its belief, and how many times its
+    routine has been revised. Each candidate is a dream of the belief after a
+    day at a site drawn with the schedule, focused on a site drawn the same way.
+    The budgets should match the cycle budgets."""
     site_model, routines = domain.env_model, domain.task_distribution
     assert isinstance(site_model, MultiSiteModel)
     assert isinstance(site_model.inner, FrictionModel)
@@ -2109,8 +2114,8 @@ def make_friction_site_belief_coverage_robot(
         domain,
         model,
         planning_budget,
-        lambda schedule, _: BeliefCoverageSource(
-            SiteFocusSource(CurrentBeliefSource(), schedule),
+        lambda schedule, dreamer: BeliefCoverageSource(
+            _focus_dreams(dreamer, schedule),
             features,
             num_candidates,
             remember_chosen=not keep_only_last_sleep,
@@ -2123,6 +2128,8 @@ def make_friction_site_belief_coverage_robot(
         value_model,
         num_training_tasks,
         keep_only_last_sleep,
+        (gathering_budget, execution_budget),
+        recorder,
     )
 
 
@@ -2183,11 +2190,11 @@ def make_friction_site_allocation_robot(
     rest, scaled by the cosine similarity of the routines' floor shares and
     times the transfer between the beliefs' moments (see make_moment_transfer).
     deliberate_practice counts units only toward the site they trained for, by
-    the same transfer. num_units should match the sleep budget's iterations.
-    The candidates are the current belief, so the gathering and execution
-    budgets, which dreams would imagine, are unused.
+    the same transfer. The candidates are dreams of the belief after a day at a
+    site drawn with the schedule, each focused on a site drawn the same way.
+    num_units should match the sleep budget's iterations, and the budgets the
+    cycle budgets.
     """
-    del recorder, gathering_budget, execution_budget  # unused without dreams
     site_model, routines = domain.env_model, domain.task_distribution
     assert isinstance(site_model, MultiSiteModel)
     assert isinstance(site_model.inner, FrictionModel)
@@ -2243,8 +2250,8 @@ def make_friction_site_allocation_robot(
         domain,
         model,
         planning_budget,
-        lambda schedule, _: AllocationSource(
-            SiteFocusSource(CurrentBeliefSource(), schedule),
+        lambda schedule, dreamer: AllocationSource(
+            _focus_dreams(dreamer, schedule),
             allocation_model,
             rule,
             num_units,
@@ -2259,4 +2266,6 @@ def make_friction_site_allocation_robot(
         value_model,
         num_training_tasks,
         keep_only_last_sleep,
+        (gathering_budget, execution_budget),
+        recorder,
     )
