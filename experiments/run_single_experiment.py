@@ -272,9 +272,9 @@ def _get_eval_rows(
 
 def _get_cycle_rows(results: list[CycleResult]) -> list[dict[str, Any]]:
     """One row per cycle, with the wall time of each stage and of the whole cycle,
-    what the robot did between sleeping and evaluation, and the belief it was
-    evaluated under. An executed task that timed out moved nothing, so it showed
-    nothing about the hidden parameters."""
+    what the robot did between sleeping and evaluation, the belief it was
+    evaluated under, and the learner's sleep log. An executed task that timed out
+    moved nothing, so it showed nothing about the hidden parameters."""
     return [
         {
             "cycle": result.cycle,
@@ -288,6 +288,7 @@ def _get_cycle_rows(results: list[CycleResult]) -> list[dict[str, Any]]:
             "num_executed_successes": sum(e.success for e in result.executions),
             "num_executed_timeouts": sum(e.timed_out for e in result.executions),
             **_get_belief_columns(result.belief),
+            **result.sleep_log,
         }
         for result in results
     ]

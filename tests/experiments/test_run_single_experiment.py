@@ -268,6 +268,16 @@ def test_writer_keeps_finished_cycles(tmp_path: Path) -> None:
     ]
 
 
+def test_cycle_rows_hold_the_sleep_log() -> None:
+    """Tests that each cycle's row holds its learner's sleep log, which adds no
+    columns for learners that log nothing."""
+    result = _run_arm_cycles(1)[0]
+    get_rows = _load_script()._get_cycle_rows  # pylint: disable=protected-access
+    assert "training_sites" not in get_rows([result])[0]
+    logged = dataclasses.replace(result, sleep_log={"training_sites": "2;0"})
+    assert get_rows([logged])[0]["training_sites"] == "2;0"
+
+
 class _ChangingSchedule:
     """A stand-in task distribution whose schedule over two sites changes."""
 

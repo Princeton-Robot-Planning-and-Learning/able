@@ -1,7 +1,7 @@
 """The cycle of sleep, information gathering, task execution, and evaluation."""
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Generic, Sequence
 
 import numpy as np
@@ -62,7 +62,9 @@ class CycleResult(
     is also the belief the robot was evaluated under. The stage wall times cover
     sleeping, asking queries and updating the belief with the responses, executing
     tasks, and evaluating. The cycle's wall time covers the whole cycle, including
-    the recorder's work between stages, so it is at least their sum.
+    the recorder's work between stages, so it is at least their sum. The sleep
+    log is what the learner recorded about the cycle's sleep
+    (Learner.get_sleep_log()).
     """
 
     cycle: int
@@ -75,6 +77,7 @@ class CycleResult(
     executions: list[EpisodeResult[StateType, ActType, TaskType]]
     belief: Belief[HiddenParamsType]
     evaluations: list[EpisodeResult[StateType, ActType, TaskType]]
+    sleep_log: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -348,6 +351,7 @@ def run_cycles(
         start_time = time.perf_counter()
         robot.sleep(budgets.sleep, sleep_rng, pool)
         sleep_wall_time = time.perf_counter() - start_time
+        sleep_log = robot.learner.get_sleep_log()
         recorder.end_stage()
 
         recorder.start_stage(cycle, Stage.QUERIES)
@@ -409,6 +413,7 @@ def run_cycles(
             executions=executions,
             belief=robot.belief,
             evaluations=evaluations,
+            sleep_log=sleep_log,
         )
         results.append(result)
         if on_cycle_end is not None:
