@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from able.beliefs.particles import ParticleBelief
 from able.beliefs.sites import SiteBelief
@@ -108,7 +109,7 @@ def test_near_goal_states_filters_rows() -> None:
 
 def test_measure_and_plot(tmp_path: Path) -> None:
     """Tests the rows for a psi that always aims at the goal at a landing speed,
-    and that the figure is written."""
+    and that the figure of the robot that trained every site is written."""
     script = _load_script()
     pomdp = _pomdp()
     state = _near_goal(script, pomdp)
@@ -147,3 +148,5 @@ def test_measure_and_plot(tmp_path: Path) -> None:
     out = tmp_path / "theta_psi.png"
     script.plot(pd.concat([rows, every]), seed=0, out=out)
     assert out.exists() and out.stat().st_size > 0
+    with pytest.raises(AssertionError, match="trained every site"):
+        script.plot(rows, seed=0, out=out)
