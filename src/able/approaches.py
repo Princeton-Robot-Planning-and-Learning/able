@@ -2126,6 +2126,21 @@ def make_friction_site_belief_coverage_robot(
     )
 
 
+def get_ramp_units(
+    ramp: tuple[float, float],
+    ramp_passes: tuple[float, float] | None,
+    routine_size: int,
+    num_training_tasks: int,
+) -> tuple[float, float]:
+    """The effective units where a ramp gain starts and ends: ramp, or with
+    ramp_passes, those numbers of passes over a routine of routine_size tasks
+    when each unit plans num_training_tasks of them."""
+    if ramp_passes is None:
+        return ramp
+    units_per_pass = routine_size / num_training_tasks
+    return ramp_passes[0] * units_per_pass, ramp_passes[1] * units_per_pass
+
+
 def make_friction_site_allocation_robot(
     domain: FrictionSiteDomain,
     gathering_budget: Budget,
@@ -2139,6 +2154,7 @@ def make_friction_site_allocation_robot(
     transfer_length: float = 2.2,
     narrowing_rate: float = 0.2,
     ramp_start: float = 1.0,
+    ramp_passes: tuple[float, float] | None = None,
     shared_floor_transfer: float = 0.55,
     other_transfer: float = 0.28,
     num_training_tasks: int = 2,
@@ -2159,11 +2175,13 @@ def make_friction_site_allocation_robot(
     a site gains nothing until it has run_length effective units, and units
     count fully toward sites on the same routine whose beliefs are within the
     cache's lending distance. With another model, a site's gain rises linearly
-    from ramp_start effective units to run_length. A unit counts fully toward
-    sites on the same routine, shared_floor_transfer toward routines whose paths
-    cross the same floors, and other_transfer toward the rest, scaled by the
-    cosine similarity of the routines' floor shares and times the transfer
-    between the beliefs' moments (see make_moment_transfer).
+    from ramp_start effective units to run_length, or, with ramp_passes, from
+    and to those numbers of passes over a routine, each routine_size /
+    num_training_tasks units, so longer routines need more units. A unit counts
+    fully toward sites on the same routine, shared_floor_transfer toward
+    routines whose paths cross the same floors, and other_transfer toward the
+    rest, scaled by the cosine similarity of the routines' floor shares and
+    times the transfer between the beliefs' moments (see make_moment_transfer).
     deliberate_practice counts units only toward the site they trained for, by
     the same transfer. num_units should match the sleep budget's iterations.
     The candidates are the current belief, so the gathering and execution
@@ -2207,7 +2225,14 @@ def make_friction_site_allocation_robot(
         gain=(
             get_cliff_gain(run_length)
             if cliff
-            else get_ramp_gain(ramp_start, run_length)
+            else get_ramp_gain(
+                *get_ramp_units(
+                    (ramp_start, run_length),
+                    ramp_passes,
+                    len(routines.get_routine(0)),
+                    num_training_tasks,
+                )
+            )
         ),
         combine="sum",
         run_length=run_length if cliff else None,
