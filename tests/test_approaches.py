@@ -732,3 +732,14 @@ def test_make_friction_site_robots():
     for robot in robots[:3]:
         assert isinstance(robot.planner_params.model, ExactMatchCache)
     assert robots[-1].planner_params.value_model.x is not None
+
+
+def test_ramp_units_scale_with_routine_size():
+    """Tests that a ramp in passes over a routine needs twice the units for a
+    routine twice as long, and that without passes the ramp is in units."""
+    # pylint: disable=import-outside-toplevel
+    from able.approaches import get_ramp_units
+
+    assert get_ramp_units((1.0, 4.0), None, 16, 2) == (1.0, 4.0)
+    assert get_ramp_units((1.0, 4.0), (0.25, 1.0), 8, 2) == (1.0, 4.0)
+    assert get_ramp_units((1.0, 4.0), (0.25, 1.0), 16, 2) == (2.0, 8.0)

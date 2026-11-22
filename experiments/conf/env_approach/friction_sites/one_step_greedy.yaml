@@ -3,17 +3,20 @@ num_units: ${budgets.sleep.max_iterations}
 rule: one_step_greedy
 # Candidate (site, belief) pairs drawn per unit, by the schedule.
 dreams_per_unit: 16
-# A site's predicted gain rises linearly from ramp_start effective units to
-# run_length, and a unit counts fully toward sites on the same routine,
+# A site's predicted gain rises linearly from ramp_passes[0] to ramp_passes[1]
+# passes over its routine (a pass is routine_size / num_training_tasks units),
+# and a unit counts fully toward sites on the same routine,
 # shared_floor_transfer toward routines whose paths cross the same floors, and
-# other_transfer toward the rest. Fit to the transfer probe
-# (experiments/probe_site_transfer.py): 8 units saved 0.9, 0.5, and 0.3 as many
-# simulations at those sites as at the trained one, and the trained site gained
-# little after 1 unit and most by 4.
+# other_transfer toward the rest. Fit to the four-corridor transfer probe
+# (experiments/analysis/fit_site_allocation.py): the trained site gained 0.06,
+# 0.5, 0.9, and 1.0 of its saving after 1, 2, 4, and 8 units of an 8-task
+# routine, and other corridors 0.18 effective units per unit.
+# shared_floor_transfer is from the three-corridor probe, which had a site in
+# the trained site's corridor. run_length is the cliff for a push cache.
 run_length: 4
-ramp_start: 1
+ramp_passes: [0.2, 0.8]
 shared_floor_transfer: 0.55
-other_transfer: 0.28
+other_transfer: 0.18
 # Most POMCPOW simulations per push, and the search depth in pushes.
 num_sims: 100
 max_depth: 8
