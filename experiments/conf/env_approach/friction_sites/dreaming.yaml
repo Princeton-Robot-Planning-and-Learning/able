@@ -30,13 +30,14 @@ model:
 # Corrects the leaf values with the returns of the rollouts while sleeping, by
 # kernel regression on the distance and heading (cos, sin) to the goal, pushes
 # left, the log of the believed friction along the straight route and its
-# spread over its mean, and the puck's and goal's (x, y), with these bandwidths,
-# so data from one place and friction level count little at another. Where the
-# data are sparse, the correction falls back to zero (the path-distance value),
-# not to the mean over all rollouts.
+# spread over its mean, and the puck's and goal's (x, y), with these bandwidths.
+# Corridors run along x and lie 1.6 m apart in y, so a wide x bandwidth shares
+# data along a corridor and a narrow y bandwidth keeps it from the others. Where
+# the data are sparse, the correction falls back to zero (the path-distance
+# value), not to the mean over all rollouts.
 value_model:
   _target_: able.models.kernel_regression.KernelRegressor
-  bandwidths: [0.75, 1.0, 1.0, 3.0, 0.35, 0.1, 0.5, 0.5, 0.5, 0.5]
+  bandwidths: [0.75, 1.0, 1.0, 3.0, 0.35, 0.1, 2.0, 0.5, 2.0, 0.5]
   prior_weight: 4.0
   fallback: zero
 value_features:
