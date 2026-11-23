@@ -82,6 +82,46 @@ def test_routines_stay_in_their_corridors():
         assert all(in_corridor) if inside else not all(in_corridor)
 
 
+def test_revised_routines_move_to_other_corridors():
+    """Tests that with revision_region "other" every revision moves a group's
+    routine to a corridor other than its last one."""
+    # pylint: disable=no-member
+    domain = make_site_domain(
+        seed=0,
+        group_sizes=(1, 1),
+        routine_size=4,
+        num_particles=10,
+        revision_rate=1.0,
+        revision_region="other",
+    )
+    world = domain.env_model.inner.world  # type: ignore[attr-defined]
+    colors = world.puck_map.surface_colors
+    routines = domain.task_distribution
+    assert isinstance(routines, SiteRoutineTaskDistribution)
+
+    def get_corridors() -> list[int]:
+        corridors = []
+        for site in range(2):
+            points = [
+                point
+                for task in routines.get_routine(site)
+                for point in (task.inner.initial_state.puck, task.inner.goal)
+            ]
+            found = {colors[world.surface_at(np.array(p))] for p in points}
+            assert len(found) == 1
+            corridors.append(found.pop())
+        return corridors
+
+    last = get_corridors()
+    assert last == [0, 1]
+    rng = np.random.default_rng(0)
+    for _ in range(4):
+        routines.start_day(rng)
+        corridors = get_corridors()
+        assert all(c != b for c, b in zip(corridors, last))
+        last = corridors
+
+
 def test_prior_survey_and_route_floors():
     """Tests that the prior survey starts every site from the prior, that the robot
     works at one site a day, and that a corridor's routine crosses only its
