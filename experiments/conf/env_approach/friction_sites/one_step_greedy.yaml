@@ -53,13 +53,13 @@ model:
 # spread over its mean, and the puck's and goal's (x, y), with these bandwidths.
 # Corridors run along x and lie 1.6 m apart in y, so a wide x bandwidth shares
 # data along a corridor and a narrow y bandwidth keeps it from the others. Where
-# the data are sparse, the correction falls back to zero (the path-distance
-# value), not to the mean over all rollouts.
+# the data are sparse, the correction falls back to the mean over all rollouts,
+# an offset every leaf then shares; falling back to zero instead left leaves on
+# different scales and lowered success.
 value_model:
   _target_: able.models.kernel_regression.KernelRegressor
   bandwidths: [0.75, 1.0, 1.0, 3.0, 0.35, 0.1, 2.0, 0.5, 2.0, 0.5]
   prior_weight: 4.0
-  fallback: zero
 value_features:
   _target_: able.planners.pomcpow.ValueFeatures
   position: true
