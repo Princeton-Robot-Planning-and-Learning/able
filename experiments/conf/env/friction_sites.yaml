@@ -15,6 +15,9 @@ env:
     region_overlap: 0.0
     # Chance that each group's routine is revised at the start of each new day.
     revision_rate: 0.0
+    # Where a revised routine goes: its group's region (same), or another region
+    # drawn uniformly (other).
+    revision_region: same
     sim: 2d
     # The corridors maze, with num_holes holes in each corridor.
     maze: corridors4

@@ -52,6 +52,7 @@ def make_site_domain(
     prior: FrictionPrior = DEFAULT_FRICTION_PRIOR,
     maze: str = "corridors4",
     region_overlap: float = 0.0,
+    revision_region: str = "same",
     survey: str = "prior",
     friction_groups: str = "same",
     group_friction: str = "base",
@@ -80,7 +81,9 @@ def make_site_domain(
     single-site friction domain, each from anywhere in the maze with probability
     region_overlap and otherwise from the group's region: the floors of one
     color, group g's being color g mod the number of colors. Each new day
-    revises each group's routine with probability revision_rate. The robot works
+    revises each group's routine with probability revision_rate, in the same
+    region with revision_region "same", or in another region drawn uniformly with
+    "other", where what the robot learned for the old one barely helps. The robot works
     at one site each day, drawn with its share of a random schedule.
     """
     rng = np.random.default_rng(seed)
@@ -139,10 +142,13 @@ def make_site_domain(
         for color in range(int(colors.max()) + 1)
     ]
 
+    assert revision_region in ("same", "other"), f"Unknown {revision_region!r}"
+    region_of = [g % len(regions) for g in range(len(group_sizes))]
+
     def draw_routine(
         group: int, routine_rng: np.random.Generator
     ) -> list[FrictionTask]:
-        region = regions[group % len(regions)]
+        region = regions[region_of[group]]
         return [
             (
                 base.task_distribution
@@ -152,13 +158,21 @@ def make_site_domain(
             for _ in range(routine_size)
         ]
 
+    def revise_routine(
+        group: int, routine_rng: np.random.Generator
+    ) -> list[FrictionTask]:
+        if revision_region == "other":
+            others = [r for r in range(len(regions)) if r != region_of[group]]
+            region_of[group] = int(routine_rng.choice(others))
+        return draw_routine(group, routine_rng)
+
     routines = [draw_routine(g, rng) for g in range(len(group_sizes))]
     schedule = rng.dirichlet(np.ones(len(group_of)))
     model = MultiSiteModel(base.env_model)
     return Domain(
         env_model=model,
         task_distribution=SiteRoutineTaskDistribution(
-            routines, group_of, schedule, revision_rate, draw_routine, rng
+            routines, group_of, schedule, revision_rate, revise_routine, rng
         ),
         initial_belief=SiteBelief(surveys),
         real_env=SimulatedEnvironment(model, truths, rng),

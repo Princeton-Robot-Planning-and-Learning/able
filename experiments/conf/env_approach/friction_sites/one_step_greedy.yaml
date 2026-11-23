@@ -5,20 +5,21 @@ rule: one_step_greedy
 # imagined day (a probe and a task) at a site drawn by the schedule, focused on
 # a site drawn the same way. A dream runs a whole POMCPOW episode, so few.
 dreams_per_unit: 4
-# A site's predicted gain rises linearly from ramp_passes[0] to ramp_passes[1]
-# passes over its routine (a pass is routine_size / num_training_tasks units),
-# and a unit counts fully toward sites on the same routine,
+# A site's predicted gain rises linearly from ramp_start to run_length
+# effective units, and a unit counts fully toward sites on the same routine,
 # shared_floor_transfer toward routines whose paths cross the same floors, and
-# other_transfer toward the rest. Fit to the four-corridor transfer probe
-# (experiments/analysis/fit_site_allocation.py): the trained site gained 0.06,
-# 0.5, 0.9, and 1.0 of its saving after 1, 2, 4, and 8 units of an 8-task
-# routine, and other corridors 0.18 effective units per unit.
-# shared_floor_transfer is from the three-corridor probe, which had a site in
-# the trained site's corridor. run_length is the cliff for a push cache.
-run_length: 4
-ramp_passes: [0.2, 0.8]
+# other_transfer toward the rest. Fit to the crossed transfer probe with the
+# local value model: the trained site gained nothing after 2 units, a fifth of
+# its saving after 4, and all of it after 8, while sites in other corridors, or
+# at other frictions on the same tasks, gained nothing. The ramp is in units,
+# not passes over a routine, since the local value model shares data along a
+# corridor. shared_floor_transfer is from the three-corridor probe. run_length
+# is also the cliff for a push cache.
+ramp_start: 2
+run_length: 8
+ramp_passes: null
 shared_floor_transfer: 0.55
-other_transfer: 0.18
+other_transfer: 0.0
 # Most POMCPOW simulations per push, and the search depth in pushes.
 num_sims: 100
 max_depth: 8
