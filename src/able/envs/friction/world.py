@@ -102,6 +102,8 @@ class PuckMap:
     goal: tuple[float, float]
     holes: tuple[tuple[float, float], ...] = ()
     floor_splits: tuple[float, ...] = ()
+    # Centers of single-cell obstacles, which are also walls in `rows`.
+    obstacles: tuple[tuple[float, float], ...] = ()
 
     @property
     def num_cols(self) -> int:
@@ -313,7 +315,28 @@ CORRIDORS4 = PuckMap(
     goal=(4.0, 5.8),
 )
 
-MAPS: dict[str, PuckMap] = {m.name: m for m in (THREE_ROUTES, CORRIDORS, CORRIDORS4)}
+# One walled corridor, for sites whose routines each bring their own holes and
+# obstacles (layout.py).
+CORRIDOR1 = PuckMap(
+    name="corridor1",
+    rows=(
+        "################",
+        "#bbbbbbbbbbbbbb#",
+        "#bbbbbbbbbbbbbb#",
+        "#bbbbbbbbbbbbbb#",
+        "#bbbbbbbbbbbbbb#",
+        "#bbbbbbbbbbbbbb#",
+        "################",
+    ),
+    cell_size=0.4,
+    puck_start=(1.6, 1.4),
+    robot_start=(0.8, 1.4),
+    goal=(4.8, 1.4),
+)
+
+MAPS: dict[str, PuckMap] = {
+    m.name: m for m in (THREE_ROUTES, CORRIDORS, CORRIDORS4, CORRIDOR1)
+}
 
 
 @dataclass(frozen=True)

@@ -10,13 +10,18 @@ own friction, so a task crosses only some of the floors.
 
 The corridors mazes, for several sites, have three (corridors: blue, tan, green)
 or four (corridors4: and red) walled corridors joined at their left ends, each with
-the same holes.
+the same holes. corridor1 is one walled corridor, whose holes and single-cell
+obstacles a layout sets (draw_layout, get_layout_world).
 """
 
 import dataclasses
+from collections import OrderedDict
 from typing import Any
 
+import numpy as np
+
 from able.envs.friction.world import (
+    CORRIDOR1,
     CORRIDORS,
     CORRIDORS4,
     DEFAULT_FRICTION_PRIOR,
@@ -54,6 +59,9 @@ CORRIDOR_MAZES: dict[str, tuple[PuckMap, tuple[float, ...]]] = {
     "corridors": (CORRIDORS, CORRIDOR_BOTTOMS),
     "corridors4": (CORRIDORS4, (5.2, 3.6, 2.0, 0.4)),
 }
+# corridor1's default holes, and its floors: whole, or cut into four stretches.
+CORRIDOR1_HOLES = ((2.6, 1.0), (4.0, 1.8))
+CORRIDOR1_FLOOR_SPLITS: dict[int, tuple[float, ...]] = {1: (), 4: (1.8, 3.2, 4.6)}
 
 
 def make_world(
@@ -62,7 +70,7 @@ def make_world(
     num_floors: int = 3,
     maze: str = "threeroutes",
 ) -> PuckWorld:
-    """The maze ("threeroutes", "corridors", or "corridors4") with num_holes
+    """The maze ("threeroutes", "corridors", "corridors4", or "corridor1") with num_holes
     holes, the goal radius, and num_floors floors: a key of FLOOR_SPLITS on
     threeroutes, and on a corridors maze one or three per corridor. On
     threeroutes the holes are the first num_holes of HOLES; on a corridors maze,
@@ -80,8 +88,11 @@ def make_world(
             for bottom in bottoms
             for dx, dy in CORRIDOR_HOLES[:num_holes]
         )
+    elif maze == "corridor1":
+        base, all_holes, splits = CORRIDOR1, CORRIDOR1_HOLES, CORRIDOR1_FLOOR_SPLITS
+        holes = all_holes[:num_holes]
     else:
-        names = ["threeroutes", *CORRIDOR_MAZES]
+        names = ["threeroutes", *CORRIDOR_MAZES, "corridor1"]
         raise ValueError(f"Unknown maze {maze!r}; expected one of {names}")
     if not 0 <= num_holes <= len(all_holes):
         raise ValueError(f"num_holes must be in [0, {len(all_holes)}], got {num_holes}")
@@ -131,3 +142,125 @@ def make_sim(sim: str, world: PuckWorld) -> Any:
             )
         )
     raise ValueError(f"Unknown simulator {sim!r}; expected '2d' or '3d'")
+
+
+# Layout worlds built so far, by base map, physics, and layout key; the oldest go.
+_LAYOUT_WORLDS: OrderedDict[tuple[str, PuckPhysics, str], PuckWorld] = OrderedDict()
+_MAX_LAYOUT_WORLDS = 64
+
+
+def draw_layout(
+    world: PuckWorld,
+    num_holes: int,
+    num_obstacles: int,
+    rng: np.random.Generator,
+    min_gap: float = 0.9,
+) -> str:
+    """A layout of the world's map, as a key for get_layout_world(): num_obstacles
+    floor cells, not in the first or last two columns, made walls, and num_holes
+    holes clear of the walls, the obstacles, and each other. Hole and obstacle
+    centers are at least min_gap apart."""
+    puck_map, phys = world.puck_map, world.physics
+    rows, size = puck_map.rows, puck_map.cell_size
+    cells = [
+        (r, c)
+        for r, row in enumerate(rows)
+        for c, code in enumerate(row)
+        if code != "#" and 2 <= c < puck_map.num_cols - 2
+    ]
+
+    def center(cell: tuple[int, int]) -> np.ndarray:
+        r, c = cell
+        return np.array([(c + 0.5) * size, (puck_map.num_rows - r - 0.5) * size])
+
+    for _ in range(1000):
+        picks = rng.choice(len(cells), size=num_obstacles, replace=False)
+        obstacles = sorted(cells[int(i)] for i in picks)
+        points = [center(cell) for cell in obstacles]
+        if not _apart(points, min_gap):
+            continue
+        holes: list[np.ndarray] = []
+        margin = phys.hole_radius + 0.1
+        for _ in range(200):
+            if len(holes) == num_holes:
+                break
+            point = rng.uniform([margin, margin], [puck_map.width, puck_map.height])
+            point = np.round(point, 2)
+            near_wall = any(
+                _distance_to_rect(point, rect) < margin
+                for rect in puck_map.wall_rects()
+            )
+            near_obstacle = any(
+                np.max(np.abs(point - p)) < size / 2 + margin for p in points
+            )
+            if near_wall or near_obstacle or not _apart([*points, point], min_gap):
+                continue
+            holes.append(point)
+            points.append(point)
+        if len(holes) == num_holes:
+            hole_text = ";".join(
+                f"{x:.2f},{y:.2f}" for x, y in sorted(map(tuple, holes))
+            )
+            obstacle_text = ";".join(f"{r},{c}" for r, c in obstacles)
+            return f"o:{obstacle_text}|h:{hole_text}"
+    raise RuntimeError("Found no layout")
+
+
+def get_layout_world(world: PuckWorld, key: str) -> PuckWorld:
+    """The world's map with the layout's obstacles as walls and its holes in place
+    of the map's, with the same physics (see draw_layout())."""
+    cache_key = (world.puck_map.name, world.physics, key)
+    if cache_key in _LAYOUT_WORLDS:
+        _LAYOUT_WORLDS.move_to_end(cache_key)
+        return _LAYOUT_WORLDS[cache_key]
+    obstacle_text, hole_text = key.split("|")
+    obstacles = [
+        tuple(int(v) for v in item.split(","))
+        for item in obstacle_text[2:].split(";")
+        if item
+    ]
+    holes = tuple(
+        (float(item.split(",")[0]), float(item.split(",")[1]))
+        for item in hole_text[2:].split(";")
+        if item
+    )
+    puck_map = world.puck_map
+    rows = [list(row) for row in puck_map.rows]
+    for r, c in obstacles:
+        rows[r][c] = "#"
+    size = puck_map.cell_size
+    centers = tuple(
+        (round((c + 0.5) * size, 4), round((puck_map.num_rows - r - 0.5) * size, 4))
+        for r, c in obstacles
+    )
+    layout_map = dataclasses.replace(
+        puck_map,
+        name=f"{puck_map.name}~{key}",
+        rows=tuple("".join(row) for row in rows),
+        holes=holes,
+        obstacles=centers,
+    )
+    layout_world = PuckWorld(layout_map, world.physics)
+    _LAYOUT_WORLDS[cache_key] = layout_world
+    if len(_LAYOUT_WORLDS) > _MAX_LAYOUT_WORLDS:
+        _LAYOUT_WORLDS.popitem(last=False)
+    return layout_world
+
+
+def _apart(points: list[np.ndarray], gap: float) -> bool:
+    """Whether every two points are at least gap apart."""
+    return all(
+        np.linalg.norm(a - b) >= gap
+        for i, a in enumerate(points)
+        for b in points[i + 1 :]
+    )
+
+
+def _distance_to_rect(
+    point: np.ndarray, rect: tuple[float, float, float, float]
+) -> float:
+    """The distance from a point to an axis-aligned rectangle (x0, y0, x1, y1)."""
+    x0, y0, x1, y1 = rect
+    dx = max(x0 - point[0], 0.0, point[0] - x1)
+    dy = max(y0 - point[1], 0.0, point[1] - y1)
+    return float(np.hypot(dx, dy))

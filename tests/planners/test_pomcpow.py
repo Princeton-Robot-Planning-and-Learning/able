@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from able.belief_updaters.friction import FrictionBeliefUpdater
+from able.envs.friction.layout import get_layout_world
 from able.envs.friction.model import NO_PUSH, FrictionModel
 from able.envs.friction.tasks import make_domain, make_prior_belief
 from able.envs.friction.world import DEFAULT_FRICTION_PRIOR, Push
@@ -30,6 +31,7 @@ from able.planners.pomcpow import (
     _ObservationNode,
     encode_push,
     get_feature_dims,
+    get_layout_features,
     get_push_features,
     get_route_shares,
     get_value_features,
@@ -438,6 +440,31 @@ def test_value_features_follow_the_route_to_the_goal():
     mean = shares @ belief.mean
     expected = [np.log(mean), (shares @ belief.std) / mean, 2.6, 2.2, 3.9, 2.2]
     assert np.allclose(x[4:], expected)
+    model.close()
+
+
+def test_layouts_reach_the_features_and_the_planner():
+    """With layout_points, both models see the layout's holes and obstacles, and
+    the planner plans a state with a layout in that layout's world."""
+    model = FrictionModel(num_holes=0, goal_radius=0.2, num_floors=4, maze="corridor1")
+    key = "o:2,5;4,9|h:1.20,2.00;4.60,1.00"
+    world = get_layout_world(model.world, key)
+    prior = replace(DEFAULT_FRICTION_PRIOR, num_surfaces=4)
+    belief = make_prior_belief(prior, 20, np.random.default_rng(0))
+    features = ValueFeatures(position=True, layout_points=4)
+    layout = [1.2, 2.0, 4.6, 1.0, 2.2, 1.8, 3.8, 1.0]
+    assert np.allclose(get_layout_features(world, 4), layout)
+    assert np.allclose(get_layout_features(world, 5), [*layout, 0.0, 0.0])
+    assert get_layout_features(model.world, 2) == [0.0] * 4
+    puck = np.array([1.6, 1.4])
+    x = get_push_features(puck, (5.0, 1.4), world, belief, 4)
+    v = get_value_features(puck, (5.0, 1.4), 5, world, belief, features)
+    assert get_feature_dims(world, features) == (len(x), len(v)) == (24, 18)
+    assert np.allclose(x[-8:], layout) and np.allclose(v[-8:], layout)
+    planner = _make_planner(model)
+    assert planner.get_pomdp(None) is planner.pomdp
+    assert planner.get_pomdp(key).world is world
+    assert planner.get_pomdp(key) is planner.get_pomdp(key)
     model.close()
 
 

@@ -9,6 +9,7 @@ from numpy.typing import NDArray
 from able.belief_updaters.base import BeliefUpdater
 from able.beliefs.base import Belief
 from able.beliefs.particles import ParticleBelief
+from able.envs.friction.layout import get_layout_world
 from able.envs.friction.model import FrictionState
 from able.envs.friction.query import FrictionQuery, PushRecord
 from able.envs.friction.world import PuckWorld, Push, SlideBatch
@@ -94,7 +95,8 @@ class FrictionBeliefUpdater(
     the floors the push crossed, in steps if the push is sharp.
 
     A probe is a real push too, so queries and executed pushes share the push model. An
-    infeasible push, or a step after the task ended, shows nothing.
+    infeasible push, or a step after the task ended, shows nothing. A push in a
+    state with a layout slides in that layout's world; probes slide in the map's.
     """
 
     def __init__(self, world: PuckWorld) -> None:
@@ -110,7 +112,10 @@ class FrictionBeliefUpdater(
         record = next_state.last_push
         if next_state.pushes == state.pushes or record is None or not record.feasible:
             return belief
-        return self._update(belief, record)
+        world = self._world
+        if state.layout is not None:
+            world = get_layout_world(world, state.layout)
+        return self._update(belief, record, world)
 
     def update_from_queries(
         self,
@@ -118,15 +123,15 @@ class FrictionBeliefUpdater(
         data: Sequence[QueryResponse[FrictionQuery, PushRecord]],
     ) -> Belief[NDArray[np.float64]]:
         for datum in data:
-            belief = self._update(belief, datum.response)
+            belief = self._update(belief, datum.response, self._world)
         return belief
 
     def _update(
-        self, belief: Belief[NDArray[np.float64]], record: PushRecord
+        self, belief: Belief[NDArray[np.float64]], record: PushRecord, world: PuckWorld
     ) -> ParticleBelief:
         assert isinstance(belief, ParticleBelief), "Need a ParticleBelief"
-        floors = crossed_floors(self._world, record, belief.low)
+        floors = crossed_floors(world, record, belief.low)
         return belief.reweight(
-            lambda particles: push_log_likelihood(self._world, particles, record),
+            lambda particles: push_log_likelihood(world, particles, record),
             floors,
         )

@@ -8,6 +8,7 @@ from numpy.typing import ArrayLike, NDArray
 
 from able.beliefs.particles import ParticleBelief
 from able.envs.base import Domain, TaskDistribution
+from able.envs.friction.layout import get_layout_world
 from able.envs.friction.model import (
     FrictionModel,
     FrictionState,
@@ -40,6 +41,7 @@ class FrictionTaskDistribution(TaskDistribution[FrictionTask]):
     behind the planner's leaf values (PuckPushingModel.value_resolution). The robot
     starts at a random spot robot_distance from the puck, facing +x. With floors,
     the start, the goal, and a shortest path between them lie on those floors.
+    With a layout (layout.draw_layout()), tasks are in that layout's world.
     """
 
     def __init__(
@@ -50,13 +52,16 @@ class FrictionTaskDistribution(TaskDistribution[FrictionTask]):
         robot_distance: tuple[float, float] = (0.6, 1.2),
         hole_clearance: float = 0.1,
         floors: Collection[int] | None = None,
+        layout: str | None = None,
     ) -> None:
         assert 0.0 < min_distance <= max_distance, "Need 0 < min <= max distance"
         self._model = model
         self._min_distance = min_distance
         self._max_distance = max_distance
         self._robot_distance = robot_distance
-        world = model.world
+        self._layout = layout
+        world = model.world if layout is None else get_layout_world(model.world, layout)
+        self._world = world
         phys = world.physics
         self._paths = PuckPushingModel(world)
         pushable = self._paths.pushable_cells
@@ -81,7 +86,7 @@ class FrictionTaskDistribution(TaskDistribution[FrictionTask]):
         self._start_cells = (j * pushable.shape[1] + i)[starts]
 
     def sample(self, rng: np.random.Generator) -> FrictionTask:
-        world = self._model.world
+        world = self._world
         for _ in range(1000):
             goal = self._goals[rng.integers(len(self._goals))]
             goal_point = (round(float(goal[0]), 4), round(float(goal[1]), 4))
@@ -98,7 +103,7 @@ class FrictionTaskDistribution(TaskDistribution[FrictionTask]):
             if robot is None:
                 continue
             puck = (round(float(start[0]), 4), round(float(start[1]), 4))
-            state = self._model.get_initial_state(puck, robot, goal_point)
+            state = self._model.get_initial_state(puck, robot, goal_point, self._layout)
             return FrictionTask(state, goal_point)
         raise RuntimeError("Found no start and goal for a friction task")
 
@@ -108,7 +113,7 @@ class FrictionTaskDistribution(TaskDistribution[FrictionTask]):
         """A random spot on the robot's driving grid, robot_distance from the
         puck, where the robot clears the walls at any heading, or None if there is
         none."""
-        world = self._model.world
+        world = self._world
         res = world.physics.nav_resolution
         low, high = self._robot_distance
         steps = np.arange(-high, high + 1e-9, res)

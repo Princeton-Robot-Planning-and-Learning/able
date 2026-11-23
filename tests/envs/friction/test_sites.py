@@ -199,3 +199,32 @@ def test_base_frictions():
         -(((survey.particles[:, 0] - target) / 0.005) ** 2), dims=[0]
     )
     assert np.all(np.abs(np.median(narrowed.particles, axis=0) / target - 1) < 0.2)
+
+
+def test_routines_with_layouts():
+    """Tests that with layouts a group's sites share their routine's layout, that
+    groups differ, and that a revision draws a new layout."""
+    # pylint: disable=no-member
+    domain = make_site_domain(
+        seed=0,
+        group_sizes=(2, 1),
+        routine_size=3,
+        num_particles=10,
+        revision_rate=1.0,
+        maze="corridor1",
+        num_holes=0,
+        num_floors=4,
+        layout_holes=2,
+        layout_obstacles=2,
+    )
+    routines = domain.task_distribution
+    assert isinstance(routines, SiteRoutineTaskDistribution)
+
+    def get_layouts(site: int) -> set:
+        return {t.inner.initial_state.layout for t in routines.get_routine(site)}
+
+    layouts = [get_layouts(site) for site in range(3)]
+    assert all(len(found) == 1 and None not in found for found in layouts)
+    assert layouts[0] == layouts[1] != layouts[2]
+    routines.start_day(np.random.default_rng(0))
+    assert get_layouts(0) != layouts[0]

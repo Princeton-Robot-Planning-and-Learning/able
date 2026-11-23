@@ -144,3 +144,21 @@ def test_probes_run_in_their_own_simulator():
     assert record.feasible and record.puck == query.puck
     assert model._sim is None  # pylint: disable=protected-access
     model.close()
+
+
+def test_a_layout_brings_its_holes():
+    """A push in a state with a layout slides through the layout's holes, which
+    the map without it lacks, and the next state keeps the layout."""
+    model = FrictionModel(num_holes=0, goal_radius=0.2, num_floors=4, maze="corridor1")
+    frictions = np.full(4, 0.05)
+    push = Push(0.0, 1.0)
+    outcomes = {}
+    for layout in (None, "o:1,12|h:2.80,1.40"):
+        state = model.get_initial_state((1.6, 1.4), (0.8, 1.4), (5.4, 2.2), layout)
+        next_state = model.sample_next_state(
+            state, push, frictions, np.random.default_rng(0)
+        )
+        assert next_state.layout == layout
+        outcomes[layout] = next_state.outcome
+    model.close()
+    assert outcomes == {None: None, "o:1,12|h:2.80,1.40": "hole"}
