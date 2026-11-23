@@ -18,8 +18,14 @@ env:
     # Where a revised routine goes: its group's region (same), or another region
     # drawn uniformly (other).
     revision_region: same
+    # Holes and single-cell obstacles each routine places in its own layout, which
+    # a revision redraws; 0 keeps the maze's holes. For the corridor1 maze, with
+    # num_holes 0 and num_floors 4.
+    layout_holes: 0
+    layout_obstacles: 0
     sim: 2d
-    # The corridors maze, with num_holes holes in each corridor.
+    # The corridors maze, with num_holes holes in each corridor, or one corridor
+    # (corridor1) for routines with layouts.
     maze: corridors4
     num_holes: 2
     goal_radius: 0.2

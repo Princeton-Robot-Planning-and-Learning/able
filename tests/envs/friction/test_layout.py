@@ -10,6 +10,8 @@ from able.envs.friction.layout import (
     CORRIDOR_MAZES,
     FLOOR_SPLITS,
     HOLES,
+    draw_layout,
+    get_layout_world,
     make_sim,
     make_world,
 )
@@ -107,3 +109,25 @@ def test_make_world_four_corridors():
     env = make_sim("2d", world)
     env.reset(seed=0)
     assert len(env.frictions) == 12
+
+
+def test_layouts_place_obstacles_and_holes():
+    """Tests that a layout makes its obstacle cells walls, puts its holes in place
+    of the map's, keeps everything apart, and gives the same world for its key."""
+    world = make_world(0, 0.2, 4, "corridor1")
+    assert world.puck_map.num_surfaces == 4 and len(world.holes) == 0
+    rng = np.random.default_rng(0)
+    keys = {draw_layout(world, 2, 2, rng) for _ in range(5)}
+    assert len(keys) == 5
+    for key in keys:
+        layout_world = get_layout_world(world, key)
+        assert get_layout_world(world, key) is layout_world
+        obstacles = np.array(layout_world.puck_map.obstacles)
+        assert len(obstacles) == 2 and len(layout_world.holes) == 2
+        for center in obstacles:
+            assert world.surface_at(center) >= 0
+            assert layout_world.surface_at(center) < 0
+        points = np.vstack([obstacles, layout_world.holes])
+        gaps = np.linalg.norm(points[:, None] - points[None], axis=-1)
+        assert np.all(gaps[np.triu_indices(4, 1)] >= 0.9)
+        assert all(layout_world.puck_position_free(h) for h in layout_world.holes)

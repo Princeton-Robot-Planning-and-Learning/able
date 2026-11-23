@@ -18,7 +18,7 @@ from numpy.typing import NDArray
 from able.beliefs.particles import ParticleBelief
 from able.beliefs.sites import SiteBelief
 from able.envs.base import Domain
-from able.envs.friction.layout import make_world
+from able.envs.friction.layout import draw_layout, make_world
 from able.envs.friction.model import FrictionModel, FrictionTask
 from able.envs.friction.pomdp import PuckPushingModel
 from able.envs.friction.tasks import (
@@ -53,6 +53,8 @@ def make_site_domain(
     maze: str = "corridors4",
     region_overlap: float = 0.0,
     revision_region: str = "same",
+    layout_holes: int = 0,
+    layout_obstacles: int = 0,
     survey: str = "prior",
     friction_groups: str = "same",
     group_friction: str = "base",
@@ -83,7 +85,11 @@ def make_site_domain(
     color, group g's being color g mod the number of colors. Each new day
     revises each group's routine with probability revision_rate, in the same
     region with revision_region "same", or in another region drawn uniformly with
-    "other", where what the robot learned for the old one barely helps. The robot works
+    "other", where what the robot learned for the old one barely helps. With
+    layout_holes or layout_obstacles, each routine, and each revision of it,
+    also draws its own layout of that many holes and single-cell obstacles
+    (layout.draw_layout()), which all its tasks share, so a revision brings a
+    new layout. The robot works
     at one site each day, drawn with its share of a random schedule.
     """
     rng = np.random.default_rng(seed)
@@ -132,9 +138,8 @@ def make_site_domain(
     assert 0.0 <= region_overlap <= 1.0, "Need a region overlap in [0, 1]"
     friction_model = base.env_model
     assert isinstance(friction_model, FrictionModel)
-    colors = np.asarray(
-        make_world(num_holes, goal_radius, num_floors, maze).puck_map.surface_colors
-    )
+    maze_world = make_world(num_holes, goal_radius, num_floors, maze)
+    colors = np.asarray(maze_world.puck_map.surface_colors)
     regions = [
         FrictionTaskDistribution(
             friction_model, *task_distances, floors=np.flatnonzero(colors == color)
@@ -149,6 +154,15 @@ def make_site_domain(
         group: int, routine_rng: np.random.Generator
     ) -> list[FrictionTask]:
         region = regions[region_of[group]]
+        if layout_holes or layout_obstacles:
+            layout = draw_layout(
+                maze_world, layout_holes, layout_obstacles, routine_rng
+            )
+            floors = np.flatnonzero(colors == region_of[group] % len(regions))
+            region = FrictionTaskDistribution(
+                friction_model, *task_distances, floors=floors, layout=layout
+            )
+            return [region.sample(routine_rng) for _ in range(routine_size)]
         return [
             (
                 base.task_distribution

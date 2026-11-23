@@ -16,14 +16,14 @@ import numpy as np
 from numpy.typing import NDArray
 
 from able.envs.base import EnvironmentModel
-from able.envs.friction.layout import make_sim, make_world
+from able.envs.friction.layout import get_layout_world, make_sim, make_world
 from able.envs.friction.query import (
     FrictionQuery,
     ProbeSimulator,
     PushRecord,
     execute_push,
 )
-from able.envs.friction.world import Push
+from able.envs.friction.world import PuckWorld, Push
 from able.structs import Task
 
 # The action after the task has ended, which changes nothing.
@@ -75,6 +75,9 @@ class FrictionState:
     outcome: str | None = None
     # Whether `puck` is a measured stop, rather than known exactly.
     puck_measured: bool = False
+    # The task's layout of holes and obstacles (layout.draw_layout()), if not the
+    # map's own.
+    layout: str | None = None
 
     @property
     def ended(self) -> bool:
@@ -129,6 +132,8 @@ class FrictionModel(
         self.world = make_world(num_holes, goal_radius, num_floors, maze)
         self._horizon = horizon
         self._sim: Any = None
+        # Simulators of the layouts stepped so far, the oldest closed first.
+        self._layout_sims: dict[str, Any] = {}
         self._probes = ProbeSimulator(sim, num_holes, goal_radius, num_floors, maze)
 
     @property
@@ -142,11 +147,33 @@ class FrictionModel(
             self._sim = make_sim(self.sim_name, self.world)
         return self._sim
 
+    def get_world(self, state: FrictionState) -> PuckWorld:
+        """The world of the state's layout, or the map's own."""
+        if state.layout is None:
+            return self.world
+        return get_layout_world(self.world, state.layout)
+
+    def _get_sim(self, state: FrictionState) -> Any:
+        """The simulator of the state's layout, built on first use."""
+        if state.layout is None:
+            return self.sim
+        if state.layout not in self._layout_sims:
+            if len(self._layout_sims) >= 16:
+                oldest = next(iter(self._layout_sims))
+                self._layout_sims.pop(oldest).close()
+            self._layout_sims[state.layout] = make_sim(
+                self.sim_name, self.get_world(state)
+            )
+        return self._layout_sims[state.layout]
+
     def close(self) -> None:
         """Close the simulators."""
         if self._sim is not None:
             self._sim.close()
             self._sim = None
+        for layout_sim in self._layout_sims.values():
+            layout_sim.close()
+        self._layout_sims = {}
         self._probes.close()
 
     def get_initial_state(
@@ -154,14 +181,17 @@ class FrictionModel(
         puck: tuple[float, float] | None = None,
         robot: tuple[float, float] | None = None,
         goal: tuple[float, float] | None = None,
+        layout: str | None = None,
     ) -> FrictionState:
         """The puck and the robot at their starts, the robot facing +x, for the
-        task with the goal. Each defaults to the map's default task."""
+        task with the goal, in the layout if given. Each defaults to the map's
+        default task."""
         puck_map = self.world.puck_map
         puck = puck_map.puck_start if puck is None else puck
         robot = puck_map.robot_start if robot is None else robot
         goal = puck_map.goal if goal is None else goal
-        return FrictionState(puck, robot, puck, (robot[0], robot[1], 0.0), goal)
+        pose = (robot[0], robot[1], 0.0)
+        return FrictionState(puck, robot, puck, pose, goal, layout=layout)
 
     def sample_next_state(
         self,
@@ -172,7 +202,8 @@ class FrictionModel(
     ) -> FrictionState:
         if state.ended:
             return state
-        sim = self.sim
+        sim = self._get_sim(state)
+        world = self.get_world(state)
         options = {
             "frictions": tuple(float(f) for f in hidden_params),
             "puck": state.true_puck,
@@ -184,7 +215,6 @@ class FrictionModel(
         record = PushRecord.from_info(info, state.puck, action, state.puck_measured)
         robot = state.robot
         if record.feasible:
-            world = self.world
             station = world.push_station(state.puck_array, action.angle, action.stance)
             moved = station + world.physics.accel_distance * action.direction
             robot = (float(moved[0]), float(moved[1]))
@@ -192,11 +222,11 @@ class FrictionModel(
         if terminated:
             outcome = "hole" if record.fell_in_hole else "goal"
         # A noisy measurement can land the puck slightly inside a wall.
-        puck = self.world.nearest_free_puck_position(np.array(record.stop))
+        puck = world.nearest_free_puck_position(np.array(record.stop))
         true_puck, pose = np.asarray(sim.puck_position), sim.robot_pose
         measured = True
         if outcome is None:
-            rest = self.world.shed(true_puck, state.goal)
+            rest = world.shed(true_puck, state.goal)
             if not np.array_equal(rest, true_puck):
                 # The robot sees where a shed puck comes to rest.
                 puck, true_puck, measured = rest, rest, False
@@ -210,6 +240,7 @@ class FrictionModel(
             last_push=record,
             outcome=outcome,
             puck_measured=measured,
+            layout=state.layout,
         )
 
     def get_cost(

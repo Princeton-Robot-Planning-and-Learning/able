@@ -9,6 +9,7 @@ leaf value replaces its value estimate.
 import bisect
 import math
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from typing import Callable, Generic, Hashable, Protocol, Sequence, TypeVar
 
@@ -18,6 +19,7 @@ from numpy.typing import NDArray
 from able.belief_updaters.friction import FrictionBeliefUpdater
 from able.beliefs.base import Belief
 from able.beliefs.particles import ParticleBelief
+from able.envs.friction.layout import get_layout_world
 from able.envs.friction.model import NO_PUSH, FrictionModel, FrictionState, FrictionTask
 from able.envs.friction.pomdp import (
     ONGOING,
@@ -367,10 +369,13 @@ class ValueFeatures:
     the pushes left. With position, the puck's and the goal's (x, y), so data
     from one place counts little elsewhere. With log_friction, the route's
     friction as the log of its mean and its standard deviation over its mean, so
-    frictions twice apart are equally far apart at any level."""
+    frictions twice apart are equally far apart at any level. With layout_points,
+    the (x, y) of that many holes and then obstacles (get_layout_features()), for
+    the push model too, so data from one layout count little in another."""
 
     position: bool = False
     log_friction: bool = False
+    layout_points: int = 0
 
 
 def get_feature_dims(
@@ -378,7 +383,20 @@ def get_feature_dims(
 ) -> tuple[int, int]:
     """The input sizes of get_push_features(), which grows with the map's floors,
     and get_value_features()."""
-    return 4 + 3 * world.puck_map.num_surfaces, 6 + 4 * value_features.position
+    layout = 2 * value_features.layout_points
+    return (
+        4 + 3 * world.puck_map.num_surfaces + layout,
+        6 + 4 * value_features.position + layout,
+    )
+
+
+def get_layout_features(world: PuckWorld, num_points: int) -> list[float]:
+    """The (x, y) of the world's holes and then its obstacles, each sorted by x,
+    cut or padded with zeros to num_points points."""
+    puck_map = world.puck_map
+    points = [*sorted(puck_map.holes), *sorted(puck_map.obstacles)][:num_points]
+    flat = [float(v) for point in points for v in point]
+    return flat + [0.0] * (2 * num_points - len(flat))
 
 
 @dataclass(frozen=True)
@@ -467,14 +485,17 @@ def get_push_features(
     goal: tuple[float, float],
     world: PuckWorld,
     belief: ParticleBelief,
+    layout_points: int = 0,
 ) -> NDArray[np.float64]:
     """The model's input for a push: puck, goal, the floor under the puck
-    (one-hot), and the belief's mean and standard deviation."""
+    (one-hot), the belief's mean and standard deviation, and layout_points
+    points of the layout (get_layout_features())."""
     floor = np.zeros(world.puck_map.num_surfaces)
     surface = world.surface_at(puck)
     if surface >= 0:
         floor[surface] = 1.0
-    return np.concatenate([puck, goal, floor, belief.mean, belief.std])
+    layout = get_layout_features(world, layout_points)
+    return np.concatenate([puck, goal, floor, belief.mean, belief.std, layout])
 
 
 def get_value_features(
@@ -488,8 +509,8 @@ def get_value_features(
     """The value model's input for a state: the distance and heading from the puck
     to the goal, pushes left, and the belief's mean and standard deviation of the
     friction along the straight route, weighting each floor by its share of the
-    route, then the puck's and goal's positions if features asks (see
-    ValueFeatures)."""
+    route, then the puck's and goal's positions and the layout if features asks
+    (see ValueFeatures)."""
     start, end = np.asarray(puck, dtype=np.float64), np.asarray(goal, np.float64)
     offset = end - start
     distance = float(np.hypot(offset[0], offset[1]))
@@ -500,7 +521,8 @@ def get_value_features(
     if features.log_friction:
         friction = [math.log(max(mean, 1e-6)), std / max(mean, 1e-6)]
     position = [*start, *end] if features.position else []
-    return np.array([distance, *heading, pushes_left, *friction, *position])
+    layout = get_layout_features(world, features.layout_points)
+    return np.array([distance, *heading, pushes_left, *friction, *position, *layout])
 
 
 def get_route_shares(
@@ -554,19 +576,23 @@ class _ModelProposer:
         config: ProposalConfig,
         goal: tuple[float, float],
         belief: ParticleBelief,
+        layout_points: int = 0,
     ) -> None:
         self._pomdp = pomdp
         self._model = model
         self._config = config
         self._goal = goal
         self._belief = belief
+        self._layout_points = layout_points
         self._cache: dict[tuple[int, ...], list[Push]] = {}
 
     def draw(self, puck: NDArray[np.float64], rng: np.random.Generator) -> list[Push]:
         """The cached feasible pushes for the puck's cell, drawn on first use."""
         key = self._get_key(puck)
         if key not in self._cache:
-            x = get_push_features(puck, self._goal, self._pomdp.world, self._belief)
+            x = get_push_features(
+                puck, self._goal, self._pomdp.world, self._belief, self._layout_points
+            )
             self.fill(puck, self._model.sample(x, self._config.num_draws, rng))
         return self._cache[key]
 
@@ -760,7 +786,9 @@ class FrictionPOMCPOWPolicy(Policy[FrictionState, Push]):
             # A config file gives a list.
             k, alpha = widening
             config = replace(config, action_widening=(float(k), float(alpha)))
-        leaf_value = self._planner.make_leaf_value(self._belief, self._params)
+        leaf_value = self._planner.make_leaf_value(
+            self._belief, self._params, state.layout
+        )
         target = self._get_target(state, config, leaf_value)
         if target is not None:
             self._stats["num_targeted_searches"] += 1
@@ -785,7 +813,7 @@ class FrictionPOMCPOWPolicy(Policy[FrictionState, Push]):
         rule = config.early_stop
         if leaf_value is None or rule is None or rule.aspiration is None:
             return None
-        pomdp = self._planner.pomdp
+        pomdp = self._planner.get_pomdp(state.layout)
         root = pomdp.initial_state(
             state.puck_array,
             state.robot_array,
@@ -798,13 +826,21 @@ class FrictionPOMCPOWPolicy(Policy[FrictionState, Push]):
 
     def _make_proposer(self, state: FrictionState) -> _ModelProposer | None:
         """A proposer from the model, or None if it proposes nothing at the root."""
-        params, pomdp = self._params, self._planner.pomdp
-        x = get_push_features(state.puck_array, self._goal, pomdp.world, self._belief)
+        params, pomdp = self._params, self._planner.get_pomdp(state.layout)
+        layout_points = params.value_features.layout_points
+        x = get_push_features(
+            state.puck_array, self._goal, pomdp.world, self._belief, layout_points
+        )
         rows = params.model.sample(x, params.proposal.num_draws, self._rng)
         if len(rows) == 0:
             return None
         proposer = _ModelProposer(
-            pomdp, params.model, params.proposal, self._goal, self._belief
+            pomdp,
+            params.model,
+            params.proposal,
+            self._goal,
+            self._belief,
+            layout_points,
         )
         proposer.fill(state.puck_array, rows)
         return proposer
@@ -846,7 +882,8 @@ class FrictionPOMCPOWPlanner(
     statistics are the number of simulations, searches, searches the model guided,
     fallbacks without it, and searches with a target value, the mean weight of the
     value model's data at the leaves, and the time spent searching. The default
-    parameters, if given, replace POMCPOWParams().
+    parameters, if given, replace POMCPOWParams(). A state with a layout is
+    planned in that layout's world (get_pomdp()).
     """
 
     def __init__(
@@ -863,12 +900,30 @@ class FrictionPOMCPOWPlanner(
             max_pushes=model.horizon,
             stance_mode=stance_mode,
         )
+        self._layout_pomdps: OrderedDict[str, PuckPushingModel] = OrderedDict()
         self._default_params = (
             POMCPOWParams() if default_params is None else default_params
         )
 
     def get_default_params(self) -> POMCPOWParams:
         return self._default_params
+
+    def get_pomdp(self, layout: str | None) -> PuckPushingModel:
+        """The POMDP of the layout's world, or the map's own without one; the 16
+        layouts used last are kept."""
+        if layout is None:
+            return self.pomdp
+        if layout in self._layout_pomdps:
+            self._layout_pomdps.move_to_end(layout)
+            return self._layout_pomdps[layout]
+        pomdp = replace(
+            self.pomdp,
+            world=get_layout_world(self.pomdp.world, layout),
+        )
+        self._layout_pomdps[layout] = pomdp
+        if len(self._layout_pomdps) > 16:
+            self._layout_pomdps.popitem(last=False)
+        return pomdp
 
     def get_training_params(self, params: POMCPOWParams) -> POMCPOWParams:
         if params.training_num_sims is None:
@@ -889,14 +944,16 @@ class FrictionPOMCPOWPlanner(
         return replace(params, model=model.push, value_model=model.value)
 
     def make_leaf_value(
-        self, belief: ParticleBelief, params: POMCPOWParams
+        self, belief: ParticleBelief, params: POMCPOWParams, layout: str | None = None
     ) -> "LearnedLeafValue | None":
-        """The leaf values under the belief from the trained value model, or None
-        without one."""
+        """The leaf values under the belief in the layout from the trained value
+        model, or None without one."""
         value_model = params.value_model
         if value_model is None or value_model.x is None:
             return None
-        return LearnedLeafValue(self.pomdp, value_model, belief, params.value_features)
+        return LearnedLeafValue(
+            self.get_pomdp(layout), value_model, belief, params.value_features
+        )
 
     def get_plan_examples(
         self,
@@ -940,16 +997,21 @@ class FrictionPOMCPOWPlanner(
     ) -> Dataset:
         """A row per search, with its push if with_pushes and the excess of its
         return over the path-distance value if returns are given."""
-        pomdp = self.pomdp
+        features = self._default_params.value_features
         x, y, costs = [], [], []
         for i, search in enumerate(searches):
             state = search.state
+            pomdp = self.get_pomdp(state.layout)
             pushes_left = pomdp.max_pushes - state.pushes
             x.append(
                 np.concatenate(
                     [
                         get_push_features(
-                            state.puck_array, task.goal, pomdp.world, search.belief
+                            state.puck_array,
+                            task.goal,
+                            pomdp.world,
+                            search.belief,
+                            features.layout_points,
                         ),
                         get_value_features(
                             state.puck,
@@ -957,7 +1019,7 @@ class FrictionPOMCPOWPlanner(
                             pushes_left,
                             pomdp.world,
                             search.belief,
-                            self._default_params.value_features,
+                            features,
                         ),
                     ]
                 )
@@ -973,9 +1035,8 @@ class FrictionPOMCPOWPlanner(
             values = [v for p, _, v in search.root_values if p == search.push]
             costs.append(-values[0] if values else 0.0)
         if not x:
-            features = self._default_params.value_features
             return Dataset.empty(
-                sum(get_feature_dims(pomdp.world, features)), Y_DIM + 1
+                sum(get_feature_dims(self.pomdp.world, features)), Y_DIM + 1
             )
         return Dataset(
             x=np.array(x),
@@ -997,7 +1058,7 @@ class FrictionPOMCPOWPlanner(
         """One POMCPOW search for the state's push under the belief, with the leaf
         values, if given, in place of the POMDP's, aspiring to the target value, if
         given."""
-        pomdp = self.pomdp
+        pomdp = self.get_pomdp(state.layout)
         particles = [
             pomdp.initial_state(
                 state.puck_array, state.robot_array, f, state.goal, state.pushes
