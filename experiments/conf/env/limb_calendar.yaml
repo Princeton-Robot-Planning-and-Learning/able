@@ -1,0 +1,32 @@
+# @package _global_
+# A person whose limb is stiffer on some days, on a calendar the robot knows, with a
+# routine of exercises whose goals lie a fixed distance short of the day's limits. Each
+# unit of sleep plans one exercise for one kind of day, the robot replays the plan of
+# the nearest day while awake, and a day goes well only if every exercise succeeds.
+# The approaches are in env_approach/limb_calendar.
+env:
+  domain:
+    _target_: able.envs.limb.calendar.make_limb_calendar_domain
+    # week or uneven (see sample_calendar()).
+    calendar: uneven
+    # How far each motion's stiffness moves per day, in radians.
+    step: 0.06
+    max_stiffness: 0.3
+    # Must cover the cycles and the horizon.
+    num_days: 40
+    survey_stddev: 0.02
+    # Every day's stiffness is a multiple of this, so plans are for the same day types
+    # however the calendar wanders.
+    grid: 0.03
+  renderer: null
+budgets:
+  sleep:
+    max_iterations: 4
+  information_gathering:
+    max_iterations: 0
+  execution:
+    max_iterations: 0
+  # While awake, planning an exercise is one replay of the nearest stored plan.
+  planning:
+    max_iterations: 1
+num_cycles: 21

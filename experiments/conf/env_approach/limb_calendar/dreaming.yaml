@@ -1,0 +1,7 @@
+_target_: able.approaches.make_limb_calendar_dreaming_robot
+# Days dreamed of, starting with today. 1 is today only.
+horizon: 1
+key_resolution: 0.03
+# The seed and folder of the training plans, which every approach shares.
+seed: ${seed}
+plan_dir: null

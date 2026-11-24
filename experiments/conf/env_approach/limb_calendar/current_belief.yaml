@@ -1,0 +1,7 @@
+_target_: able.approaches.make_limb_calendar_current_belief_robot
+# Train for this many days ahead: 0 is today.
+days_ahead: 0
+key_resolution: 0.03
+# The seed and folder of the training plans, which every approach shares.
+seed: ${seed}
+plan_dir: null

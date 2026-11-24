@@ -6,14 +6,16 @@ import numpy as np
 import pytest
 
 from able.beliefs.interval import IntervalBelief
-from able.envs.calendar_arm import (
+from able.envs.calendar import (
     CALENDAR_KINDS,
-    CalendarTaskDistribution,
-    Exercise,
     ExerciseTask,
     StiffnessCalendar,
-    make_calendar_arm_domain,
     sample_calendar,
+)
+from able.envs.calendar_arm import (
+    CalendarTaskDistribution,
+    Exercise,
+    make_calendar_arm_domain,
 )
 from able.envs.simulated import SimulatedEnvironment
 
@@ -39,7 +41,7 @@ def test_week_has_moving_weekdays_and_a_fixed_weekend():
 def test_days_past_the_calendar_repeat_the_last():
     """A calendar that ends keeps its last day."""
     calendar = StiffnessCalendar(np.array([[0.0, 0.0], [0.5, 0.1]]))
-    assert np.array_equal(calendar.get_shift(9), [0.5, -0.5, 0.1, -0.1])
+    assert np.array_equal(calendar.get(9), [0.5, 0.1])
 
 
 def test_exercise_is_a_fraction_of_the_limits():

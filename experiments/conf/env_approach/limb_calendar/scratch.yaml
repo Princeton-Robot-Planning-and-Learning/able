@@ -1,0 +1,5 @@
+_target_: able.approaches.make_limb_calendar_scratch_robot
+key_resolution: 0.03
+# The seed and folder of the training plans, which every approach shares.
+seed: ${seed}
+plan_dir: null

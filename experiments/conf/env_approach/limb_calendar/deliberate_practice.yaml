@@ -1,0 +1,13 @@
+_target_: able.approaches.make_limb_calendar_allocation_robot
+# Nights planned together.
+horizon: 7
+# Chance that a day goes well once every exercise has a plan within r steps of key
+# resolution of the day's limits, for r = 1, 2, ..., as measured on this arm.
+tier_values: [1.0, 0.56]
+# Deliberate Practice's day types are bins of this many steps of key resolution.
+day_type_steps: 1
+dreams_per_unit: 16
+key_resolution: 0.03
+# The seed and folder of the training plans, which every approach shares.
+seed: ${seed}
+plan_dir: null
