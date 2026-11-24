@@ -17,6 +17,7 @@ from able.models.exact_match_cache import ExactMatchCache
 from able.planners.random_shooting import (
     RandomShootingParams,
     RandomShootingPlanner,
+    TrainingSearch,
     get_plan_features,
 )
 from able.structs import Budget, PlanningFailure
@@ -171,3 +172,19 @@ def test_default_params():
     assert isinstance(default.model, ExactMatchCache) and not default.model.entries
     params = RandomShootingParams(batch_size=8)
     assert RandomShootingPlanner(model, params).get_default_params() is params
+
+
+def test_training_search():
+    """Training plans get the training search, if there is one."""
+    model = TwoLinkArmModel()
+    planner = RandomShootingPlanner(
+        model,
+        RandomShootingParams(
+            batch_size=1, training_search=TrainingSearch(batch_size=9)
+        ),
+    )
+    params = planner.get_training_params(planner.get_default_params())
+    assert params.batch_size == 9
+    assert params.threshold == 0.01
+    plain = RandomShootingParams()
+    assert planner.get_training_params(plain) is plain

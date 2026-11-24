@@ -1,0 +1,7 @@
+_target_: able.approaches.make_calendar_current_belief_robot
+key_resolution: 0.03
+awake_batch_size: 1
+num_training_tasks: 1
+training_iterations: 40
+# Train for this many days ahead: 0 is today.
+days_ahead: 0
