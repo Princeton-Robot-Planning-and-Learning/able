@@ -3,7 +3,6 @@
 import dataclasses
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Callable
 
 import numpy as np
@@ -65,27 +64,30 @@ class LimbRecallPlanner(LimbMPCPlanner):
 
     Training plans (see get_training_params()) try MPC searches in turn within the
     budget. A plan is stored whole, up to where MPC ends, rather than only until it
-    reaches the goal tolerance, so it can also serve nearby goals. The random numbers
+    reaches the goal tolerance, so it can also serve nearby goals. The search is for
+    the exercise under the belief that round_exercise() gives, and its random numbers
     come from the exercise and the belief's features, so a training plan does not
-    depend on when it is made or on who makes it. If plan_dir is given, training
-    plans are kept there, by exercise and features, and reused.
+    depend on when it is made or on who makes it.
 
     get_features gives the model's input for a task under a belief, and starts with
-    the exercise.
+    the exercise. round_exercise gives an exercise's task under a belief rounded to a
+    resolution finer than the features' differences between days, and that belief.
     """
 
     def __init__(
         self,
         model: LimbModel,
         get_features: Callable[[LimbTask, RangeOfMotionBelief], NDArray[np.float64]],
+        round_exercise: Callable[
+            [int, RangeOfMotionBelief], tuple[LimbTask, RangeOfMotionBelief]
+        ],
         default_params: RecallParams,
         seed: int = 0,
-        plan_dir: Path | None = None,
     ) -> None:
         super().__init__(model, default_params)
         self._get_features = get_features
+        self._round_exercise = round_exercise
         self._seed = seed
-        self._plan_dir = plan_dir
 
     @property
     def variant(self) -> LimbVariant:
@@ -179,17 +181,9 @@ class LimbRecallPlanner(LimbMPCPlanner):
         params: RecallParams,
         budget: Budget,
     ) -> LimbMPCPolicy:
-        features = self._get_features(task, belief)
+        search_task, search_belief = self._round_exercise(task.exercise, belief)
+        features = self._get_features(search_task, search_belief)
         key = tuple(int(v) for v in np.round(features * 1000))
-        path = None
-        if self._plan_dir is not None:
-            self._plan_dir.mkdir(parents=True, exist_ok=True)
-            path = self._plan_dir / ("_".join(map(str, key)) + ".npy")
-            if path.exists():
-                controls = np.load(path)
-                if len(controls) == 0:
-                    raise PlanningFailure("No training plan was found before")
-                return self._as_policy(task, list(controls))
         rng = np.random.default_rng([self._seed, *(v + 10**6 for v in key)])
         start, used = time.perf_counter(), 0.0
         controls_found: list[NDArray[np.float64]] = []
@@ -202,8 +196,8 @@ class LimbRecallPlanner(LimbMPCPlanner):
                     break
             try:
                 plan = super().plan(
-                    task,
-                    belief,
+                    search_task,
+                    search_belief,
                     MPCParams(config=search, confidence=params.confidence),
                     Budget(
                         max_wall_time=(
@@ -220,10 +214,6 @@ class LimbRecallPlanner(LimbMPCPlanner):
             except PlanningFailure as error:
                 failure = error
                 used += (error.stats or {}).get("num_rollouts", 0.0)
-        if path is not None:
-            temporary = path.with_name(path.name + f".{id(self)}.tmp.npy")
-            np.save(temporary, np.array(controls_found).reshape(-1, _NUM_JOINTS))
-            temporary.replace(path)
         if not controls_found:
             raise failure
         return self._as_policy(task, controls_found)

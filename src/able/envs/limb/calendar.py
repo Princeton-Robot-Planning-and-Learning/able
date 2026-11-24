@@ -211,6 +211,29 @@ class LimbCalendarTaskDistribution(ExerciseTaskDistribution):
     def get_task(self, exercise: int, midpoint: NDArray[np.float64]) -> LimbTask:
         return self._make_task(exercise, midpoint / self._magnitudes)
 
+    def round_exercise(
+        self, exercise: int, belief: Belief[Any]
+    ) -> tuple[LimbTask, RangeOfMotionBelief]:
+        """The exercise under a belief whose midpoint limits are rounded to a
+        milliradian, and that belief. Beliefs about the same day reached by different
+        arithmetic differ in their last digits, which are enough to change a search
+        through contact, and round to the same belief here."""
+        assert isinstance(belief, RangeOfMotionBelief), "Need a RangeOfMotionBelief"
+        midpoint = np.round(self.get_midpoint(belief), 3)
+        mean = midpoint / self._magnitudes
+
+        def move(bound: NDArray[np.float64]) -> NDArray[np.float64]:
+            return np.asarray(mean + np.round(bound - belief.mean, 6))
+
+        rounded = RangeOfMotionBelief(
+            mean=mean,
+            stddev=np.round(belief.stddev, 6),
+            low=move(belief.low),
+            high=move(belief.high),
+            floor=move(belief.floor),
+        )
+        return self.get_task(exercise, midpoint), rounded
+
     def start_day(self, rng: np.random.Generator) -> None:
         self._day += 1
         super().__init__(self._make_tasks(self._get_true_scales()))

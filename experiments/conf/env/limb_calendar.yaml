@@ -30,3 +30,6 @@ budgets:
   planning:
     max_iterations: 1
 num_cycles: 21
+# Days that every approach except current belief looks ahead, starting with the day
+# right after the sleep.
+lookahead: 4

@@ -74,6 +74,34 @@ def test_tasks_and_beliefs_follow_the_calendar(request):
         assert np.allclose(task.goal, tasks.get_goal(0, env.hidden_params))
 
 
+def test_days_reached_differently_round_to_one_exercise(parts):
+    """Beliefs about one day by different arithmetic give one task and belief, close
+    to the day's own, while another day's differ."""
+    domain, tasks, _ = parts
+    belief = domain.initial_belief
+    forecast = tasks.forecast(belief, 3)
+    halves = RangeOfMotionBelief(
+        mean=(forecast.mean * 3 + forecast.mean) / 4 + 1e-15,
+        stddev=forecast.stddev,
+        low=forecast.low - 1e-15,
+        high=forecast.high + 1e-15,
+        floor=forecast.floor - 1e-15,
+    )
+    task, rounded = tasks.round_exercise(2, forecast)
+    other_task, other = tasks.round_exercise(2, halves)
+    assert isinstance(task, ExerciseTask) and task.exercise == 2
+    assert np.array_equal(task.goal, other_task.goal)
+    for name in ("mean", "stddev", "low", "high", "floor"):
+        assert np.array_equal(getattr(rounded, name), getattr(other, name))
+    assert np.allclose(
+        tasks.get_midpoint(rounded), tasks.get_midpoint(forecast), atol=5.1e-4
+    )
+    far, _ = tasks.round_exercise(2, tasks.forecast(belief, 0))
+    assert not np.array_equal(task.goal, far.goal) or np.allclose(
+        forecast.mean, belief.mean
+    )
+
+
 def test_distance_sums_over_joints(parts):
     """Two days differ by the sum of their limits' differences."""
     _, tasks, _ = parts

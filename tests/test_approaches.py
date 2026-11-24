@@ -779,6 +779,9 @@ def test_make_calendar_robots():
         "transfer": lambda d: make_calendar_allocation_robot(
             d, num_units=2, rule="transfer_practice", horizon=3, **common
         ),
+        "greedy": lambda d: make_calendar_allocation_robot(
+            d, num_units=2, rule="one_step_greedy", horizon=3, **common
+        ),
     }
     for make in makers.values():
         domain = make_calendar_arm_domain(0, routine_size=2)

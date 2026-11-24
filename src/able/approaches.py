@@ -6,7 +6,6 @@ sees what the robot imagines while it sleeps.
 """
 
 import dataclasses
-from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
@@ -1427,7 +1426,6 @@ def _make_limb_calendar_planner(
     domain: LimbCalendarDomain,
     key_resolution: float,
     confidence: float,
-    plan_dir: str | None,
     seed: int,
 ) -> tuple[LimbRecallPlanner, LimbCalendarTaskDistribution]:
     """The recalling planner, whose plan cache holds one plan per exercise and day
@@ -1453,9 +1451,9 @@ def _make_limb_calendar_planner(
     planner = LimbRecallPlanner(
         env_model,
         get_features,
+        tasks.round_exercise,
         params,
         seed=seed,
-        plan_dir=None if plan_dir is None else Path(plan_dir),
     )
     return planner, tasks
 
@@ -1464,15 +1462,12 @@ def make_limb_calendar_scratch_robot(
     domain: LimbCalendarDomain,
     key_resolution: float = 0.03,
     confidence: float = 0.5,
-    plan_dir: str | None = None,
     seed: int = 0,
     recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
 ) -> LimbRobot:
     """A robot for the limb calendar that has no stored plans and never learns."""
     del recorder  # unused because the robot imagines nothing while it sleeps
-    planner, _ = _make_limb_calendar_planner(
-        domain, key_resolution, confidence, plan_dir, seed
-    )
+    planner, _ = _make_limb_calendar_planner(domain, key_resolution, confidence, seed)
     return _make_exercise_robot(
         domain,
         planner,
@@ -1491,11 +1486,10 @@ def _make_limb_calendar_learning_robot(
     training_iterations: int,
     key_resolution: float,
     confidence: float,
-    plan_dir: str | None,
     seed: int,
 ) -> LimbRobot:
     planner, tasks = _make_limb_calendar_planner(
-        domain, key_resolution, confidence, plan_dir, seed
+        domain, key_resolution, confidence, seed
     )
     return _make_exercise_robot(
         domain,
@@ -1516,7 +1510,6 @@ def make_limb_calendar_current_belief_robot(
     days_ahead: int = 0,
     key_resolution: float = 0.03,
     confidence: float = 0.5,
-    plan_dir: str | None = None,
     seed: int = 0,
     recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
 ) -> LimbRobot:
@@ -1529,7 +1522,6 @@ def make_limb_calendar_current_belief_robot(
         training_iterations,
         key_resolution,
         confidence,
-        plan_dir,
         seed,
     )
 
@@ -1543,7 +1535,6 @@ def make_limb_calendar_dreaming_robot(
     horizon: int = 1,
     key_resolution: float = 0.03,
     confidence: float = 0.5,
-    plan_dir: str | None = None,
     seed: int = 0,
     recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
 ) -> LimbRobot:
@@ -1556,7 +1547,6 @@ def make_limb_calendar_dreaming_robot(
         training_iterations,
         key_resolution,
         confidence,
-        plan_dir,
         seed,
     )
 
@@ -1571,7 +1561,6 @@ def make_limb_calendar_belief_coverage_robot(
     num_candidates: int = 4,
     key_resolution: float = 0.03,
     confidence: float = 0.5,
-    plan_dir: str | None = None,
     seed: int = 0,
     recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
 ) -> LimbRobot:
@@ -1589,7 +1578,6 @@ def make_limb_calendar_belief_coverage_robot(
         training_iterations,
         key_resolution,
         confidence,
-        plan_dir,
         seed,
     )
 
@@ -1608,7 +1596,6 @@ def make_limb_calendar_allocation_robot(
     dreams_per_unit: int = 16,
     key_resolution: float = 0.03,
     confidence: float = 0.5,
-    plan_dir: str | None = None,
     seed: int = 0,
     recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
 ) -> LimbRobot:
@@ -1622,8 +1609,12 @@ def make_limb_calendar_allocation_robot(
 
     def average(a: Belief[Any], b: Belief[Any]) -> Belief[Any]:
         assert isinstance(a, RangeOfMotionBelief) and isinstance(b, RangeOfMotionBelief)
-        return dataclasses.replace(
-            a, mean=(a.mean + b.mean) / 2.0, floor=(a.floor + b.floor) / 2.0
+        return RangeOfMotionBelief(
+            mean=(a.mean + b.mean) / 2.0,
+            stddev=a.stddev,
+            low=(a.low + b.low) / 2.0,
+            high=(a.high + b.high) / 2.0,
+            floor=(a.floor + b.floor) / 2.0,
         )
 
     model = HorizonModel(
@@ -1647,7 +1638,6 @@ def make_limb_calendar_allocation_robot(
         training_iterations,
         key_resolution,
         confidence,
-        plan_dir,
         seed,
     )
 
