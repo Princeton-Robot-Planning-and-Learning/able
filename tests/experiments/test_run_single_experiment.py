@@ -119,7 +119,7 @@ def test_friction_sites_comparison_approaches_build() -> None:
     """Tests that every approach run_comparison.sh runs for friction_sites by
     default has a config that builds its robot."""
     script = (SCRIPT.parent / "run_comparison.sh").read_text()
-    match = re.search(r"friction_sites\) DEFAULT_APPROACHES=([\w,]+)", script)
+    match = re.search(r"friction_sites[ |\w]*\) DEFAULT_APPROACHES=([\w,]+)", script)
     assert match is not None
     approaches = match.group(1).split(",")
     assert "transfer_practice" in approaches and "prior_only" not in approaches

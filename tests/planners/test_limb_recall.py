@@ -16,6 +16,7 @@ from able.approaches import (
 )
 from able.envs.limb.calendar import make_limb_calendar_domain
 from able.models.base import Dataset
+from able.models.kernel_regression import KernelRegressor
 from able.planners.limb_recall import MAX_PLAN_LENGTH, LimbRecallPlanner, RecallParams
 from able.planners.mpc import LimbMPCPlanner
 from able.structs import Budget, PlanningFailure
@@ -39,7 +40,9 @@ def _make_planner(domain, request):
         domain.env_model,
         get_features,
         tasks.round_exercise,
-        RecallParams(),
+        RecallParams(
+            model=KernelRegressor((0.1, 0.03, 0.03, 0.03), prior_weight=1e-12)
+        ),
         seed=0,
     )
     request.addfinalizer(planner.close)
@@ -50,7 +53,7 @@ def test_nothing_stored_fails(domain, request):
     """With no stored plan, planning while awake fails."""
     planner = _make_planner(domain, request)
     task = domain.task_distribution.get_tasks()[0]
-    with pytest.raises(PlanningFailure):
+    with pytest.raises(PlanningFailure, match="no plans"):
         planner.plan(
             task,
             domain.initial_belief,
@@ -61,13 +64,13 @@ def test_nothing_stored_fails(domain, request):
 
 
 def test_a_plan_that_does_not_reach_the_goal_fails(domain, request):
-    """A stored plan that leaves the limb where it is is not replayed as a plan."""
+    """A predicted plan that barely moves the limb is not returned as a plan."""
     planner = _make_planner(domain, request)
     tasks = domain.task_distribution
     task, belief = tasks.get_tasks()[0], domain.initial_belief
     features = np.concatenate([[task.exercise], tasks.get_midpoint(belief)])
-    stay = np.full((MAX_PLAN_LENGTH, 7), np.nan)
-    stay[:5] = 0.0
+    stay = np.zeros((MAX_PLAN_LENGTH, 7))
+    stay[:5] = 1e-3
     model = planner.get_model(planner.get_default_params()).fit(
         Dataset(
             x=features[None],
@@ -77,7 +80,7 @@ def test_a_plan_that_does_not_reach_the_goal_fails(domain, request):
         )
     )
     params = planner.set_model(planner.get_default_params(), model)
-    with pytest.raises(PlanningFailure):
+    with pytest.raises(PlanningFailure, match="does not reach the goal"):
         planner.plan(
             task, belief, params, Budget(max_iterations=1), np.random.default_rng(0)
         )
@@ -119,7 +122,25 @@ def test_training_plans_are_stored_whole(domain, request):
     examples = planner.get_plan_examples(task, belief, plan)
     assert examples.y.shape == (1, MAX_PLAN_LENGTH * 7)
     assert np.allclose(examples.y[0, : 4 * 7], 0.25)
-    assert np.isnan(examples.y[0, 4 * 7 :]).all()
+    assert (examples.y[0, 4 * 7 :] == 0).all()
+
+
+def test_predicted_plans_average_nearby_days_of_the_exercise(domain):
+    """A day between two stored days gets the mean of their plans, whatever the plans
+    of another exercise."""
+    robot = make_limb_calendar_scratch_robot(domain)
+    middle = domain.task_distribution.get_midpoint(domain.initial_belief)
+    below, above = middle - [0.03, 0, 0], middle + [0.03, 0, 0]
+    model = robot.planner_params.model.fit(
+        Dataset(
+            x=np.array([[0, *below], [0, *above], [1, *middle]]),
+            y=np.array([[1.0, 0.0], [3.0, 2.0], [100.0, 100.0]]),
+            costs=np.zeros(3),
+            groups=np.arange(3),
+        )
+    )
+    predicted = model.sample(np.array([0, *middle]), 1, np.random.default_rng(0))
+    assert np.allclose(predicted, [[2.0, 1.0]])
 
 
 def test_limb_calendar_robots(domain):

@@ -1,4 +1,4 @@
-"""A limb planner that replays stored plans while awake."""
+"""A limb planner that replays a plan its model predicts while awake."""
 
 import dataclasses
 import time
@@ -47,20 +47,19 @@ TRAINING_SEARCHES = (_make_search(12, 4), _make_search(16, 3), _make_search(24, 
 @dataclass(frozen=True, eq=False)
 class RecallParams(MPCParams):
     """MPC parameters, and whether to search for a training plan instead of
-    replaying a stored one."""
+    replaying a predicted one."""
 
     training: bool = False
     searches: tuple[LimbMPCConfig, ...] = field(default=TRAINING_SEARCHES)
 
 
 class LimbRecallPlanner(LimbMPCPlanner):
-    """Plans by replaying the stored plan for the same exercise whose day is nearest.
+    """Plans by replaying the plan that the model predicts from the training plans.
 
-    While awake it looks up the plan for the task's exercise and the belief's
-    features, replays it in its own simulator, and returns it if it reaches the goal
-    without breaking a constraint under the believed limits. That counts as one
-    iteration of the budget. Otherwise planning fails, since nothing else is cheap
-    enough.
+    While awake it predicts a plan for the task's exercise and the belief's features,
+    replays it in its own simulator, and returns it if it reaches the goal without
+    breaking a constraint under the believed limits. That counts as one iteration of
+    the budget. Otherwise planning fails.
 
     Training plans (see get_training_params()) try MPC searches in turn within the
     budget. A plan is stored whole, up to where MPC ends, rather than only until it
@@ -106,7 +105,7 @@ class LimbRecallPlanner(LimbMPCPlanner):
     ) -> Dataset:
         assert isinstance(belief, RangeOfMotionBelief), "Need a RangeOfMotionBelief"
         assert isinstance(policy, LimbMPCPolicy), "Need a plan from plan()"
-        controls = np.full((MAX_PLAN_LENGTH, _NUM_JOINTS), np.nan)
+        controls = np.zeros((MAX_PLAN_LENGTH, _NUM_JOINTS))
         length = min(len(policy.controls), MAX_PLAN_LENGTH)
         controls[:length] = np.array(policy.controls)[:length]
         return Dataset(
@@ -138,12 +137,13 @@ class LimbRecallPlanner(LimbMPCPlanner):
         params: RecallParams,
         rng: np.random.Generator,
     ) -> LimbMPCPolicy:
-        """The stored plan for the nearest day, if it replays to the goal."""
+        """The plan that the model predicts, if it replays to the goal."""
         proposals = params.model.sample(self._get_features(task, belief), 1, rng)
         if len(proposals) == 0:
-            raise PlanningFailure("No stored plan for the exercise")
+            raise PlanningFailure("The model has no plans to predict from")
         controls = proposals[0].reshape(MAX_PLAN_LENGTH, _NUM_JOINTS)
-        controls = controls[~np.isnan(controls).all(axis=1)]
+        moving = np.flatnonzero(np.abs(controls).max(axis=1) > 0)
+        controls = controls[: moving[-1] + 1] if len(moving) else controls[:0]
         reached = _with_start_reach(belief, task.initial_state)
         particles = np.stack([reached.sample(rng) for _ in range(params.num_particles)])
         limits = ParticleLimits.from_particles(
@@ -172,7 +172,7 @@ class LimbRecallPlanner(LimbMPCPlanner):
                     [],
                     used,
                 )
-        raise PlanningFailure("The stored plan does not reach the goal")
+        raise PlanningFailure("The predicted plan does not reach the goal")
 
     def _plan_for_training(
         self,

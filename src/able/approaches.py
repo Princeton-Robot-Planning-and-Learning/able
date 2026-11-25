@@ -1413,13 +1413,18 @@ def make_calendar_allocation_robot(
 def make_calendar_limb_features(
     tasks: LimbCalendarTaskDistribution, key_resolution: float
 ) -> Callable[[Belief[Any]], NDArray[np.float64]]:
-    """A function from a belief to its midpoint limits in steps of the plan cache's
-    resolution."""
+    """A function from a belief to its midpoint limits in steps of key_resolution."""
 
     def get_features(belief: Belief[Any]) -> NDArray[np.float64]:
         return np.round(tasks.get_midpoint(belief) / key_resolution)
 
     return get_features
+
+
+# So narrow that the plans of other exercises weigh next to nothing.
+_EXERCISE_BANDWIDTH = 0.1
+# So small that the mean of all plans matters only where no stored plan is close.
+_PLAN_PRIOR_WEIGHT = 1e-12
 
 
 def _make_limb_calendar_planner(
@@ -1428,8 +1433,9 @@ def _make_limb_calendar_planner(
     confidence: float,
     seed: int,
 ) -> tuple[LimbRecallPlanner, LimbCalendarTaskDistribution]:
-    """The recalling planner, whose plan cache holds one plan per exercise and day
-    type and lends the nearest day's, and the calendar's task distribution."""
+    """The recalling planner, whose model predicts an exercise's plan by averaging its
+    stored plans with the most weight on those for days within about key_resolution
+    of the day's limits, and the calendar's task distribution."""
     env_model, tasks = domain.env_model, domain.task_distribution
     assert isinstance(env_model, LimbModel)
     assert isinstance(tasks, LimbCalendarTaskDistribution)
@@ -1440,12 +1446,9 @@ def _make_limb_calendar_planner(
 
     params = RecallParams(
         confidence=confidence,
-        model=ExactMatchCache(
-            key_resolution=(1.0,) + (key_resolution,) * 3,
-            max_per_key=1,
-            max_key_distance=_ANY_KEY_DISTANCE,
-            num_exact_dims=1,
-            sum_distance=True,
+        model=KernelRegressor(
+            bandwidths=(_EXERCISE_BANDWIDTH,) + (key_resolution,) * 3,
+            prior_weight=_PLAN_PRIOR_WEIGHT,
         ),
     )
     planner = LimbRecallPlanner(
