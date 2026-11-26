@@ -1,0 +1,10 @@
+_target_: able.approaches.make_friction_calendar_current_belief_robot
+# Trains for the day right after the sleep, so it does not look ahead.
+days_ahead: 0
+key_resolution: 0.1
+# The seed of the training plans, which every approach shares.
+seed: ${seed}
+# Where training plans are stored and shared between runs.
+plan_dir: ${plan_dir}
+tube: ${tube}
+finish: ${finish}

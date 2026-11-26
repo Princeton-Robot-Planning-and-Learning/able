@@ -72,6 +72,19 @@ class ParticleBelief(Belief[NDArray[np.float64]]):
         """The standard deviation of the particles."""
         return self._particles.std(axis=0)
 
+    def scaled(self, factors: ArrayLike) -> "ParticleBelief":
+        """The belief with every particle's parameters multiplied by factors (one
+        per parameter), within the same bounds."""
+        return ParticleBelief(
+            self._particles * np.asarray(factors, dtype=np.float64),
+            self._low,
+            self._high,
+            self._bandwidth,
+            self._min_jitter,
+            self._seed,
+            self._independent,
+        )
+
     def sample(self, rng: np.random.Generator) -> NDArray[np.float64]:
         """Draw one particle."""
         return self._particles[rng.integers(len(self._particles))].copy()

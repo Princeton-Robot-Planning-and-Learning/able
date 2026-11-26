@@ -61,12 +61,17 @@ def make_world(
     goal_radius: float = 0.3,
     num_floors: int = 3,
     maze: str = "threeroutes",
+    strike_noise: bool = True,
+    measurement_noise: bool = True,
 ) -> PuckWorld:
     """The maze ("threeroutes", "corridors", or "corridors4") with num_holes
     holes, the goal radius, and num_floors floors: a key of FLOOR_SPLITS on
     threeroutes, and on a corridors maze one or three per corridor. On
     threeroutes the holes are the first num_holes of HOLES; on a corridors maze,
-    every corridor gets the first num_holes of CORRIDOR_HOLES."""
+    every corridor gets the first num_holes of CORRIDOR_HOLES. Without
+    strike_noise, every strike goes at exactly its heading and speed, and without
+    measurement_noise, the robot measures where the puck stops to a tenth of a
+    millimeter."""
     base: PuckMap
     if maze == "threeroutes":
         base, all_holes, splits = THREE_ROUTES, HOLES, FLOOR_SPLITS
@@ -94,7 +99,12 @@ def make_world(
         floor_splits=splits[num_floors],
     )
     assert puck_map.num_surfaces == num_floors
-    return PuckWorld(puck_map, PuckPhysics(goal_radius=goal_radius))
+    physics = PuckPhysics(goal_radius=goal_radius)
+    if not strike_noise:
+        physics = dataclasses.replace(physics, speed_noise=0.0, angle_noise=0.0)
+    if not measurement_noise:
+        physics = dataclasses.replace(physics, position_obs_noise=1e-4)
+    return PuckWorld(puck_map, physics)
 
 
 def make_sim(sim: str, world: PuckWorld) -> Any:

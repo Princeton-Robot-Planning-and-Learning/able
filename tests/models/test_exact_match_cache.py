@@ -1,5 +1,7 @@
 """Tests for models/exact_match_cache.py."""
 
+import dataclasses
+
 import numpy as np
 
 from able.models.base import Dataset
@@ -70,3 +72,22 @@ def test_per_entry_resolution():
     cache = ExactMatchCache(key_resolution=(0.1, 0.01))
     assert cache.get_key(np.array([0.33, 0.033])) == (3, 3)
     assert ExactMatchCache().get_key(np.array([0.33, 0.033])) == (3, 0)
+
+
+def test_sum_distance_picks_the_nearest_key_by_summed_differences():
+    """With sum_distance, an uncached key borrows from the key whose differences sum
+    least, where the largest difference would pick another."""
+    cache = ExactMatchCache(
+        key_resolution=1.0, max_per_key=1, max_key_distance=10, sum_distance=True
+    )
+    data = Dataset(
+        x=np.array([[2.0, 0.0, 0.0], [1.0, 1.0, 1.0]]),
+        y=np.array([[1.0], [2.0]]),
+        costs=np.zeros(2),
+        groups=np.arange(2),
+    )
+    fitted = cache.fit(data)
+    rng = np.random.default_rng(0)
+    assert fitted.sample(np.zeros(3), 1, rng)[0, 0] == 1.0
+    largest = dataclasses.replace(fitted, sum_distance=False)
+    assert largest.sample(np.zeros(3), 1, rng)[0, 0] == 2.0
