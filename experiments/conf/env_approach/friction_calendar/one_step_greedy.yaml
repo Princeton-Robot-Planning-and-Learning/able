@@ -1,0 +1,15 @@
+_target_: able.approaches.make_friction_calendar_allocation_robot
+# Days looked ahead, starting with the day right after the sleep.
+horizon: ${lookahead}
+# Chance that a day goes well once every task has a plan within r steps of key
+# resolution of the day's slick, for r = 0, 1, ... (see env/friction_calendar.yaml).
+tier_values: ${tier_values}
+first_radius: 0
+dreams_per_unit: 16
+key_resolution: 0.1
+# The seed of the training plans, which every approach shares.
+seed: ${seed}
+# Where training plans are stored and shared between runs.
+plan_dir: ${plan_dir}
+tube: ${tube}
+finish: ${finish}

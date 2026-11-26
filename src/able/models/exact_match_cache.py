@@ -26,9 +26,9 @@ class ExactMatchCache(ConditionalModel):
     With max_key_distance above 0, an input whose key has no outputs gets the
     outputs of the nearest cached key whose first num_exact_dims entries equal
     its own and whose other entries each differ from its own by at most
-    max_key_distance. Distance is the largest difference between entries, with
-    ties going to the smaller sum of squared differences and then to the key
-    cached first.
+    max_key_distance. Distance is the largest difference between entries, or with
+    sum_distance, the sum of their differences, with ties going to the smaller sum
+    of squared differences and then to the key cached first.
     """
 
     key_resolution: float | tuple[float, ...] = 0.1
@@ -36,6 +36,7 @@ class ExactMatchCache(ConditionalModel):
     entries: Mapping[tuple[int, ...], CacheEntries] = field(default_factory=dict)
     max_key_distance: int = 0
     num_exact_dims: int = 0
+    sum_distance: bool = False
 
     def get_key(self, x: NDArray[np.float64]) -> tuple[int, ...]:
         """The key that the input rounds to."""
@@ -84,7 +85,10 @@ class ExactMatchCache(ConditionalModel):
             return None
         rest = np.array(key[self.num_exact_dims :])
         differences = np.abs(keys[:, self.num_exact_dims :] - rest)
-        distances = differences.max(axis=1, initial=0)
+        if self.sum_distance:
+            distances = differences.sum(axis=1)
+        else:
+            distances = differences.max(axis=1, initial=0)
         within = np.flatnonzero(distances <= self.max_key_distance)
         if len(within) == 0:
             return None

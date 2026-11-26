@@ -123,10 +123,14 @@ class FrictionModel(
         rewards: PuckRewards = PuckRewards(),
         num_floors: int = 3,
         maze: str = "threeroutes",
+        strike_noise: bool = True,
+        measurement_noise: bool = True,
     ) -> None:
         self.sim_name = sim
         self.rewards = rewards
-        self.world = make_world(num_holes, goal_radius, num_floors, maze)
+        self.world = make_world(
+            num_holes, goal_radius, num_floors, maze, strike_noise, measurement_noise
+        )
         self._horizon = horizon
         self._sim: Any = None
         self._probes = ProbeSimulator(sim, num_holes, goal_radius, num_floors, maze)

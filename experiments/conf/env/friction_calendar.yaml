@@ -1,0 +1,60 @@
+# @package _global_
+# A friction site whose three floor zones (blue, tan, green) are polished on a
+# calendar the robot knows, with a routine of six pushing tasks that never change.
+# Each unit of sleep plans one task for one kind of day, the robot replays the plan
+# of the nearest day while awake, and a day goes well only if every task succeeds.
+# Strikes have no noise. The approaches are in env_approach/friction_calendar.
+env:
+  domain:
+    _target_: able.envs.friction.calendar.make_friction_calendar_domain
+    # week or uneven (see sample_calendar()), or cleaning_week or drifting_week (see
+    # sample_cleaning_week()).
+    calendar: uneven
+    # When the robot learns each week's drift: run (from the start) or week (on
+    # that week's Monday).
+    notice: run
+    # Rain from a known forecast, learned each morning, making one zone rain_slick
+    # slicker per level of rain.
+    weather: false
+    rain_slick: 0.3
+    # How far each zone's slick (log friction) moves per day.
+    step: 0.2
+    max_slick: 1.0
+    # Must cover the cycles and the horizon.
+    num_days: 40
+    survey_stddev: 0.05
+    # Every day's slick is a multiple of this, so plans are for the same day types
+    # however the calendar wanders.
+    grid: 0.1
+    goal_radius: 0.2
+    # Meters the goal moves per unit of each zone's slick, each zone along its own
+    # direction; 0 keeps goals fixed. Moving goals use their own routines, e.g.
+    # goal_shift=0.5 goal_radius=0.1 routines=friction_calendar_moving_routines.json.
+    goal_shift: 0.0
+    routines: friction_calendar_routines.json
+  renderer: null
+budgets:
+  sleep:
+    max_iterations: 4
+  information_gathering:
+    max_iterations: 0
+  execution:
+    max_iterations: 0
+  # While awake, planning a task is one replay of the nearest stored plan.
+  planning:
+    max_iterations: 1
+num_cycles: 21
+# Days that every approach except current belief looks ahead, starting with the day
+# right after the sleep.
+lookahead: 4
+# A replay is followed only while each push stops within this many meters of where
+# it stopped when planned, or null for no limit.
+tube: null
+# Chance that a day goes well once every task has a plan within r steps of key
+# resolution of the day's slick, for r = 0, 1, 2, measured on two other routines
+# (experiments/friction_calendar/probe_replay.py); with tube 0.1: [0.97, 0.48, 0.18].
+tier_values: [1.0, 0.61, 0.37]
+# Whether training plans take a finishing shot when one stops the puck in the goal.
+finish: false
+# Where training plans are stored and shared between runs, or null.
+plan_dir: ${oc.env:FRICTION_CALENDAR_PLANS,null}

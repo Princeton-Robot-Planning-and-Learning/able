@@ -18,10 +18,16 @@ from able.belief_updaters.range_of_motion import RangeOfMotionBeliefUpdater
 from able.belief_updaters.sites import MultiSiteUpdater
 from able.beliefs.base import Belief
 from able.beliefs.interval import IntervalBelief
+from able.beliefs.particles import ParticleBelief
 from able.beliefs.range_of_motion import RangeOfMotionBelief
 from able.envs.base import FiniteTaskDistribution
 from able.envs.calendar import ExerciseTask, ExerciseTaskDistribution
 from able.envs.calendar_arm import CalendarArmDomain, CalendarTaskDistribution
+from able.envs.friction.calendar import (
+    CalendarFrictionBeliefUpdater,
+    FrictionCalendarTaskDistribution,
+    WeatherGatherer,
+)
 from able.envs.friction.model import FrictionModel, FrictionState, FrictionTask
 from able.envs.friction.pomdp import PuckPushingModel
 from able.envs.friction.query import FrictionQuery, PushRecord
@@ -117,6 +123,8 @@ from able.learners.site_focus import (
 from able.models.base import ConditionalModel
 from able.models.exact_match_cache import ExactMatchCache
 from able.models.kernel_regression import KernelRegressor
+from able.planners.friction_recall import FrictionRecallPlanner
+from able.planners.friction_recall import RecallParams as FrictionRecallParams
 from able.planners.limb_recall import LimbRecallPlanner, RecallParams
 from able.planners.mpc import LimbMPCPlanner, MPCParams, SeedConfig
 from able.planners.pddlstream import PDDLStreamParams, ReachPDDLStreamPlanner
@@ -1642,6 +1650,283 @@ def make_limb_calendar_allocation_robot(
         key_resolution,
         confidence,
         seed,
+    )
+
+
+def make_calendar_friction_features(
+    tasks: FrictionCalendarTaskDistribution, key_resolution: float
+) -> Callable[[Belief[Any]], NDArray[np.float64]]:
+    """A function from a belief to each zone's believed slick in steps of the plan
+    cache's resolution."""
+
+    def get_features(belief: Belief[Any]) -> NDArray[np.float64]:
+        return np.round(tasks.get_midpoint(belief) / key_resolution)
+
+    return get_features
+
+
+def _make_friction_calendar_planner(
+    domain: FrictionDomain,
+    key_resolution: float,
+    night_sims: int,
+    seed: int,
+    plan_dir: str | None,
+    tube: float | None = None,
+    finish: bool = False,
+) -> tuple[FrictionRecallPlanner, FrictionCalendarTaskDistribution]:
+    """The recalling planner, whose plan cache holds one plan per task and day type
+    and lends the nearest day's, and the calendar's task distribution. A replay
+    stays within the tube (m) of the plan's stops, if it is given, and training
+    plans take finishing shots if finish. Training plans
+    are stored in plan_dir/routine<seed>, if plan_dir is given."""
+    env_model, tasks = domain.env_model, domain.task_distribution
+    assert isinstance(env_model, FrictionModel)
+    assert isinstance(tasks, FrictionCalendarTaskDistribution)
+    num_zones = int(tasks.zones.max()) + 1
+
+    def get_features(
+        task: FrictionTask, belief: Belief[ArmArray]
+    ) -> NDArray[np.float64]:
+        assert isinstance(task, ExerciseTask), "Need an exercise"
+        return np.concatenate([[task.exercise], tasks.get_midpoint(belief)])
+
+    params = FrictionRecallParams(
+        model=ExactMatchCache(
+            key_resolution=(1.0,) + (key_resolution,) * num_zones,
+            max_per_key=1,
+            max_key_distance=_ANY_KEY_DISTANCE,
+            num_exact_dims=1,
+            sum_distance=True,
+        ),
+        night_sims=night_sims,
+        tube=tube,
+        finish=finish,
+    )
+    planner = FrictionRecallPlanner(
+        env_model,
+        get_features,
+        params,
+        seed=seed,
+        plan_dir=None if plan_dir is None else f"{plan_dir}/routine{seed}",
+    )
+    return planner, tasks
+
+
+def make_friction_calendar_scratch_robot(
+    domain: FrictionDomain,
+    key_resolution: float = 0.1,
+    night_sims: int = 500,
+    seed: int = 0,
+    plan_dir: str | None = None,
+    tube: float | None = None,
+    finish: bool = False,
+    recorder: CycleRecorder[FrictionState, FrictionTask, ArmArray] | None = None,
+) -> FrictionRobot:
+    """A robot for the friction calendar that has no stored plans and never
+    learns."""
+    del recorder  # unused because the robot imagines nothing while it sleeps
+    planner, tasks = _make_friction_calendar_planner(
+        domain, key_resolution, night_sims, seed, plan_dir, tube, finish
+    )
+    env_model = domain.env_model
+    assert isinstance(env_model, FrictionModel)
+    return _make_exercise_robot(
+        domain,
+        planner,
+        CalendarFrictionBeliefUpdater(env_model.world, tasks),
+        WeatherGatherer(),
+        None,
+        None,
+        1,
+        0,
+    )
+
+
+def _make_friction_calendar_learning_robot(
+    domain: FrictionDomain,
+    make_source: Callable[[Any, FrictionCalendarTaskDistribution], Any],
+    training_iterations: int,
+    key_resolution: float,
+    night_sims: int,
+    seed: int,
+    plan_dir: str | None,
+    tube: float | None,
+    finish: bool,
+) -> FrictionRobot:
+    planner, tasks = _make_friction_calendar_planner(
+        domain, key_resolution, night_sims, seed, plan_dir, tube, finish
+    )
+    env_model = domain.env_model
+    assert isinstance(env_model, FrictionModel)
+    return _make_exercise_robot(
+        domain,
+        planner,
+        CalendarFrictionBeliefUpdater(env_model.world, tasks),
+        WeatherGatherer(),
+        lambda dreamer, _: make_source(dreamer, tasks),
+        CurrentBeliefSource(),
+        1,
+        training_iterations,
+    )
+
+
+def make_friction_calendar_current_belief_robot(
+    domain: FrictionDomain,
+    planning_budget: Budget,
+    training_iterations: int = 1000,
+    days_ahead: int = 0,
+    key_resolution: float = 0.1,
+    night_sims: int = 500,
+    seed: int = 0,
+    plan_dir: str | None = None,
+    tube: float | None = None,
+    finish: bool = False,
+    recorder: CycleRecorder[FrictionState, FrictionTask, ArmArray] | None = None,
+) -> FrictionRobot:
+    """A robot for the friction calendar whose units all train under its forecast
+    belief days_ahead days from now, under the most likely weather."""
+    del planning_budget, recorder  # unused because the robot imagines nothing
+    return _make_friction_calendar_learning_robot(
+        domain,
+        lambda _, tasks: LookaheadSource(tasks.forecast_likely, days_ahead),
+        training_iterations,
+        key_resolution,
+        night_sims,
+        seed,
+        plan_dir,
+        tube,
+        finish,
+    )
+
+
+def make_friction_calendar_dreaming_robot(
+    domain: FrictionDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    training_iterations: int = 1000,
+    horizon: int = 1,
+    key_resolution: float = 0.1,
+    night_sims: int = 500,
+    seed: int = 0,
+    plan_dir: str | None = None,
+    tube: float | None = None,
+    finish: bool = False,
+    recorder: CycleRecorder[FrictionState, FrictionTask, ArmArray] | None = None,
+) -> FrictionRobot:
+    """A robot for the friction calendar that trains under the beliefs it forecasts
+    for the next horizon days, each equally often."""
+    del gathering_budget, execution_budget, planning_budget, recorder  # unused
+    return _make_friction_calendar_learning_robot(
+        domain,
+        lambda dreamer, tasks: HorizonSource(dreamer, tasks.forecast, horizon),
+        training_iterations,
+        key_resolution,
+        night_sims,
+        seed,
+        plan_dir,
+        tube,
+        finish,
+    )
+
+
+def make_friction_calendar_belief_coverage_robot(
+    domain: FrictionDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    training_iterations: int = 1000,
+    horizon: int = 1,
+    num_candidates: int = 4,
+    key_resolution: float = 0.1,
+    night_sims: int = 500,
+    seed: int = 0,
+    plan_dir: str | None = None,
+    tube: float | None = None,
+    finish: bool = False,
+    recorder: CycleRecorder[FrictionState, FrictionTask, ArmArray] | None = None,
+) -> FrictionRobot:
+    """A robot for the friction calendar that trains under the farthest of
+    num_candidates forecasts of the next horizon days from the beliefs it has
+    trained under, by each zone's slick."""
+    del gathering_budget, execution_budget, planning_budget, recorder  # unused
+    return _make_friction_calendar_learning_robot(
+        domain,
+        lambda dreamer, tasks: BeliefCoverageSource(
+            HorizonSource(dreamer, tasks.forecast, horizon),
+            make_calendar_friction_features(tasks, key_resolution),
+            num_candidates,
+        ),
+        training_iterations,
+        key_resolution,
+        night_sims,
+        seed,
+        plan_dir,
+        tube,
+        finish,
+    )
+
+
+def make_friction_calendar_allocation_robot(
+    domain: FrictionDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    num_units: int,
+    rule: str,
+    training_iterations: int = 1000,
+    horizon: int = 7,
+    tier_values: tuple[float, ...] = (1.0, 0.5),
+    first_radius: int = 0,
+    day_type_steps: int = 1,
+    dreams_per_unit: int = 16,
+    key_resolution: float = 0.1,
+    night_sims: int = 500,
+    seed: int = 0,
+    plan_dir: str | None = None,
+    tube: float | None = None,
+    finish: bool = False,
+    recorder: CycleRecorder[FrictionState, FrictionTask, ArmArray] | None = None,
+) -> FrictionRobot:
+    """A robot for the friction calendar that splits each sleep's num_units among
+    the coming days by an allocation rule, planning the next horizon nights together
+    (see make_calendar_allocation_robot()). Tier r serves days within first_radius
+    + r steps of slick, summed over zones, with tier_values[r]. A day type is a bin
+    of day_type_steps steps in each zone's slick."""
+    del gathering_budget, execution_budget, planning_budget, recorder  # unused
+    tasks = domain.task_distribution
+    assert isinstance(tasks, FrictionCalendarTaskDistribution)
+
+    def average(a: Belief[Any], b: Belief[Any]) -> Belief[Any]:
+        assert isinstance(a, ParticleBelief) and isinstance(b, ParticleBelief)
+        return a.scaled(np.exp((np.log(b.mean) - np.log(a.mean)) / 2.0))
+
+    model = HorizonModel(
+        get_features=make_calendar_friction_features(tasks, key_resolution),
+        run_length=tasks.num_exercises,
+        tiers=tuple(
+            Tier(make_sum_transfer(first_radius + r), value)
+            for r, value in enumerate(tier_values)
+        ),
+        between=average,
+        independent_transfer=make_bin_transfer(day_type_steps),
+    )
+    return _make_friction_calendar_learning_robot(
+        domain,
+        lambda dreamer, calendar_tasks: HorizonAllocationSource(
+            HorizonSource(dreamer, calendar_tasks.forecast, horizon),
+            model,
+            rule,
+            num_units,
+            dreams_per_unit,
+        ),
+        training_iterations,
+        key_resolution,
+        night_sims,
+        seed,
+        plan_dir,
+        tube,
+        finish,
     )
 
 

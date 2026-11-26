@@ -1,0 +1,10 @@
+_target_: able.approaches.make_friction_calendar_dreaming_robot
+# Days looked ahead, starting with the day right after the sleep.
+horizon: ${lookahead}
+key_resolution: 0.1
+# The seed of the training plans, which every approach shares.
+seed: ${seed}
+# Where training plans are stored and shared between runs.
+plan_dir: ${plan_dir}
+tube: ${tube}
+finish: ${finish}
