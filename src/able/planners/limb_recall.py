@@ -1,4 +1,4 @@
-"""A limb planner that replays a plan its model predicts while awake."""
+"""A limb planner that follows a plan its model predicts while awake."""
 
 import dataclasses
 import time
@@ -13,16 +13,16 @@ from able.beliefs.range_of_motion import RangeOfMotionBelief
 from able.envs.calendar import ExerciseTask
 from able.envs.limb.human import LimbVariant
 from able.envs.limb.model import STOP, LimbModel, LimbTask
+from able.envs.limb.sim import CoupledState
 from able.models.base import Dataset
 from able.planners.mpc import (
     LimbMPCConfig,
     LimbMPCPlanner,
     LimbMPCPolicy,
     MPCParams,
-    ParticleLimits,
     PredictiveSamplingConfig,
-    _Checker,
-    _with_start_reach,
+    SeedConfig,
+    _Attempt,
 )
 from able.policies.base import Policy
 from able.structs import Budget, PlanningFailure
@@ -43,23 +43,37 @@ def _make_search(num_rollouts: int, commit_steps: int) -> LimbMPCConfig:
 # The searches that training plans try in turn, sharing the training budget.
 TRAINING_SEARCHES = (_make_search(12, 4), _make_search(16, 3), _make_search(24, 2))
 
+# While awake, each MPC step first checks the predicted plan's next horizon of
+# controls and takes all of it if it breaks no constraint. Otherwise, or once the
+# plan has ended, the step scores num_rollouts candidates in all (the plan's rejected
+# controls among them), with no candidates pushed toward the goal, so the plan never
+# loses to one. MPC stops at the goal tolerance, as a replay of the plan would.
+AWAKE_SEARCH = LimbMPCConfig(
+    sampling=PredictiveSamplingConfig(num_rollouts=4, commit_steps=12),
+    directed_gains=(),
+    replay_slack=0.0,
+)
+AWAKE_SEED = SeedConfig(num_rollouts=1, commit_steps=12)
+
 
 @dataclass(frozen=True, eq=False)
 class RecallParams(MPCParams):
-    """MPC parameters, and whether to search for a training plan instead of
-    replaying a predicted one."""
+    """MPC parameters, whether to search for a training plan instead of following a
+    predicted one, and the predicted plan to follow."""
 
+    config: LimbMPCConfig = AWAKE_SEARCH
+    seed: SeedConfig = AWAKE_SEED
     training: bool = False
     searches: tuple[LimbMPCConfig, ...] = field(default=TRAINING_SEARCHES)
+    plan: NDArray[np.float64] | None = None
 
 
 class LimbRecallPlanner(LimbMPCPlanner):
-    """Plans by replaying the plan that the model predicts from the training plans.
+    """Plans with MPC that follows the plan the model predicts from the training plans.
 
     While awake it predicts a plan for the task's exercise and the belief's features,
-    replays it in its own simulator, and returns it if it reaches the goal without
-    breaking a constraint under the believed limits. That counts as one iteration of
-    the budget. Otherwise planning fails.
+    and MPC proposes the plan's controls for the steps they cover (see AWAKE_SEARCH),
+    within the budget's rollouts. With no training plans, MPC plans from scratch.
 
     Training plans (see get_training_params()) try MPC searches in turn within the
     budget. A plan is stored whole, up to where MPC ends, rather than only until it
@@ -128,51 +142,46 @@ class LimbRecallPlanner(LimbMPCPlanner):
         assert isinstance(task, ExerciseTask), "Need an exercise"
         if params.training:
             return self._plan_for_training(task, belief, params, budget)
-        return self._recall(task, belief, params, rng)
+        plan = self._predict(task, belief, params, rng)
+        return super().plan(
+            task, belief, dataclasses.replace(params, plan=plan), budget, rng
+        )
 
-    def _recall(
+    def _predict(
         self,
         task: LimbTask,
         belief: RangeOfMotionBelief,
         params: RecallParams,
         rng: np.random.Generator,
-    ) -> LimbMPCPolicy:
-        """The plan that the model predicts, if it replays to the goal."""
+    ) -> NDArray[np.float64]:
+        """The plan that the model predicts, without its trailing zero controls, or
+        no controls before the model has plans to predict from."""
         proposals = params.model.sample(self._get_features(task, belief), 1, rng)
         if len(proposals) == 0:
-            raise PlanningFailure("The model has no plans to predict from")
+            return np.zeros((0, _NUM_JOINTS))
         controls = proposals[0].reshape(MAX_PLAN_LENGTH, _NUM_JOINTS)
         moving = np.flatnonzero(np.abs(controls).max(axis=1) > 0)
-        controls = controls[: moving[-1] + 1] if len(moving) else controls[:0]
-        reached = _with_start_reach(belief, task.initial_state)
-        particles = np.stack([reached.sample(rng) for _ in range(params.num_particles)])
-        limits = ParticleLimits.from_particles(
-            self._model.variant, particles, params.confidence
-        )
-        start = task.initial_state
-        world, _ = self._get_worlds(start.coupled)
-        checker = _Checker(self._model, limits, dict(start.resting_penetration))
-        world.restore(start.coupled)
-        used: list[NDArray[np.float64]] = []
-        for control in controls:
-            for _ in range(self._model.action_repeat):
-                broken = checker.step(world, control)
-                if broken:
-                    raise PlanningFailure(f"The replay broke a constraint: {broken}")
-            used.append(control)
-            error = world.get_limb_error(
-                world.env.limb.get_joint_positions(), task.goal
-            )
-            if error < world.goal_tolerance:
-                return LimbMPCPolicy(
-                    used + [STOP] * (self._model.horizon - len(used)),
-                    {"num_rollouts": 1.0, "replay_error": error},
-                    np.asarray(task.goal),
-                    1,
-                    [],
-                    used,
-                )
-        raise PlanningFailure("The predicted plan does not reach the goal")
+        return controls[: moving[-1] + 1] if len(moving) else controls[:0]
+
+    def _propose(
+        self,
+        attempt: _Attempt,
+        state: CoupledState,
+        step: int,
+        num: int,
+        previous: NDArray[np.float64],
+    ) -> list[NDArray[np.float64]]:
+        """The predicted plan's controls from the step on, padded with zero controls
+        to the horizon, or none once the plan has ended."""
+        params = attempt.params
+        if not isinstance(params, RecallParams) or params.plan is None:
+            return super()._propose(attempt, state, step, num, previous)
+        controls = params.plan[step : step + params.config.sampling.horizon]
+        if len(controls) == 0:
+            return []
+        padded = np.zeros((params.config.sampling.horizon, _NUM_JOINTS))
+        padded[: len(controls)] = controls
+        return [padded]
 
     def _plan_for_training(
         self,

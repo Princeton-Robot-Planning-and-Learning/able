@@ -1433,9 +1433,9 @@ def _make_limb_calendar_planner(
     confidence: float,
     seed: int,
 ) -> tuple[LimbRecallPlanner, LimbCalendarTaskDistribution]:
-    """The recalling planner, whose model predicts an exercise's plan by averaging its
-    stored plans with the most weight on those for days within about key_resolution
-    of the day's limits, and the calendar's task distribution."""
+    """The planner that follows predicted plans, whose model predicts an exercise's
+    plan by averaging its stored plans with the most weight on those for days within
+    about key_resolution of the day's limits, and the calendar's task distribution."""
     env_model, tasks = domain.env_model, domain.task_distribution
     assert isinstance(env_model, LimbModel)
     assert isinstance(tasks, LimbCalendarTaskDistribution)

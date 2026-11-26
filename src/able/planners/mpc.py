@@ -739,11 +739,9 @@ class LimbMPCPlanner(
 
         def seeder(state: CoupledState, step: int, num: int) -> list:
             previous = controls[-1] if controls else np.zeros(NUM_ROBOT_JOINTS)
-            x = get_mpc_features(state, attempt.goal, attempt.belief, step, previous)
-            draws = attempt.params.model.sample(x, num, attempt.rng)
-            attempt.model_proposed |= len(draws) > 0
-            horizon = config.sampling.horizon
-            return list(draws.reshape(len(draws), horizon, NUM_ROBOT_JOINTS))
+            proposals = self._propose(attempt, state, step, num, previous)
+            attempt.model_proposed |= len(proposals) > 0
+            return proposals
 
         lower, upper = world.robot_torque_limits
         mpc = PredictiveSampling(
@@ -814,6 +812,21 @@ class LimbMPCPlanner(
             states,
             controls,
         )
+
+    def _propose(
+        self,
+        attempt: "_Attempt",
+        state: CoupledState,
+        step: int,
+        num: int,
+        previous: NDArray[np.float64],
+    ) -> list[NDArray[np.float64]]:
+        """Up to num control sequences, each (horizon, joints), that the model
+        proposes at an MPC step from get_mpc_features()."""
+        x = get_mpc_features(state, attempt.goal, attempt.belief, step, previous)
+        draws = attempt.params.model.sample(x, num, attempt.rng)
+        horizon = attempt.params.config.sampling.horizon
+        return list(draws.reshape(len(draws), horizon, NUM_ROBOT_JOINTS))
 
     def _replay(
         self,

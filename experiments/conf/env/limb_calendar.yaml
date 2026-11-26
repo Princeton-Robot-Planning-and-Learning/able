@@ -1,9 +1,9 @@
 # @package _global_
 # A person whose limb is stiffer on some days, on a calendar the robot knows, with a
 # routine of exercises whose goals lie a fixed distance short of the day's limits. Each
-# unit of sleep plans one exercise for one kind of day. While awake, the robot replays
-# the plan that a model predicts from those plans, and a day goes well only if every
-# exercise succeeds.
+# unit of sleep plans one exercise for one kind of day. While awake, the robot plans with
+# MPC that follows the plan a model predicts from those plans, and a day goes well only if
+# every exercise succeeds.
 # The approaches are in env_approach/limb_calendar.
 env:
   domain:
@@ -27,9 +27,11 @@ budgets:
     max_iterations: 0
   execution:
     max_iterations: 0
-  # While awake, planning an exercise is one replay of the predicted plan.
+  # While awake, planning an exercise may use 16 MPC rollouts of 12 steps each. Following
+  # a stored plan takes about one rollout per 12 steps, and planning from scratch takes
+  # far more.
   planning:
-    max_iterations: 1
+    max_iterations: 16
 num_cycles: 21
 # Days that every approach except current belief looks ahead, starting with the day
 # right after the sleep.

@@ -3,6 +3,7 @@
 # pylint: disable=no-member  # Domain fields hold their base classes.
 
 import dataclasses
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -19,7 +20,7 @@ from able.models.base import Dataset
 from able.models.kernel_regression import KernelRegressor
 from able.planners.limb_recall import MAX_PLAN_LENGTH, LimbRecallPlanner, RecallParams
 from able.planners.mpc import LimbMPCPlanner
-from able.structs import Budget, PlanningFailure
+from able.structs import Budget, PlanningFailure, PlanningTimeout
 
 
 @pytest.fixture(name="domain", scope="module")
@@ -49,11 +50,11 @@ def _make_planner(domain, request):
     return planner
 
 
-def test_nothing_stored_fails(domain, request):
-    """With no stored plan, planning while awake fails."""
+def test_nothing_stored_plans_from_scratch(domain, request):
+    """With no stored plan, MPC plans from scratch and runs out of a small budget."""
     planner = _make_planner(domain, request)
     task = domain.task_distribution.get_tasks()[0]
-    with pytest.raises(PlanningFailure, match="no plans"):
+    with pytest.raises(PlanningTimeout):
         planner.plan(
             task,
             domain.initial_belief,
@@ -63,26 +64,51 @@ def test_nothing_stored_fails(domain, request):
         )
 
 
-def test_a_plan_that_does_not_reach_the_goal_fails(domain, request):
-    """A predicted plan that barely moves the limb is not returned as a plan."""
-    planner = _make_planner(domain, request)
-    tasks = domain.task_distribution
-    task, belief = tasks.get_tasks()[0], domain.initial_belief
-    features = np.concatenate([[task.exercise], tasks.get_midpoint(belief)])
-    stay = np.zeros((MAX_PLAN_LENGTH, 7))
-    stay[:5] = 1e-3
+def _fit_plan(planner, task, belief, controls):
+    get_features = planner._get_features  # pylint: disable=protected-access
+    plan = np.zeros((MAX_PLAN_LENGTH, 7))
+    plan[: len(controls)] = controls
     model = planner.get_model(planner.get_default_params()).fit(
         Dataset(
-            x=features[None],
-            y=stay.reshape(1, -1),
+            x=get_features(task, belief)[None],
+            y=plan.reshape(1, -1),
             costs=np.zeros(1),
             groups=np.zeros(1, dtype=np.int64),
         )
     )
-    params = planner.set_model(planner.get_default_params(), model)
-    with pytest.raises(PlanningFailure, match="does not reach the goal"):
+    return planner.set_model(planner.get_default_params(), model)
+
+
+def test_mpc_proposes_the_predicted_plan(domain, request):
+    """Each MPC step proposes the predicted plan's controls from that step on, padded
+    with zero controls, and nothing once the plan has ended."""
+    planner = _make_planner(domain, request)
+    task, belief = domain.task_distribution.get_tasks()[0], domain.initial_belief
+    controls = np.arange(20 * 7, dtype=float).reshape(20, 7) + 1
+    params = _fit_plan(planner, task, belief, controls)
+    plan = planner._predict(  # pylint: disable=protected-access
+        task, belief, params, np.random.default_rng(0)
+    )
+    assert np.allclose(plan, controls)
+    attempt = SimpleNamespace(params=dataclasses.replace(params, plan=plan))
+    previous = np.zeros(7)
+    propose = planner._propose  # pylint: disable=protected-access
+    (first,) = propose(attempt, None, 0, 1, previous)
+    assert np.allclose(first, controls[:12])
+    (second,) = propose(attempt, None, 12, 1, previous)
+    assert np.allclose(second[:8], controls[12:]) and (second[8:] == 0).all()
+    assert not propose(attempt, None, 20, 1, previous)
+
+
+def test_a_plan_that_does_not_reach_the_goal_needs_more_search(domain, request):
+    """A predicted plan that barely moves the limb leaves MPC searching past a small
+    budget."""
+    planner = _make_planner(domain, request)
+    task, belief = domain.task_distribution.get_tasks()[0], domain.initial_belief
+    params = _fit_plan(planner, task, belief, np.full((5, 7), 1e-3))
+    with pytest.raises(PlanningTimeout):
         planner.plan(
-            task, belief, params, Budget(max_iterations=1), np.random.default_rng(0)
+            task, belief, params, Budget(max_iterations=2), np.random.default_rng(0)
         )
 
 
