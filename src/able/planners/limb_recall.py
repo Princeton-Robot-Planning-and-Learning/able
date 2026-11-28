@@ -66,6 +66,10 @@ class RecallParams(MPCParams):
     training: bool = False
     searches: tuple[LimbMPCConfig, ...] = field(default=TRAINING_SEARCHES)
     plan: NDArray[np.float64] | None = None
+    # The search while awake when there are no training plans to predict from: the
+    # first training search, which pushes candidates toward the goal. None searches
+    # with config, as when following a plan.
+    fallback: LimbMPCConfig | None = TRAINING_SEARCHES[0]
 
 
 class LimbRecallPlanner(LimbMPCPlanner):
@@ -73,7 +77,8 @@ class LimbRecallPlanner(LimbMPCPlanner):
 
     While awake it predicts a plan for the task's exercise and the belief's features,
     and MPC proposes the plan's controls for the steps they cover (see AWAKE_SEARCH),
-    within the budget's rollouts. With no training plans, MPC plans from scratch.
+    within the budget's rollouts. With no training plans, MPC plans from scratch
+    with the fallback search, which pushes candidates toward the goal.
 
     Training plans (see get_training_params()) try MPC searches in turn within the
     budget. A plan is stored whole, up to where MPC ends, rather than only until it
@@ -143,6 +148,8 @@ class LimbRecallPlanner(LimbMPCPlanner):
         if params.training:
             return self._plan_for_training(task, belief, params, budget)
         plan = self._predict(task, belief, params, rng)
+        if len(plan) == 0 and params.fallback is not None:
+            params = dataclasses.replace(params, config=params.fallback)
         return super().plan(
             task, belief, dataclasses.replace(params, plan=plan), budget, rng
         )

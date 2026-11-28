@@ -18,7 +18,13 @@ from able.approaches import (
 from able.envs.limb.calendar import make_limb_calendar_domain
 from able.models.base import Dataset
 from able.models.kernel_regression import KernelRegressor
-from able.planners.limb_recall import MAX_PLAN_LENGTH, LimbRecallPlanner, RecallParams
+from able.planners.limb_recall import (
+    AWAKE_SEARCH,
+    MAX_PLAN_LENGTH,
+    TRAINING_SEARCHES,
+    LimbRecallPlanner,
+    RecallParams,
+)
 from able.planners.mpc import LimbMPCPlanner
 from able.structs import Budget, PlanningFailure, PlanningTimeout
 
@@ -62,6 +68,37 @@ def test_nothing_stored_plans_from_scratch(domain, request):
             Budget(max_iterations=1),
             np.random.default_rng(0),
         )
+
+
+@pytest.mark.parametrize(
+    "fallback, expected",
+    [(TRAINING_SEARCHES[0], TRAINING_SEARCHES[0]), (None, AWAKE_SEARCH)],
+)
+def test_nothing_stored_searches_with_the_fallback(
+    domain, request, monkeypatch, fallback, expected
+):
+    """With no stored plan, MPC searches with the fallback, which pushes candidates
+    toward the goal, or with the awake search if there is no fallback."""
+    planner = _make_planner(domain, request)
+    configs = []
+
+    def plan(self, task, belief, params, budget, rng):
+        del self, task, belief, budget, rng
+        configs.append(params.config)
+        raise PlanningFailure("Stop here")
+
+    monkeypatch.setattr(LimbMPCPlanner, "plan", plan)
+    params = dataclasses.replace(planner.get_default_params(), fallback=fallback)
+    with pytest.raises(PlanningFailure):
+        planner.plan(
+            domain.task_distribution.get_tasks()[0],
+            domain.initial_belief,
+            params,
+            Budget(max_iterations=1),
+            np.random.default_rng(0),
+        )
+    assert configs == [expected]
+    assert TRAINING_SEARCHES[0].directed_gains and not AWAKE_SEARCH.directed_gains
 
 
 def _fit_plan(planner, task, belief, controls):

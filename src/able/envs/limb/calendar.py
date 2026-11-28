@@ -295,6 +295,8 @@ def make_limb_calendar_domain(
     grid: float | None = 0.03,
     horizon: int = 300,
     people_path: Path = PEOPLE_PATH,
+    calendar_seed: int = 0,
+    max_offset: int = 0,
 ) -> LimbCalendarDomain:
     """Person number seed (see PEOPLE_PATH) with a random calendar of the kind.
 
@@ -302,15 +304,24 @@ def make_limb_calendar_domain(
     moves by step a day (see sample_calendar()), on a grid if it is given. The robot
     starts knowing today's
     range of motion to within survey_stddev, as a scale.
+
+    calendar_seed draws another calendar for the same person (0 gives the person's
+    original one). With max_offset, the person starts the calendar a random number
+    of days from 0 to max_offset into it, so that people's regimes start on
+    different days.
     """
     person = load_person(seed, people_path)
-    rng = np.random.default_rng([seed, 7])
+    rng = np.random.default_rng([seed, 7] + ([calendar_seed] if calendar_seed else []))
     variant = get_variant(person.variant)
     model = LimbModel(variant, horizon=horizon)
     num_motions = len(variant.active_motions)
     days = sample_calendar(
-        calendar, num_days, step, max_stiffness, rng, num_motions, grid
+        calendar, num_days + max_offset, step, max_stiffness, rng, num_motions, grid
     )
+    if max_offset > 0:
+        offset_rng = np.random.default_rng([seed, 11, calendar_seed])
+        offset = int(offset_rng.integers(0, max_offset + 1))
+        days = StiffnessCalendar(days.stiffness[offset : offset + num_days])
     scales = person.loosest - days.get(0) / variant.default_magnitudes
     real_env = SimulatedEnvironment(
         model,

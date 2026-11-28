@@ -107,3 +107,24 @@ def test_distance_sums_over_joints(parts):
     _, tasks, _ = parts
     a, b = np.zeros(3), np.array([0.03, 0.0, 0.06])
     assert np.isclose(tasks.get_distance(a, b), 0.09)
+
+
+def _get_calendar(seed, **kwargs):
+    domain, tasks, _ = _get_parts(seed, **kwargs)
+    domain.env_model.close()
+    return tasks._calendar.stiffness  # pylint: disable=protected-access
+
+
+def test_other_calendars_and_offsets():
+    """Calendar seed 0 with no offset is the person's original calendar, another seed
+    gives another calendar, and an offset starts a longer calendar some days in."""
+    original = _get_calendar(1, num_days=20)
+    assert np.array_equal(_get_calendar(1, num_days=20, calendar_seed=0), original)
+    other = _get_calendar(1, num_days=20, calendar_seed=2)
+    assert not np.array_equal(other, original)
+    longer = _get_calendar(1, num_days=31, calendar_seed=2)
+    shifted = _get_calendar(1, num_days=20, calendar_seed=2, max_offset=11)
+    assert shifted.shape == other.shape
+    assert any(
+        np.array_equal(shifted, longer[offset : offset + 20]) for offset in range(12)
+    )

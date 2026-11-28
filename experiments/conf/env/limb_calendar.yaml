@@ -19,6 +19,11 @@ env:
     # Every day's stiffness is a multiple of this, so plans are for the same day types
     # however the calendar wanders.
     grid: 0.03
+    # Another calendar for the same person (0 is the person's original calendar).
+    calendar_seed: 0
+    # Start the calendar a random 0 to max_offset days into it, so people's regimes
+    # start on different days (0 starts every person on day 0).
+    max_offset: 0
   renderer: null
 budgets:
   sleep:
