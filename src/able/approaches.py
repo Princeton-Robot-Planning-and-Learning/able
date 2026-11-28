@@ -18,12 +18,10 @@ from able.belief_updaters.range_of_motion import RangeOfMotionBeliefUpdater
 from able.belief_updaters.sites import MultiSiteUpdater
 from able.beliefs.base import Belief
 from able.beliefs.interval import IntervalBelief
+from able.beliefs.range_of_motion import RangeOfMotionBelief
 from able.envs.base import FiniteTaskDistribution
-from able.envs.calendar_arm import (
-    CalendarArmDomain,
-    CalendarTaskDistribution,
-    ExerciseTask,
-)
+from able.envs.calendar import ExerciseTask, ExerciseTaskDistribution
+from able.envs.calendar_arm import CalendarArmDomain, CalendarTaskDistribution
 from able.envs.friction.model import FrictionModel, FrictionState, FrictionTask
 from able.envs.friction.pomdp import PuckPushingModel
 from able.envs.friction.query import FrictionQuery, PushRecord
@@ -37,6 +35,7 @@ from able.envs.friction.world import DEFAULT_FRICTION_PRIOR, Push
 from able.envs.human_reach.model import ReachAction, ReachModel, ReachState, ReachTask
 from able.envs.human_reach.query import ReachQuery, ReachResponse
 from able.envs.human_reach.tasks import ReachDomain
+from able.envs.limb.calendar import LimbCalendarDomain, LimbCalendarTaskDistribution
 from able.envs.limb.model import LimbModel, LimbState, LimbTask
 from able.envs.limb.query import LimbQuery, QueryOutcome
 from able.envs.limb.tasks import LimbDomain
@@ -118,6 +117,7 @@ from able.learners.site_focus import (
 from able.models.base import ConditionalModel
 from able.models.exact_match_cache import ExactMatchCache
 from able.models.kernel_regression import KernelRegressor
+from able.planners.limb_recall import LimbRecallPlanner, RecallParams
 from able.planners.mpc import LimbMPCPlanner, MPCParams, SeedConfig
 from able.planners.pddlstream import PDDLStreamParams, ReachPDDLStreamPlanner
 from able.planners.pomcpow import (
@@ -431,7 +431,7 @@ def make_allocation_robot(
     planning_budget: Budget,
     num_units: int,
     rule: str,
-    dreams_per_unit: int = 4,
+    dreams_per_unit: int = 16,
     max_warm_starts_per_key: int = 4,
     max_key_distance: int = 0,
     transfer_by_distance: list[float] | None = None,
@@ -725,7 +725,7 @@ def make_sampled_arm_allocation_robot(
     model: ConditionalModel,
     num_units: int,
     rule: str,
-    dreams_per_unit: int = 4,
+    dreams_per_unit: int = 16,
     transfer_length: float = 2.2,
     narrowing_rate: float = 0.2,
     gain_scale: float = 11.0,
@@ -978,7 +978,7 @@ def make_multi_person_allocation_robot(
     num_units: int,
     rule: str,
     run_length: float,
-    dreams_per_unit: int = 4,
+    dreams_per_unit: int = 16,
     transfer_length: float = 2.2,
     narrowing_rate: float = 0.2,
     max_key_distance: int | None = None,
@@ -1110,6 +1110,31 @@ def make_day_type_transfer(steps: int) -> Transfer:
     return transfer
 
 
+def make_sum_transfer(radius: int) -> Transfer:
+    """Transfer of 1 between beliefs whose features differ by at most radius steps
+    in total and 0 otherwise."""
+
+    def transfer(a: NDArray[np.float64], b: NDArray[np.float64]) -> NDArray[np.float64]:
+        distances = np.abs(a[:, None, :] - b[None, :, :]).sum(axis=2)
+        return (distances <= radius + 1e-9).astype(np.float64)
+
+    return transfer
+
+
+def make_bin_transfer(steps: int) -> Transfer:
+    """Transfer of 1 between beliefs in the same bin of steps steps in every
+    feature, and 0 otherwise."""
+    assert steps > 0, "Need a positive bin"
+
+    def transfer(a: NDArray[np.float64], b: NDArray[np.float64]) -> NDArray[np.float64]:
+        bins_a, bins_b = np.floor(a / steps), np.floor(b / steps)
+        return np.all(bins_a[:, None, :] == bins_b[None, :, :], axis=2).astype(
+            np.float64
+        )
+
+    return transfer
+
+
 def _make_calendar_parts(
     domain: CalendarArmDomain, key_resolution: float, awake_batch_size: int
 ) -> tuple[TwoLinkArmModel, CalendarTaskDistribution, RandomShootingPlanner]:
@@ -1133,9 +1158,43 @@ def _make_calendar_parts(
     return env_model, tasks, planner
 
 
+def _make_exercise_robot(
+    domain: Any,
+    planner: Any,
+    updater: Any,
+    gatherer: Any,
+    make_source: Callable[[Any, ExerciseTaskDistribution], Any] | None,
+    dreamer: Any,
+    num_training_tasks: int,
+    training_iterations: int,
+) -> Any:
+    """A robot for a person with a routine of exercises on a calendar, whose learner
+    trains under make_source(dreamer, tasks), or never learns if make_source is
+    None."""
+    tasks = domain.task_distribution
+    assert isinstance(tasks, ExerciseTaskDistribution)
+    learner: Any = NullLearner()
+    if make_source is not None:
+        learner = ExerciseModelLearner(
+            planner,
+            tasks,
+            make_source(dreamer, tasks),
+            Budget(max_iterations=training_iterations),
+            refit="per_sleep",
+            num_training_tasks=num_training_tasks,
+        )
+    return Robot(
+        planner=planner,
+        learner=learner,
+        belief_updater=updater,
+        info_gatherer=gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
 def _make_calendar_robot(
     domain: CalendarArmDomain,
-    make_source: Callable[[Any, CalendarTaskDistribution], Any] | None,
+    make_source: Callable[[Any, ExerciseTaskDistribution], Any] | None,
     key_resolution: float,
     awake_batch_size: int,
     num_training_tasks: int,
@@ -1153,35 +1212,28 @@ def _make_calendar_robot(
     )
     updater = JointLimitBeliefUpdater()
     gatherer = BisectLimitGatherer(updater)
-    learner: Any = NullLearner()
-    if make_source is not None:
-        dreamer: ImaginedNextBeliefSource | None = None
-        if gathering_budget and execution_budget and planning_budget:
-            dreamer = ImaginedNextBeliefSource(
-                env_model,
-                tasks,
-                planner,
-                updater,
-                gatherer,
-                gathering_budget=gathering_budget,
-                execution_budget=execution_budget,
-                planning_budget=planning_budget,
-                recorder=recorder,
-            )
-        learner = ExerciseModelLearner(
-            planner,
+    dreamer: ImaginedNextBeliefSource | None = None
+    if gathering_budget and execution_budget and planning_budget:
+        dreamer = ImaginedNextBeliefSource(
+            env_model,
             tasks,
-            make_source(dreamer, tasks),
-            Budget(max_iterations=training_iterations),
-            refit="per_sleep",
-            num_training_tasks=num_training_tasks,
+            planner,
+            updater,
+            gatherer,
+            gathering_budget=gathering_budget,
+            execution_budget=execution_budget,
+            planning_budget=planning_budget,
+            recorder=recorder,
         )
-    return Robot(
-        planner=planner,
-        learner=learner,
-        belief_updater=updater,
-        info_gatherer=gatherer,
-        initial_belief=domain.initial_belief,
+    return _make_exercise_robot(
+        domain,
+        planner,
+        updater,
+        gatherer,
+        make_source,
+        dreamer,
+        num_training_tasks,
+        training_iterations,
     )
 
 
@@ -1355,6 +1407,241 @@ def make_calendar_allocation_robot(
         execution_budget,
         planning_budget,
         recorder,
+    )
+
+
+def make_calendar_limb_features(
+    tasks: LimbCalendarTaskDistribution, key_resolution: float
+) -> Callable[[Belief[Any]], NDArray[np.float64]]:
+    """A function from a belief to its midpoint limits in steps of key_resolution."""
+
+    def get_features(belief: Belief[Any]) -> NDArray[np.float64]:
+        return np.round(tasks.get_midpoint(belief) / key_resolution)
+
+    return get_features
+
+
+# So narrow that the plans of other exercises weigh next to nothing.
+_EXERCISE_BANDWIDTH = 0.1
+# So small that the mean of all plans matters only where no stored plan is close.
+_PLAN_PRIOR_WEIGHT = 1e-12
+
+
+def _make_limb_calendar_planner(
+    domain: LimbCalendarDomain,
+    key_resolution: float,
+    confidence: float,
+    seed: int,
+) -> tuple[LimbRecallPlanner, LimbCalendarTaskDistribution]:
+    """The planner that follows predicted plans, whose model predicts an exercise's
+    plan by averaging its stored plans with the most weight on those for days within
+    about key_resolution of the day's limits, and the calendar's task distribution."""
+    env_model, tasks = domain.env_model, domain.task_distribution
+    assert isinstance(env_model, LimbModel)
+    assert isinstance(tasks, LimbCalendarTaskDistribution)
+
+    def get_features(task: LimbTask, belief: Belief[ArmArray]) -> NDArray[np.float64]:
+        assert isinstance(task, ExerciseTask), "Need an exercise"
+        return np.concatenate([[task.exercise], tasks.get_midpoint(belief)])
+
+    params = RecallParams(
+        confidence=confidence,
+        model=KernelRegressor(
+            bandwidths=(_EXERCISE_BANDWIDTH,) + (key_resolution,) * 3,
+            prior_weight=_PLAN_PRIOR_WEIGHT,
+        ),
+    )
+    planner = LimbRecallPlanner(
+        env_model,
+        get_features,
+        tasks.round_exercise,
+        params,
+        seed=seed,
+    )
+    return planner, tasks
+
+
+def make_limb_calendar_scratch_robot(
+    domain: LimbCalendarDomain,
+    key_resolution: float = 0.03,
+    confidence: float = 0.5,
+    seed: int = 0,
+    recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
+) -> LimbRobot:
+    """A robot for the limb calendar that has no stored plans and never learns."""
+    del recorder  # unused because the robot imagines nothing while it sleeps
+    planner, _ = _make_limb_calendar_planner(domain, key_resolution, confidence, seed)
+    return _make_exercise_robot(
+        domain,
+        planner,
+        RangeOfMotionBeliefUpdater(planner.variant),
+        NullInformationGatherer(),
+        None,
+        None,
+        1,
+        0,
+    )
+
+
+def _make_limb_calendar_learning_robot(
+    domain: LimbCalendarDomain,
+    make_source: Callable[[Any, LimbCalendarTaskDistribution], Any],
+    training_iterations: int,
+    key_resolution: float,
+    confidence: float,
+    seed: int,
+) -> LimbRobot:
+    planner, tasks = _make_limb_calendar_planner(
+        domain, key_resolution, confidence, seed
+    )
+    return _make_exercise_robot(
+        domain,
+        planner,
+        RangeOfMotionBeliefUpdater(planner.variant),
+        NullInformationGatherer(),
+        lambda dreamer, _: make_source(dreamer, tasks),
+        CurrentBeliefSource(),
+        1,
+        training_iterations,
+    )
+
+
+def make_limb_calendar_current_belief_robot(
+    domain: LimbCalendarDomain,
+    planning_budget: Budget,
+    training_iterations: int = 1000,
+    days_ahead: int = 0,
+    key_resolution: float = 0.03,
+    confidence: float = 0.5,
+    seed: int = 0,
+    recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
+) -> LimbRobot:
+    """A robot for the limb calendar whose units all train under its forecast belief
+    days_ahead days from now."""
+    del planning_budget, recorder  # unused because the robot imagines nothing
+    return _make_limb_calendar_learning_robot(
+        domain,
+        lambda _, tasks: LookaheadSource(tasks.forecast, days_ahead),
+        training_iterations,
+        key_resolution,
+        confidence,
+        seed,
+    )
+
+
+def make_limb_calendar_dreaming_robot(
+    domain: LimbCalendarDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    training_iterations: int = 1000,
+    horizon: int = 1,
+    key_resolution: float = 0.03,
+    confidence: float = 0.5,
+    seed: int = 0,
+    recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
+) -> LimbRobot:
+    """A robot for the limb calendar that trains under the beliefs it forecasts for
+    the next horizon days, each equally often."""
+    del gathering_budget, execution_budget, planning_budget, recorder  # unused
+    return _make_limb_calendar_learning_robot(
+        domain,
+        lambda dreamer, tasks: HorizonSource(dreamer, tasks.forecast, horizon),
+        training_iterations,
+        key_resolution,
+        confidence,
+        seed,
+    )
+
+
+def make_limb_calendar_belief_coverage_robot(
+    domain: LimbCalendarDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    training_iterations: int = 1000,
+    horizon: int = 1,
+    num_candidates: int = 4,
+    key_resolution: float = 0.03,
+    confidence: float = 0.5,
+    seed: int = 0,
+    recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
+) -> LimbRobot:
+    """A robot for the limb calendar that trains under the farthest of
+    num_candidates forecasts of the next horizon days from the beliefs it has
+    trained under, by the day's limits."""
+    del gathering_budget, execution_budget, planning_budget, recorder  # unused
+    return _make_limb_calendar_learning_robot(
+        domain,
+        lambda dreamer, tasks: BeliefCoverageSource(
+            HorizonSource(dreamer, tasks.forecast, horizon),
+            make_calendar_limb_features(tasks, key_resolution),
+            num_candidates,
+        ),
+        training_iterations,
+        key_resolution,
+        confidence,
+        seed,
+    )
+
+
+def make_limb_calendar_allocation_robot(
+    domain: LimbCalendarDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    num_units: int,
+    rule: str,
+    training_iterations: int = 1000,
+    horizon: int = 7,
+    tier_values: tuple[float, ...] = (1.0, 0.56),
+    day_type_steps: int = 1,
+    dreams_per_unit: int = 16,
+    key_resolution: float = 0.03,
+    confidence: float = 0.5,
+    seed: int = 0,
+    recorder: CycleRecorder[LimbState, LimbTask, ArmArray] | None = None,
+) -> LimbRobot:
+    """A robot for the limb calendar that splits each sleep's num_units among the
+    coming days by an allocation rule, planning the next horizon nights together
+    (see make_calendar_allocation_robot()). A day type is a bin of day_type_steps
+    steps in each limit."""
+    del gathering_budget, execution_budget, planning_budget, recorder  # unused
+    tasks = domain.task_distribution
+    assert isinstance(tasks, LimbCalendarTaskDistribution)
+
+    def average(a: Belief[Any], b: Belief[Any]) -> Belief[Any]:
+        assert isinstance(a, RangeOfMotionBelief) and isinstance(b, RangeOfMotionBelief)
+        return RangeOfMotionBelief(
+            mean=(a.mean + b.mean) / 2.0,
+            stddev=a.stddev,
+            low=(a.low + b.low) / 2.0,
+            high=(a.high + b.high) / 2.0,
+            floor=(a.floor + b.floor) / 2.0,
+        )
+
+    model = HorizonModel(
+        get_features=make_calendar_limb_features(tasks, key_resolution),
+        run_length=tasks.num_exercises,
+        tiers=tuple(
+            Tier(make_sum_transfer(r + 1), value) for r, value in enumerate(tier_values)
+        ),
+        between=average,
+        independent_transfer=make_bin_transfer(day_type_steps),
+    )
+    return _make_limb_calendar_learning_robot(
+        domain,
+        lambda dreamer, calendar_tasks: HorizonAllocationSource(
+            HorizonSource(dreamer, calendar_tasks.forecast, horizon),
+            model,
+            rule,
+            num_units,
+            dreams_per_unit,
+        ),
+        training_iterations,
+        key_resolution,
+        confidence,
+        seed,
     )
 
 
@@ -2476,7 +2763,7 @@ def make_friction_site_allocation_robot(
     num_units: int,
     rule: str,
     run_length: float,
-    dreams_per_unit: int = 4,
+    dreams_per_unit: int = 16,
     transfer_length: float = 2.2,
     narrowing_rate: float = 0.2,
     ramp_start: float = 1.0,

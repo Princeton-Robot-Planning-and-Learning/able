@@ -1,0 +1,6 @@
+_target_: able.approaches.make_limb_calendar_belief_coverage_robot
+# Days looked ahead, starting with the day right after the sleep.
+horizon: ${lookahead}
+key_resolution: 0.03
+# The seed of the training plans, which every approach shares.
+seed: ${seed}

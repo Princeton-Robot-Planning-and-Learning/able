@@ -1,0 +1,43 @@
+# @package _global_
+# A person whose limb is stiffer on some days, on a calendar the robot knows, with a
+# routine of exercises whose goals lie a fixed distance short of the day's limits. Each
+# unit of sleep plans one exercise for one kind of day. While awake, the robot plans with
+# MPC that follows the plan a model predicts from those plans, and a day goes well only if
+# every exercise succeeds.
+# The approaches are in env_approach/limb_calendar.
+env:
+  domain:
+    _target_: able.envs.limb.calendar.make_limb_calendar_domain
+    # week or uneven (see sample_calendar()).
+    calendar: uneven
+    # How far each motion's stiffness moves per day, in radians.
+    step: 0.06
+    max_stiffness: 0.3
+    # Must cover the cycles and the horizon.
+    num_days: 40
+    survey_stddev: 0.02
+    # Every day's stiffness is a multiple of this, so plans are for the same day types
+    # however the calendar wanders.
+    grid: 0.03
+    # Another calendar for the same person (0 is the person's original calendar).
+    calendar_seed: 0
+    # Start the calendar a random 0 to max_offset days into it, so people's regimes
+    # start on different days (0 starts every person on day 0).
+    max_offset: 0
+  renderer: null
+budgets:
+  sleep:
+    max_iterations: 4
+  information_gathering:
+    max_iterations: 0
+  execution:
+    max_iterations: 0
+  # While awake, planning an exercise may use 16 MPC rollouts of 12 steps each. Following
+  # a stored plan takes about one rollout per 12 steps, and planning from scratch takes
+  # far more.
+  planning:
+    max_iterations: 16
+num_cycles: 21
+# Days that every approach except current belief looks ahead, starting with the day
+# right after the sleep.
+lookahead: 4

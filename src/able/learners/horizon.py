@@ -15,7 +15,6 @@ from scipy.optimize import Bounds, LinearConstraint, milp
 from scipy.sparse import lil_matrix
 
 from able.beliefs.base import Belief
-from able.beliefs.interval import IntervalBelief
 from able.learners.allocation import ALLOCATION_RULES, get_equal_features_transfer
 from able.learners.belief_sources import BeliefSource
 from able.structs import HiddenParamsType, PlannerParamsType
@@ -25,6 +24,8 @@ Transfer = Callable[[NDArray[np.float64], NDArray[np.float64]], NDArray[np.float
 # A forecast of the robot's belief some days from now, from its belief now.
 Forecast = Callable[[Belief[Any], int], Belief[Any]]
 
+# Values closer than this count as equal.
+_TOLERANCE = 1e-9
 # Needs smaller than this share of a day are left out of the plan.
 _MIN_NEED = 0.03
 # Cap on the search for the coming nights' plan, in branch-and-bound nodes rather
@@ -34,12 +35,15 @@ _MAX_PLANNING_NODES = 1000
 _MAX_CANDIDATES = 80
 
 
-class DayBelief(IntervalBelief):
-    """An interval belief for a day that is a number of days from now."""
+class DayBelief(Belief[HiddenParamsType]):
+    """A belief for a day that is a number of days from now."""
 
-    def __init__(self, intervals: Any, days_ahead: int) -> None:
-        super().__init__(intervals)
+    def __init__(self, belief: Belief[HiddenParamsType], days_ahead: int) -> None:
+        self.belief = belief
         self.days_ahead = days_ahead
+
+    def sample(self, rng: np.random.Generator) -> HiddenParamsType:
+        return self.belief.sample(rng)
 
 
 class LookaheadSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
@@ -65,7 +69,7 @@ class LookaheadSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
 class HorizonSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
     """Trains under dreams of the coming days: each draw is for a day uniform over
     today and the next horizon - 1 days, and dreams from the forecast of the
-    robot's belief for that day with another source. Returns a DayBelief."""
+    robot's belief for that day with another source."""
 
     def __init__(
         self,
@@ -91,11 +95,20 @@ class HorizonSource(BeliefSource[HiddenParamsType, PlannerParamsType]):
         params: PlannerParamsType,
         rng: np.random.Generator,
     ) -> Belief[HiddenParamsType]:
+        return self.draw_day(iteration, belief, params, rng).belief
+
+    def draw_day(
+        self,
+        iteration: int,
+        belief: Belief[HiddenParamsType],
+        params: PlannerParamsType,
+        rng: np.random.Generator,
+    ) -> DayBelief[HiddenParamsType]:
+        """A dream of a coming day, with how many days ahead it is."""
         days_ahead = int(rng.integers(self._horizon))
         forecast = self._forecast(belief, days_ahead)
         dream = self._source.get_training_belief(iteration, forecast, params, rng)
-        assert isinstance(dream, IntervalBelief), "Need an IntervalBelief"
-        return DayBelief(dream.intervals, days_ahead)  # type: ignore[return-value]
+        return DayBelief(dream, days_ahead)
 
 
 @dataclass(frozen=True)
@@ -149,6 +162,41 @@ class NightsProblem:
     values: list[float]
     run_length: int
 
+    def reach(self) -> NDArray[np.float64]:
+        """The need each candidate's units count toward, over every day and tier."""
+        need = self.weights.sum(axis=0)
+        return np.sum(
+            [v * (need @ kernel) for v, kernel in zip(self.values, self.kernels)],
+            axis=0,
+        )
+
+    def objectives(self, units: NDArray[np.float64]) -> NDArray[np.float64]:
+        """The expected number of days served by each row of units at the
+        candidates, if no later night adds any."""
+        served = np.zeros((len(units), self.weights.shape[1]))
+        for value, kernel, prior in zip(self.values, self.kernels, self.priors):
+            effective = prior + units @ kernel.T
+            enough = effective >= self.run_length - _TOLERANCE
+            served = np.maximum(served, value * enough)
+        return served @ self.weights.sum(axis=0)
+
+
+def allocate_one_unit_at_a_time(
+    problem: NightsProblem, num_units: int
+) -> NDArray[np.int64]:
+    """Tonight's units at each candidate, each given to the candidate where that one
+    unit raises the expected number of the coming days served the most, as if no
+    later night had any. Ties, including when no unit raises it, go to the candidate
+    whose units count toward the most need."""
+    num_candidates = problem.kernels[0].shape[1]
+    reach = problem.reach()
+    units = np.zeros(num_candidates)
+    for _ in range(num_units):
+        gains = problem.objectives(units + np.eye(num_candidates))
+        best = np.flatnonzero(gains >= gains.max() - _TOLERANCE)
+        units[best[np.argmax(reach[best])]] += 1
+    return units.astype(np.int64)
+
 
 def allocate_nights(problem: NightsProblem, num_units: int) -> NDArray[np.int64]:
     """Tonight's units at each candidate, from the split of every coming night's
@@ -192,12 +240,7 @@ def allocate_nights(problem: NightsProblem, num_units: int) -> NDArray[np.int64]
         matrix[row, n * num_candidates : (n + 1) * num_candidates] = 1.0
         upper[row] = num_units
         row += 1
-    need_by_belief = problem.weights.sum(axis=0)
-    reach = sum(
-        value * (need_by_belief @ kernel)
-        for value, kernel in zip(problem.values, problem.kernels)
-    )
-    assert isinstance(reach, np.ndarray)
+    reach = problem.reach()
     cost = np.zeros(num_vars)
     for n in range(num_days):
         cost[n * num_candidates : (n + 1) * num_candidates] = (
@@ -243,26 +286,28 @@ class HorizonAllocationSource(BeliefSource[HiddenParamsType, PlannerParamsType])
     together.
 
     At the start of each sleep the source draws num_units * dreams_per_unit
-    DayBeliefs from the candidate source, usually a HorizonSource. Dreams with
+    dreams of coming days from the candidate source, a HorizonSource. Dreams with
     equal features on a day are one belief, whose need is the share of that day's
     dreams it received, and each day has the same weight. Training beliefs are
     these beliefs and, if the model has a between, the beliefs between any two of
     them. The units go to tonight's share of the best plan for the coming nights
     (see allocate_nights()), under the model's tiers for transfer_practice, and
     under deliberate_practice with one tier in which units serve only the belief
-    they were spent on. What earlier sleeps trained counts too.
+    they were spent on. one_step_greedy has the same candidates and tiers as
+    transfer_practice but gives each unit to the belief where it buys the most by
+    itself (see allocate_one_unit_at_a_time()). What earlier sleeps trained counts
+    too.
     """
 
     def __init__(
         self,
-        candidate_source: BeliefSource[HiddenParamsType, PlannerParamsType],
+        candidate_source: HorizonSource[HiddenParamsType, PlannerParamsType],
         model: HorizonModel,
         rule: str,
         num_units: int,
         dreams_per_unit: int = 16,
     ) -> None:
         assert rule in ALLOCATION_RULES, f"rule must be one of {ALLOCATION_RULES}"
-        assert rule != "one_step_greedy", "Greedy looks one sleep ahead"
         assert num_units > 0 and dreams_per_unit > 0, "Need units and dreams"
         self._candidate_source = candidate_source
         self._model = model
@@ -289,8 +334,8 @@ class HorizonAllocationSource(BeliefSource[HiddenParamsType, PlannerParamsType])
         params: PlannerParamsType,
         rng: np.random.Generator,
     ) -> Belief[HiddenParamsType]:
-        """One dream from the candidate source."""
-        return self._candidate_source.get_training_belief(index, belief, params, rng)
+        """One dream from the candidate source, with its day."""
+        return self._candidate_source.draw_day(index, belief, params, rng)
 
     def get_training_belief(
         self,
@@ -321,11 +366,11 @@ class HorizonAllocationSource(BeliefSource[HiddenParamsType, PlannerParamsType])
         """Tonight's training belief for every iteration, from all of the dreams of
         the coming days."""
         del belief  # unused because the dreams include today
-        dreams: list[DayBelief] = []
+        dreams: list[DayBelief[HiddenParamsType]] = []
         for dream in draws:
             assert isinstance(dream, DayBelief), "Need dreams with a day"
             dreams.append(dream)
-        features = np.array([self._model.get_features(d) for d in dreams])
+        features = np.array([self._model.get_features(d.belief) for d in dreams])
         nodes, first, inverse = np.unique(
             features, axis=0, return_index=True, return_inverse=True
         )
@@ -334,9 +379,9 @@ class HorizonAllocationSource(BeliefSource[HiddenParamsType, PlannerParamsType])
         weights = np.zeros((int(days.max()) + 1, len(nodes)))
         np.add.at(weights, (days, inverse), 1.0)
         weights /= np.maximum(weights.sum(axis=1, keepdims=True), 1.0)
-        beliefs: list[Belief[HiddenParamsType]] = [dreams[i] for i in first]
+        beliefs: list[Belief[HiddenParamsType]] = [dreams[i].belief for i in first]
         candidates = nodes
-        if self._rule == "transfer_practice" and self._model.between is not None:
+        if self._rule != "deliberate_practice" and self._model.between is not None:
             extra = [
                 self._model.between(beliefs[a], beliefs[b])
                 for a in range(len(beliefs))
@@ -381,7 +426,10 @@ class HorizonAllocationSource(BeliefSource[HiddenParamsType, PlannerParamsType])
             values=[t.value for t in tiers],
             run_length=self._model.run_length,
         )
-        units = allocate_nights(problem, num_iterations)
+        if self._rule == "one_step_greedy":
+            units = allocate_one_unit_at_a_time(problem, num_iterations)
+        else:
+            units = allocate_nights(problem, num_iterations)
         schedule: list[Belief[HiddenParamsType]] = []
         for j in np.argsort(-units, kind="stable"):
             for _ in range(int(units[j])):

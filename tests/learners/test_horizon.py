@@ -1,7 +1,6 @@
 """Tests for horizon.py."""
 
 import numpy as np
-import pytest
 
 from able.beliefs.interval import IntervalBelief
 from able.learners.belief_sources import CurrentBeliefSource
@@ -14,6 +13,7 @@ from able.learners.horizon import (
     NightsProblem,
     Tier,
     allocate_nights,
+    allocate_one_unit_at_a_time,
 )
 
 
@@ -56,12 +56,10 @@ def test_horizon_source_draws_coming_days():
     """Draws are for days within the horizon, with the forecast of that day."""
     source = HorizonSource(CurrentBeliefSource(), _shift, 3)
     rng = np.random.default_rng(0)
-    beliefs = [
-        source.get_training_belief(i, _make_belief(0.0), None, rng) for i in range(60)
-    ]
-    assert {b.days_ahead for b in beliefs} == {0, 1, 2}
-    for b in beliefs:
-        assert np.allclose(b.intervals, [[b.days_ahead, b.days_ahead]])
+    dreams = [source.draw_day(i, _make_belief(0.0), None, rng) for i in range(60)]
+    assert {d.days_ahead for d in dreams} == {0, 1, 2}
+    for d in dreams:
+        assert np.allclose(d.belief.intervals, [[d.days_ahead, d.days_ahead]])
 
 
 def _make_problem(kernel, weights, run_length, prior=None):
@@ -113,7 +111,7 @@ def test_units_without_need_are_still_spent():
 
 def _make_dreams(places_by_day, count=4):
     return [
-        DayBelief([[place, place]], day)
+        DayBelief(_make_belief(place), day)
         for day, place in places_by_day
         for _ in range(count)
     ]
@@ -125,7 +123,11 @@ def test_transfer_practice_trains_between_days():
     # Days at 0 and 2, with transfer to within 1, so training at 1 serves both.
     dreams = _make_dreams([(1, 0.0), (2, 2.0)])
     source = HorizonAllocationSource(
-        CurrentBeliefSource(), _make_model(4, [(1, 1.0)]), "transfer_practice", 4, 2
+        HorizonSource(CurrentBeliefSource(), _shift, 3),
+        _make_model(4, [(1, 1.0)]),
+        "transfer_practice",
+        4,
+        2,
     )
     schedule = source.choose_all(dreams, 4, _make_belief(0.0))
     places = {float(b.intervals[0, 0]) for b in schedule}
@@ -136,7 +138,11 @@ def test_deliberate_practice_ignores_transfer():
     """deliberate_practice trains only for day types themselves."""
     dreams = _make_dreams([(1, 0.0), (2, 2.0)])
     source = HorizonAllocationSource(
-        CurrentBeliefSource(), _make_model(4, [(1, 1.0)]), "deliberate_practice", 4, 2
+        HorizonSource(CurrentBeliefSource(), _shift, 3),
+        _make_model(4, [(1, 1.0)]),
+        "deliberate_practice",
+        4,
+        2,
     )
     schedule = source.choose_all(dreams, 4, _make_belief(0.0))
     assert {float(b.intervals[0, 0]) for b in schedule} <= {0.0, 2.0}
@@ -146,7 +152,11 @@ def test_training_is_remembered_across_sleeps():
     """Training a day type makes the next sleep look elsewhere."""
     dreams = _make_dreams([(0, 0.0), (1, 5.0)])
     source = HorizonAllocationSource(
-        CurrentBeliefSource(), _make_model(4, [(1, 1.0)]), "deliberate_practice", 4, 2
+        HorizonSource(CurrentBeliefSource(), _shift, 3),
+        _make_model(4, [(1, 1.0)]),
+        "deliberate_practice",
+        4,
+        2,
     )
     first = source.choose_all(dreams, 4, _make_belief(0.0))
     second = source.choose_all(dreams, 4, _make_belief(0.0))
@@ -154,9 +164,50 @@ def test_training_is_remembered_across_sleeps():
     assert {float(b.intervals[0, 0]) for b in second} == {5.0}
 
 
-def test_greedy_has_no_horizon():
-    """The one-step rule does not plan several nights."""
-    with pytest.raises(AssertionError):
-        HorizonAllocationSource(
-            CurrentBeliefSource(), _make_model(2, [(1, 1.0)]), "one_step_greedy", 2
-        )
+def test_greedy_finishes_a_day_before_starting_another():
+    """A unit that serves a day by itself comes before units that only count toward
+    one."""
+    weights = np.zeros((2, 2))
+    weights[0, 0] = 0.4
+    weights[1, 1] = 1.0
+    problem = _make_problem(np.eye(2), weights, 3, prior=np.array([2.0, 0.0]))
+    assert allocate_one_unit_at_a_time(problem, 2).tolist() == [1, 1]
+
+
+def test_greedy_does_not_plan_for_days_one_night_cannot_prepare():
+    """Greedy spends units on today even when they cannot serve it, because a unit
+    there counts toward the most need, while the nights' plan prepares tomorrow."""
+    weights = np.zeros((2, 2))
+    weights[0, 0] = 1.0
+    weights[1, 1] = 0.9
+    problem = _make_problem(np.eye(2), weights, 4)
+    assert allocate_one_unit_at_a_time(problem, 2).tolist() == [2, 0]
+    assert allocate_nights(problem, 2).tolist() == [0, 2]
+
+
+def test_greedy_prefers_better_tiers():
+    """A unit that serves a day at a better tier is worth more."""
+    problem = NightsProblem(
+        weights=np.ones((1, 1)),
+        kernels=[np.array([[1.0, 0.0]]), np.array([[1.0, 1.0]])],
+        priors=[np.zeros(1), np.zeros(1)],
+        values=[1.0, 0.5],
+        run_length=1,
+    )
+    assert allocate_one_unit_at_a_time(problem, 1).tolist() == [1, 0]
+    objectives = problem.objectives(np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0]]))
+    assert np.allclose(objectives, [0.0, 0.5, 1.0])
+
+
+def test_greedy_counts_transfer_between_days():
+    """Greedy may train between two days, where a unit counts toward both."""
+    dreams = _make_dreams([(1, 0.0), (2, 2.0)])
+    source = HorizonAllocationSource(
+        HorizonSource(CurrentBeliefSource(), _shift, 3),
+        _make_model(4, [(1, 1.0)]),
+        "one_step_greedy",
+        4,
+        2,
+    )
+    schedule = source.choose_all(dreams, 4, _make_belief(0.0))
+    assert {float(b.intervals[0, 0]) for b in schedule} == {1.0}

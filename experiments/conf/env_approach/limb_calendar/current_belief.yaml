@@ -1,0 +1,6 @@
+_target_: able.approaches.make_limb_calendar_current_belief_robot
+# Trains for the day right after the sleep, so it does not look ahead.
+days_ahead: 0
+key_resolution: 0.03
+# The seed of the training plans, which every approach shares.
+seed: ${seed}
