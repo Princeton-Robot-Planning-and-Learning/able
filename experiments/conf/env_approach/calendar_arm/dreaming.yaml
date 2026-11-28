@@ -1,0 +1,7 @@
+_target_: able.approaches.make_calendar_dreaming_robot
+key_resolution: 0.03
+awake_batch_size: 1
+num_training_tasks: 1
+training_iterations: 40
+# Days dreamed of, starting with today. 1 is today only.
+horizon: 1

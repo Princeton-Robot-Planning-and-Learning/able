@@ -18,6 +18,16 @@ from able.policies.base import OpenLoopPolicy, Policy
 from able.structs import Budget, PlanningFailure
 
 
+@dataclass(frozen=True)
+class TrainingSearch:
+    """How hard the planner searches for training plans while the robot sleeps."""
+
+    batch_size: int = 256
+    max_batches: int = 40
+    threshold: float = 0.01
+    patience: int = 200
+
+
 @dataclass(frozen=True, eq=False)
 class RandomShootingParams:
     """Parameters of the random shooting planner.
@@ -30,6 +40,8 @@ class RandomShootingParams:
     problem (see get_plan_features()). If it proposes any, the first batch consists
     of the proposed plans plus perturbations of them. The default model is an empty
     cache, which proposes nothing.
+
+    With training_search set, training plans get its search instead of this one.
     """
 
     batch_size: int = 64
@@ -41,6 +53,7 @@ class RandomShootingParams:
     warm_start_noise: float = 0.05
     num_proposals: int = 4
     model: ConditionalModel = field(default_factory=ExactMatchCache)
+    training_search: TrainingSearch | None = None
 
 
 def get_plan_features(task: ArmTask, belief: IntervalBelief) -> NDArray[np.float64]:
@@ -167,6 +180,18 @@ class RandomShootingPlanner(
         self, params: RandomShootingParams, model: ConditionalModel
     ) -> RandomShootingParams:
         return dataclasses.replace(params, model=model)
+
+    def get_training_params(self, params: RandomShootingParams) -> RandomShootingParams:
+        search = params.training_search
+        if search is None:
+            return params
+        return dataclasses.replace(
+            params,
+            batch_size=search.batch_size,
+            max_batches=search.max_batches,
+            threshold=search.threshold,
+            patience=search.patience,
+        )
 
     def get_plan_examples(
         self,

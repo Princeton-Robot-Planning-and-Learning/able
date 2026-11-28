@@ -9,7 +9,14 @@ from able.approaches import (
     get_cache_key_features,
     make_allocation_robot,
     make_belief_coverage_robot,
+    make_calendar_allocation_robot,
+    make_calendar_belief_coverage_robot,
+    make_calendar_current_belief_robot,
+    make_calendar_dreaming_robot,
+    make_calendar_features,
+    make_calendar_scratch_robot,
     make_current_belief_robot,
+    make_day_type_transfer,
     make_dreaming_robot,
     make_friction_belief_coverage_robot,
     make_friction_current_belief_robot,
@@ -40,10 +47,12 @@ from able.approaches import (
     make_sampled_arm_prior_only_robot,
     make_sampled_arm_scratch_robot,
     make_scratch_robot,
+    make_step_transfer,
 )
 from able.beliefs.interval import IntervalBelief
 from able.cycle import CycleBudgets, run_cycles
 from able.envs.base import FiniteTaskDistribution
+from able.envs.calendar_arm import make_calendar_arm_domain
 from able.envs.friction.tasks import make_domain as make_friction_domain
 from able.envs.human_reach.model import ReachModel
 from able.envs.human_reach.tasks import make_domain as make_reach_domain
@@ -743,3 +752,72 @@ def test_ramp_units_scale_with_routine_size():
     assert get_ramp_units((1.0, 4.0), None, 16, 2) == (1.0, 4.0)
     assert get_ramp_units((1.0, 4.0), (0.25, 1.0), 8, 2) == (1.0, 4.0)
     assert get_ramp_units((1.0, 4.0), (0.25, 1.0), 16, 2) == (2.0, 8.0)
+
+
+def test_make_calendar_robots():
+    """Every calendar-arm approach runs for a few days, and the robots that plan
+    for a horizon look past today."""
+    unlimited = Budget(max_iterations=1)
+    common = {
+        "gathering_budget": Budget(max_iterations=0),
+        "execution_budget": unlimited,
+        "planning_budget": unlimited,
+        "training_iterations": 2,
+    }
+    makers = {
+        "scratch": make_calendar_scratch_robot,
+        "current_belief": lambda d: make_calendar_current_belief_robot(
+            d, unlimited, days_ahead=2, training_iterations=2
+        ),
+        "dreaming": lambda d: make_calendar_dreaming_robot(d, horizon=3, **common),
+        "coverage": lambda d: make_calendar_belief_coverage_robot(
+            d, horizon=3, **common
+        ),
+        "deliberate": lambda d: make_calendar_allocation_robot(
+            d, num_units=2, rule="deliberate_practice", horizon=3, **common
+        ),
+        "transfer": lambda d: make_calendar_allocation_robot(
+            d, num_units=2, rule="transfer_practice", horizon=3, **common
+        ),
+    }
+    for make in makers.values():
+        domain = make_calendar_arm_domain(0, routine_size=2)
+        robot = make(domain)
+        tasks = domain.task_distribution
+        results = run_cycles(
+            robot,
+            domain.real_env,
+            tasks,
+            tasks.get_tasks,  # type: ignore[attr-defined]  # pylint: disable=no-member
+            3,
+            CycleBudgets(
+                sleep=Budget(max_iterations=2),
+                information_gathering=Budget(max_iterations=0),
+                execution=unlimited,
+                planning=unlimited,
+            ),
+            np.random.default_rng(0),
+            predict_belief=domain.predict_belief,
+        )
+        assert len(results) == 3
+        assert all(len(r.evaluations) == 2 for r in results)
+
+
+def test_calendar_features_and_transfer():
+    """Beliefs a few steps apart are within the matching radius."""
+    get_features = make_calendar_features(0.03)
+    a = get_features(
+        IntervalBelief([[-2.0, -1.98], [2.0, 2.02], [-1.0, -0.98], [1, 1]])
+    )
+    b = get_features(
+        IntervalBelief([[-1.9, -1.88], [1.9, 1.92], [-1.0, -0.98], [1, 1]])
+    )
+    assert make_step_transfer(2)(a[None], b[None])[0, 0] == 0.0
+    assert make_step_transfer(4)(a[None], b[None])[0, 0] == 1.0
+
+
+def test_day_type_transfer_pools_nearby_days():
+    """Days in the same bin of stiffness steps are one day type."""
+    near, far = np.array([[0.0, 9.0, 0.0, 9.0]]), np.array([[2.0, 9.0, 0.0, 9.0]])
+    assert make_day_type_transfer(1)(near, far)[0, 0] == 0.0
+    assert make_day_type_transfer(3)(near, far)[0, 0] == 1.0

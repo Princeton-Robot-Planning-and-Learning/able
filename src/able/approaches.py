@@ -19,6 +19,11 @@ from able.belief_updaters.sites import MultiSiteUpdater
 from able.beliefs.base import Belief
 from able.beliefs.interval import IntervalBelief
 from able.envs.base import FiniteTaskDistribution
+from able.envs.calendar_arm import (
+    CalendarArmDomain,
+    CalendarTaskDistribution,
+    ExerciseTask,
+)
 from able.envs.friction.model import FrictionModel, FrictionState, FrictionTask
 from able.envs.friction.pomdp import PuckPushingModel
 from able.envs.friction.query import FrictionQuery, PushRecord
@@ -78,6 +83,15 @@ from able.learners.belief_sources import (
     ImaginedNextBeliefSource,
     PriorSource,
 )
+from able.learners.exercise_focus import ExerciseModelLearner
+from able.learners.horizon import (
+    HorizonAllocationSource,
+    HorizonModel,
+    HorizonSource,
+    LookaheadSource,
+    Tier,
+    Transfer,
+)
 from able.learners.model_learner import ModelLearner
 from able.learners.person_focus import (
     PersonFocusSource,
@@ -113,7 +127,11 @@ from able.planners.pomcpow import (
     POMCPOWParams,
     ProposalConfig,
 )
-from able.planners.random_shooting import RandomShootingParams, RandomShootingPlanner
+from able.planners.random_shooting import (
+    RandomShootingParams,
+    RandomShootingPlanner,
+    TrainingSearch,
+)
 from able.planners.sites import MultiSitePlanner
 from able.recording.base import CycleRecorder
 from able.robot import Robot
@@ -1037,6 +1055,306 @@ def make_multi_person_allocation_robot(
         training_iterations,
         recorder,
         keep_only_last_sleep=keep_only_last_sleep,
+    )
+
+
+# A key distance that every two days of a calendar arm are within, so the plan of
+# the nearest day is always lent.
+_ANY_KEY_DISTANCE = 10**6
+
+
+def get_exercise_features(
+    task: ArmTask, belief: Belief[ArmArray]
+) -> NDArray[np.float64]:
+    """The exercise, then the midpoint of each limit's interval."""
+    assert isinstance(task, ExerciseTask), "Need an exercise"
+    assert isinstance(belief, IntervalBelief), "Need an IntervalBelief"
+    return np.concatenate([[task.exercise], belief.intervals.mean(axis=1)])
+
+
+def make_calendar_features(
+    key_resolution: float,
+) -> Callable[[Belief[Any]], NDArray[np.float64]]:
+    """A function from a belief to its midpoint limits in steps of the plan cache's
+    resolution."""
+
+    def get_features(belief: Belief[Any]) -> NDArray[np.float64]:
+        assert isinstance(belief, IntervalBelief), "Need an IntervalBelief"
+        return np.round(belief.intervals.mean(axis=1) / key_resolution)
+
+    return get_features
+
+
+def make_step_transfer(radius: int) -> Transfer:
+    """Transfer of 1 between beliefs whose features differ by at most radius steps
+    in every entry and 0 otherwise."""
+
+    def transfer(a: NDArray[np.float64], b: NDArray[np.float64]) -> NDArray[np.float64]:
+        distances = np.abs(a[:, None, :] - b[None, :, :]).max(axis=2)
+        return (distances <= radius + 1e-9).astype(np.float64)
+
+    return transfer
+
+
+def make_day_type_transfer(steps: int) -> Transfer:
+    """Transfer of 1 between beliefs in the same bin of steps steps in each joint's
+    stiffness, read from the joint's lower limit, and 0 otherwise."""
+    assert steps > 0, "Need a positive bin"
+
+    def transfer(a: NDArray[np.float64], b: NDArray[np.float64]) -> NDArray[np.float64]:
+        bins_a, bins_b = np.floor(a[:, [0, 2]] / steps), np.floor(b[:, [0, 2]] / steps)
+        return np.all(bins_a[:, None, :] == bins_b[None, :, :], axis=2).astype(
+            np.float64
+        )
+
+    return transfer
+
+
+def _make_calendar_parts(
+    domain: CalendarArmDomain, key_resolution: float, awake_batch_size: int
+) -> tuple[TwoLinkArmModel, CalendarTaskDistribution, RandomShootingPlanner]:
+    """The model, the calendar's task distribution, and the planner, whose plan
+    cache holds one plan per exercise and day type and lends the nearest day's."""
+    env_model, tasks = domain.env_model, domain.task_distribution
+    assert isinstance(env_model, TwoLinkArmModel)
+    assert isinstance(tasks, CalendarTaskDistribution)
+    params = RandomShootingParams(
+        batch_size=awake_batch_size,
+        num_proposals=1,
+        model=ExactMatchCache(
+            key_resolution=(1.0,) + (key_resolution,) * 4,
+            max_per_key=1,
+            max_key_distance=_ANY_KEY_DISTANCE,
+            num_exact_dims=1,
+        ),
+        training_search=TrainingSearch(),
+    )
+    planner = RandomShootingPlanner(env_model, params, get_exercise_features)
+    return env_model, tasks, planner
+
+
+def _make_calendar_robot(
+    domain: CalendarArmDomain,
+    make_source: Callable[[Any, CalendarTaskDistribution], Any] | None,
+    key_resolution: float,
+    awake_batch_size: int,
+    num_training_tasks: int,
+    training_iterations: int,
+    gathering_budget: Budget | None = None,
+    execution_budget: Budget | None = None,
+    planning_budget: Budget | None = None,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+) -> ArmRobot:
+    """A robot for the calendar arm whose learner trains under
+    make_source(dreamer, tasks), or never learns if make_source is None. With the
+    three budgets, the dreamer imagines a day with the robot's own parts."""
+    env_model, tasks, planner = _make_calendar_parts(
+        domain, key_resolution, awake_batch_size
+    )
+    updater = JointLimitBeliefUpdater()
+    gatherer = BisectLimitGatherer(updater)
+    learner: Any = NullLearner()
+    if make_source is not None:
+        dreamer: ImaginedNextBeliefSource | None = None
+        if gathering_budget and execution_budget and planning_budget:
+            dreamer = ImaginedNextBeliefSource(
+                env_model,
+                tasks,
+                planner,
+                updater,
+                gatherer,
+                gathering_budget=gathering_budget,
+                execution_budget=execution_budget,
+                planning_budget=planning_budget,
+                recorder=recorder,
+            )
+        learner = ExerciseModelLearner(
+            planner,
+            tasks,
+            make_source(dreamer, tasks),
+            Budget(max_iterations=training_iterations),
+            refit="per_sleep",
+            num_training_tasks=num_training_tasks,
+        )
+    return Robot(
+        planner=planner,
+        learner=learner,
+        belief_updater=updater,
+        info_gatherer=gatherer,
+        initial_belief=domain.initial_belief,
+    )
+
+
+def make_calendar_scratch_robot(
+    domain: CalendarArmDomain,
+    key_resolution: float = 0.03,
+    awake_batch_size: int = 1,
+    num_training_tasks: int = 1,
+    training_iterations: int = 40,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+) -> ArmRobot:
+    """A robot for the calendar arm that plans from scratch and never learns."""
+    return _make_calendar_robot(
+        domain,
+        None,
+        key_resolution,
+        awake_batch_size,
+        num_training_tasks,
+        training_iterations,
+        recorder=recorder,
+    )
+
+
+def make_calendar_current_belief_robot(
+    domain: CalendarArmDomain,
+    planning_budget: Budget,
+    days_ahead: int = 0,
+    key_resolution: float = 0.03,
+    awake_batch_size: int = 1,
+    num_training_tasks: int = 1,
+    training_iterations: int = 40,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+) -> ArmRobot:
+    """A robot for the calendar arm whose units all train under its forecast
+    belief days_ahead days from now. With days_ahead 0 it trains under its belief
+    for today."""
+    del planning_budget  # unused because the robot imagines nothing
+    return _make_calendar_robot(
+        domain,
+        lambda _, tasks: LookaheadSource(tasks.forecast, days_ahead),
+        key_resolution,
+        awake_batch_size,
+        num_training_tasks,
+        training_iterations,
+        recorder=recorder,
+    )
+
+
+def make_calendar_dreaming_robot(
+    domain: CalendarArmDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    horizon: int = 1,
+    key_resolution: float = 0.03,
+    awake_batch_size: int = 1,
+    num_training_tasks: int = 1,
+    training_iterations: int = 40,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+) -> ArmRobot:
+    """A robot for the calendar arm that trains under the beliefs it dreams of
+    holding on the next horizon days, each equally often."""
+    return _make_calendar_robot(
+        domain,
+        lambda dreamer, tasks: HorizonSource(dreamer, tasks.forecast, horizon),
+        key_resolution,
+        awake_batch_size,
+        num_training_tasks,
+        training_iterations,
+        gathering_budget,
+        execution_budget,
+        planning_budget,
+        recorder,
+    )
+
+
+def make_calendar_belief_coverage_robot(
+    domain: CalendarArmDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    horizon: int = 1,
+    num_candidates: int = 4,
+    key_resolution: float = 0.03,
+    awake_batch_size: int = 1,
+    num_training_tasks: int = 1,
+    training_iterations: int = 40,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+) -> ArmRobot:
+    """A robot for the calendar arm that trains under the farthest of num_candidates
+    dreams of the next horizon days from the beliefs it has trained under, by the
+    day's midpoint limits."""
+    return _make_calendar_robot(
+        domain,
+        lambda dreamer, tasks: BeliefCoverageSource(
+            HorizonSource(dreamer, tasks.forecast, horizon),
+            make_calendar_features(key_resolution),
+            num_candidates,
+        ),
+        key_resolution,
+        awake_batch_size,
+        num_training_tasks,
+        training_iterations,
+        gathering_budget,
+        execution_budget,
+        planning_budget,
+        recorder,
+    )
+
+
+def make_calendar_allocation_robot(
+    domain: CalendarArmDomain,
+    gathering_budget: Budget,
+    execution_budget: Budget,
+    planning_budget: Budget,
+    num_units: int,
+    rule: str,
+    horizon: int = 7,
+    tier_values: tuple[float, ...] = (1.0, 0.82, 0.57, 0.29),
+    day_type_steps: int = 1,
+    dreams_per_unit: int = 16,
+    key_resolution: float = 0.03,
+    awake_batch_size: int = 1,
+    num_training_tasks: int = 1,
+    training_iterations: int = 40,
+    recorder: CycleRecorder[ArmArray, ArmTask, ArmArray] | None = None,
+) -> ArmRobot:
+    """A robot for the calendar arm that splits each sleep's num_units among
+    dreamed days by an allocation rule, planning the next horizon nights together.
+
+    The rule expects a day to go well with probability tier_values[r - 1] once
+    every exercise has a plan for a day within r steps of it in the plan cache's
+    resolution, as measured on this arm, and that a unit plans one exercise.
+    deliberate_practice instead expects every day type's plans to serve only that
+    day type, where a day type is a bin of day_type_steps steps in each joint's
+    stiffness. num_units should match the sleep budget's iterations, and the
+    execution and planning budgets should match the cycle budgets.
+    """
+    tasks = domain.task_distribution
+    assert isinstance(tasks, CalendarTaskDistribution)
+    assert num_training_tasks == 1, "The model counts one exercise per unit"
+
+    def average_intervals(a: Belief[Any], b: Belief[Any]) -> Belief[Any]:
+        assert isinstance(a, IntervalBelief) and isinstance(b, IntervalBelief)
+        return IntervalBelief((a.intervals + b.intervals) / 2.0)
+
+    model = HorizonModel(
+        get_features=make_calendar_features(key_resolution),
+        run_length=tasks.num_exercises,
+        tiers=tuple(
+            Tier(make_step_transfer(r + 1), value)
+            for r, value in enumerate(tier_values)
+        ),
+        between=average_intervals,
+        independent_transfer=make_day_type_transfer(day_type_steps),
+    )
+    return _make_calendar_robot(
+        domain,
+        lambda dreamer, calendar_tasks: HorizonAllocationSource(
+            HorizonSource(dreamer, calendar_tasks.forecast, horizon),
+            model,
+            rule,
+            num_units,
+            dreams_per_unit,
+        ),
+        key_resolution,
+        awake_batch_size,
+        num_training_tasks,
+        training_iterations,
+        gathering_budget,
+        execution_budget,
+        planning_budget,
+        recorder,
     )
 
 

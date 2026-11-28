@@ -1,0 +1,34 @@
+# @package _global_
+# A two-link arm whose person is stiffer on some days, on a calendar the robot
+# knows, and whose exercises are fractions of the day's range. Each unit of sleep
+# plans one exercise for one kind of day, and a day goes well only if every exercise
+# reaches its goal. The approaches are in env_approach/calendar_arm.
+env:
+  domain:
+    _target_: able.envs.calendar_arm.make_calendar_arm_domain
+    # week, uneven, or steady (see sample_calendar()).
+    calendar: week
+    # How far each joint's stiffness moves per day, in radians.
+    step: 0.09
+    routine_size: 8
+    max_stiffness: 1.8
+    # Must cover the cycles and the horizon.
+    num_days: 60
+    goal_lean: 8.0
+    goal_tolerance: 0.15
+    intake_width: 0.04
+    # How far each joint's stiffness can move each night beyond the calendar.
+    drift: 0.0
+  renderer:
+    _target_: able.rendering.two_link_arm.TwoLinkArmRenderer
+budgets:
+  sleep:
+    max_iterations: 3
+  # With drift, a few queries a day find the day's limits again.
+  information_gathering:
+    max_iterations: 0
+  # While awake, planning an exercise is one rollout of the nearest stored plan and a
+  # perturbation of it.
+  planning:
+    max_iterations: 1
+num_cycles: 28
